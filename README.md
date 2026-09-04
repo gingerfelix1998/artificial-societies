@@ -33,3 +33,6 @@ Initially, start with a single simulation. This would be a one-time response of 
 Second, we will have multiple nations involved and the Presidents will be signalling to each other throughout the scenario. This gives us the opportunity to observe escalation dynamics.
 
 Then, we will expand to a comparative analysis of two time periods. Potentially, observe escalation dynamics for the same situation across two distinct time periods. Alternatively, re-create historical situations with different context or theoretical literature.
+
+## Delivery:
+This information is related to how we technically deliver the first phase of the scope. See the docs/approach/* documents to understand how we structured out methodology.
