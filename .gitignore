@@ -1,0 +1,24 @@
+# Run outputs are reproducible from a config plus a seed; never commit them.
+out/
+
+# Theorist source texts are copyrighted material; never commit them.
+data/corpora/*
+!data/corpora/.gitkeep
+
+# LLM disk cache
+.cache/
+
+# Environments and build artefacts
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
