@@ -2,7 +2,10 @@
 # `make install` needs the network once to populate .venv; everything after that does not.
 
 PY ?= python3
-VENV := .venv
+# Override on a machine where the repo lives inside a synced folder (iCloud Drive,
+# Dropbox): a venv there is evicted and re-downloaded constantly, which makes every
+# command slow and needs the network. e.g. make install VENV=/tmp/artsoc-venv
+VENV ?= .venv
 BIN := $(VENV)/bin
 N ?= 100
 SEED0 ?= 1
@@ -14,6 +17,11 @@ install:
 	$(PY) -m venv $(VENV)
 	$(BIN)/python -m pip install --upgrade pip
 	$(BIN)/python -m pip install -e ".[dev]"
+	@# On macOS, iCloud Drive sets UF_HIDDEN on files it manages (anything under a
+	@# synced ~/Documents). CPython >= 3.13 silently skips hidden .pth files, which
+	@# breaks the editable install with a bare ModuleNotFoundError. Clear the flag on
+	@# the .pth only; no-op on any other platform.
+	-@chflags nohidden $(VENV)/lib/python*/site-packages/*.pth 2>/dev/null || true
 
 test:
 	$(BIN)/python -m pytest

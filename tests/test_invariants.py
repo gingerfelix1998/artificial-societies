@@ -8,6 +8,7 @@ would otherwise have caught.
 from __future__ import annotations
 
 import inspect
+import random
 
 import pytest
 from pydantic import ValidationError
@@ -17,9 +18,20 @@ from artsoc.schema import (
     NUCLEAR_THRESHOLD,
     RUNG,
     ActionType,
+    PerceivedEvent,
     PresidentialAction,
+    WorldEvent,
     rung_for,
 )
+from artsoc.world import (
+    PerceptionFilter,
+    PerceptionParams,
+    WorldLog,
+    build_world,
+    load_scenario,
+)
+
+SCENARIO_ID = "phase1_tel_dispersal_v1"
 
 # ---------------------------------------------------------------------------
 # The escalation ladder. The primary metric must be total, ordinal and deterministic.
@@ -96,3 +108,116 @@ def test_nuclear_flag_agrees_with_the_threshold() -> None:
     for action in ActionType:
         act = PresidentialAction(action=action, justification="MOCK:")
         assert act.is_nuclear == (act.rung >= NUCLEAR_THRESHOLD)
+
+
+# ---------------------------------------------------------------------------
+# The world and perception. Misperception must be modelled, not decorative.
+# ---------------------------------------------------------------------------
+
+
+def _covert_world() -> WorldLog:
+    log = WorldLog()
+    log.inject(
+        WorldEvent(
+            event_id="own_1",
+            t=0,
+            actor_nation="Nation A",
+            label="own_alert",
+            description="Nation A raised readiness at two bases.",
+            observable_signature=["readiness change"],
+            ground_truth_detail="HOST-ONLY: routine rotation",
+        )
+    )
+    log.inject(
+        WorldEvent(
+            event_id="covert_1",
+            t=0,
+            actor_nation="Nation B",
+            label="covert_move",
+            description="Nation B moved something quietly.",
+            observable_signature=["faint signature"],
+            covert=True,
+            ground_truth_detail="HOST-ONLY: warhead handling exercise",
+        )
+    )
+    return log
+
+
+def _filter() -> PerceptionFilter:
+    return PerceptionFilter("Nation A", PerceptionParams(covert_detection_prob=0.35))
+
+
+def test_a_nation_always_sees_its_own_actions() -> None:
+    """A state knows what it did; only foreign activity is a collection problem."""
+    log, filt = _covert_world(), _filter()
+    for seed in range(50):
+        seen, _ = filt.view(log, now=1, rng=random.Random(seed))
+        assert "own_1" in {e.event_id for e in seen}
+
+
+def test_covert_adversary_events_can_be_missed_and_can_be_seen() -> None:
+    """Misperception is a modelled variable. A filter that never misses models nothing."""
+    log, filt = _covert_world(), _filter()
+    outcomes = set()
+    for seed in range(50):
+        seen, missed = filt.view(log, now=1, rng=random.Random(seed))
+        outcomes.add("covert_1" in {e.event_id for e in seen})
+        assert ("covert_1" in missed) != ("covert_1" in {e.event_id for e in seen})
+    assert outcomes == {True, False}
+
+
+def test_ground_truth_is_stripped_from_every_view() -> None:
+    """The host's truth exists to score misperception, never to reach an agent."""
+    scenario = load_scenario(SCENARIO_ID)
+    log = build_world(scenario)
+    filt = PerceptionFilter(scenario.self_nation, scenario.perception)
+    assert "ground_truth_detail" not in PerceivedEvent.model_fields
+    for seed in range(30):
+        seen, _ = filt.view(log, now=scenario.now, rng=random.Random(seed))
+        for event in seen:
+            assert not hasattr(event, "ground_truth_detail")
+            assert "HOST-ONLY" not in event.model_dump_json()
+
+
+def test_degraded_collection_loses_signature_elements() -> None:
+    """Partial collection has to actually cost information, or bias is cosmetic."""
+    scenario = load_scenario(SCENARIO_ID)
+    log = build_world(scenario)
+    filt = PerceptionFilter(scenario.self_nation, scenario.perception)
+    full = len(scenario.events[0].observable_signature)
+    degraded_seen = [
+        e
+        for seed in range(60)
+        for e in filt.view(log, now=scenario.now, rng=random.Random(seed))[0]
+        if e.degraded
+    ]
+    assert degraded_seen, "noise_prob is set but no view was ever degraded"
+    assert all(len(e.observable_signature) < full for e in degraded_seen)
+
+
+def test_only_the_president_may_write_to_the_world() -> None:
+    """Write access to the world is the President's alone; the loop closes there."""
+    log = WorldLog()
+    event = WorldEvent(
+        event_id="x",
+        t=1,
+        actor_nation="Nation A",
+        label="act",
+        description="d",
+        ground_truth_detail="HOST-ONLY",
+    )
+    for role in ("advisor", "theorist", "intelligence_officer", "host"):
+        with pytest.raises(PermissionError):
+            log.write(event, author_role=role)
+    log.write(event, author_role="president")
+    assert len(log) == 1
+
+
+def test_the_scenario_event_is_ambiguous_in_both_directions() -> None:
+    """An unambiguous event is decided by the brief alone and the panel cannot matter."""
+    scenario = load_scenario(SCENARIO_ID)
+    signature = " ".join(scenario.events[0].observable_signature).lower()
+    hedge_indicators = ["no observed activity at national warhead storage", "unchanged"]
+    prep_indicators = ["readiness directive", "emissions control"]
+    assert any(s in signature for s in hedge_indicators)
+    assert any(s in signature for s in prep_indicators)

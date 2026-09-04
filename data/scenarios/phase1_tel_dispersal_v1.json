@@ -1,0 +1,64 @@
+{
+  "scenario_id": "phase1_tel_dispersal_v1",
+  "schema_version": "1.0.0",
+  "_notes": [
+    "Nations are anonymised as 'Nation A' and 'Nation B' to limit historical-outcome leakage: a named dyad lets a model retrieve how the real episode ended instead of reasoning about the situation.",
+    "The event is deliberately ambiguous. Its observable signature is consistent with BOTH a survivability hedge and launch preparation. Ambiguity is what forces the theorist panel to matter; an unambiguous event would be decided by the intelligence brief alone.",
+    "ground_truth_detail is HOST-ONLY. It exists so that misperception can be scored by the analyst, not so that an agent can be correct. It must never reach any prompt, and tests/test_access_matrix.py enforces that."
+  ],
+  "self_nation": "Nation A",
+  "adversary_nation": "Nation B",
+  "now": 1,
+
+  "doctrine_card": {
+    "nation": "Nation A",
+    "doctrine": "Assured retaliation. Nation A fields a survivable second-strike force, declares that it will not use nuclear weapons first against a non-nuclear attack, and reserves the right to respond to a strategic conventional attack on its nuclear forces or command system.",
+    "disposition": "Wary of inadvertent escalation and of being manoeuvred into a first move; simultaneously sensitive to a domestic and allied audience that reads restraint as weakness. Prefers responses that leave a visible off-ramp for both sides.",
+    "collection_bias": "Nation A's intelligence service is oriented towards counterforce indicators. It prioritises collection on launcher movement, warhead handling, strategic communications and readiness directives, and systematically under-collects on organisational routine, exercise scheduling, domestic-political and economic explanations for military activity.",
+    "red_lines": [
+      "Observed mating of warheads to delivery systems outside a declared exercise",
+      "Attack on Nation A's early-warning or nuclear command and control",
+      "Movement of Nation B forces across the demarcation line in the regional theatre"
+    ]
+  },
+
+  "perception": {
+    "detection_prob": 0.92,
+    "covert_detection_prob": 0.35,
+    "delay_steps": 0,
+    "noise_prob": 0.35,
+    "bias_keywords": [
+      "tel",
+      "launcher",
+      "warhead",
+      "emissions",
+      "communications",
+      "readiness",
+      "rocket force",
+      "dispersal"
+    ]
+  },
+
+  "events": [
+    {
+      "event_id": "evt_tel_dispersal",
+      "t": 1,
+      "actor_nation": "Nation B",
+      "label": "tel_dispersal",
+      "covert": false,
+      "description": "Over roughly eighteen hours, Nation B moved a substantial fraction of its road-mobile intercontinental ballistic missile transporter-erector-launchers out of two garrisons and into dispersed sites in forested terrain. The movement began inside a previously announced exercise window. Garrison emissions ceased as the movement started and the units have not re-established routine communications.",
+      "observable_signature": [
+        "at least fourteen road-mobile TELs departed garrison within an eighteen-hour period",
+        "movement began inside a previously announced and routinely observed exercise window",
+        "emissions control imposed at both garrisons; routine communications have not resumed",
+        "support and security vehicles accompanying at a higher ratio than in previous exercises",
+        "a strategic rocket force readiness directive was issued approximately thirty-six hours earlier",
+        "two of the dispersal areas are pre-surveyed sites used in previous exercises",
+        "no observed activity at national warhead storage facilities",
+        "senior leadership travel and residence patterns unchanged",
+        "civil defence posture unchanged; no observed preparation of population shelters"
+      ],
+      "ground_truth_detail": "HOST-ONLY. Nation B's dispersal is a survivability hedge, not launch preparation. Three weeks earlier Nation A publicised a conventional precision strike capability that Nation B's general staff assessed as putting its garrisoned mobile force at risk of a disarming first strike. The staff ordered dispersal to pre-surveyed sites under emissions control, and used the pre-announced exercise window as cover so as not to alarm its own population or signal weakness. No warheads have been mated to delivery systems, no launch authority has been pre-delegated, and Nation B's leadership has not considered first use. The higher support-vehicle ratio reflects the intent to keep the force dispersed for an extended period, which is also the single indicator most easily misread as launch preparation."
+    }
+  ]
+}

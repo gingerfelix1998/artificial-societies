@@ -29,6 +29,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Import artsoc from the source tree directly rather than relying on the editable
+# install's .pth file, which macOS iCloud Drive can render invisible to CPython.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
