@@ -10,6 +10,7 @@ data/corpora/*
 
 # Environments and build artefacts
 .venv/
+*.nosync/
 *.egg-info/
 build/
 dist/

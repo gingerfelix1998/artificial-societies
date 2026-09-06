@@ -2,10 +2,13 @@
 # `make install` needs the network once to populate .venv; everything after that does not.
 
 PY ?= python3
-# Override on a machine where the repo lives inside a synced folder (iCloud Drive,
-# Dropbox): a venv there is evicted and re-downloaded constantly, which makes every
-# command slow and needs the network. e.g. make install VENV=/tmp/artsoc-venv
-VENV ?= .venv
+# The .nosync suffix is not decoration. macOS iCloud Drive syncs ~/Documents, and a venv
+# inside a synced folder gets evicted to the cloud: CPython then skips the editable
+# install's .pth file (which iCloud flags hidden) and later times out reading library
+# files it has to re-download — which would also break the promise that the test suite
+# runs on a disconnected machine. iCloud leaves anything ending in .nosync alone.
+# Elsewhere the suffix is just part of a directory name and costs nothing.
+VENV ?= .venv.nosync
 BIN := $(VENV)/bin
 N ?= 100
 SEED0 ?= 1

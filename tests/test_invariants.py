@@ -8,11 +8,21 @@ would otherwise have caught.
 from __future__ import annotations
 
 import inspect
+import json
 import random
 
 import pytest
 from pydantic import ValidationError
 
+from artsoc.llm import (
+    MOCK_PREFIX,
+    DiskCache,
+    LLMClient,
+    MockBackend,
+    Role,
+    get_backend,
+    role_marker,
+)
 from artsoc.schema import (
     NUCLEAR_ACTIONS,
     NUCLEAR_THRESHOLD,
@@ -211,6 +221,134 @@ def test_only_the_president_may_write_to_the_world() -> None:
             log.write(event, author_role=role)
     log.write(event, author_role="president")
     assert len(log) == 1
+
+
+# ---------------------------------------------------------------------------
+# The model choke point. Offline, obviously fake, and seeds have to move the outcome.
+# ---------------------------------------------------------------------------
+
+
+def _client(tmp_path=None, *, seed: int = 0, cache_enabled: bool = True) -> LLMClient:
+    cache = DiskCache(tmp_path / "llm") if tmp_path is not None else None
+    return LLMClient(
+        backend=MockBackend(), run_seed=seed, cache=cache, cache_enabled=cache_enabled
+    )
+
+
+def _decision_prompt() -> tuple[str, str]:
+    return (
+        f"{role_marker(Role.PRESIDENT_DECISION)} You are the President.",
+        "Choose exactly one action.",
+    )
+
+
+def test_mock_output_is_always_marked_as_mock() -> None:
+    """Plausible stub output gets mistaken for real output and reported as a finding."""
+    backend = MockBackend()
+    for role in Role:
+        system = f"{role_marker(role)} system text [[N:3]]"
+        payload = json.loads(backend.complete(role, system, "prompt [[N:3]]", "0"))
+        text = json.dumps(payload)
+        assert MOCK_PREFIX in text or role is Role.PRESIDENT_DECISION
+        if role is Role.PRESIDENT_DECISION:
+            assert payload["justification"].startswith(MOCK_PREFIX)
+
+
+def test_seeds_move_the_presidential_decision() -> None:
+    """If every seed produced the same action, Monte Carlo would measure nothing."""
+    backend = MockBackend()
+    system, prompt = _decision_prompt()
+    actions = {
+        json.loads(backend.complete(Role.PRESIDENT_DECISION, system, prompt, str(s)))["action"]
+        for s in range(200)
+    }
+    assert len(actions) > 1
+    assert actions <= {a.value for a in ActionType}
+    rungs = {rung_for(a) for a in actions}
+    assert len(rungs) > 1
+
+
+def test_the_decision_distribution_reaches_both_ends_of_the_ladder() -> None:
+    """A distribution pinned to the middle would hide both restraint and threshold crossing."""
+    backend = MockBackend()
+    system, prompt = _decision_prompt()
+    rungs = [
+        rung_for(
+            json.loads(backend.complete(Role.PRESIDENT_DECISION, system, prompt, str(s)))["action"]
+        )
+        for s in range(400)
+    ]
+    assert any(r <= 1 for r in rungs)
+    assert any(r >= NUCLEAR_THRESHOLD for r in rungs)
+
+
+def test_the_same_call_is_deterministic() -> None:
+    """Replay auditability: an identical call must return an identical response."""
+    backend = MockBackend()
+    system, prompt = _decision_prompt()
+    first = backend.complete(Role.PRESIDENT_DECISION, system, prompt, "7")
+    second = backend.complete(Role.PRESIDENT_DECISION, system, prompt, "7")
+    assert first == second
+
+
+def test_a_prompt_without_its_role_marker_is_refused() -> None:
+    """Role differentiation must live in the prompt, where the tests can see it."""
+    client = _client()
+    with pytest.raises(ValueError):
+        client.complete(role=Role.THEORIST, system="You are a theorist.", prompt="q")
+
+
+def test_cacheable_calls_hit_the_cache_and_the_decision_does_not(tmp_path) -> None:
+    """Decontextualised theorist answers repeat across replications; the decision must not."""
+    system_t = f"{role_marker(Role.THEORIST)} You are a persona."
+    sys_d, prompt_d = _decision_prompt()
+
+    a = _client(tmp_path, seed=1)
+    a.complete(role=Role.THEORIST, system=system_t, prompt="Q", cacheable=True)
+    a.complete(role=Role.PRESIDENT_DECISION, system=sys_d, prompt=prompt_d, cacheable=False)
+    assert a.cache_hits == 0
+
+    b = _client(tmp_path, seed=2)
+    b.complete(role=Role.THEORIST, system=system_t, prompt="Q", cacheable=True)
+    b.complete(role=Role.PRESIDENT_DECISION, system=sys_d, prompt=prompt_d, cacheable=False)
+    assert b.cache_hits == 1, "an identical theorist call must reuse the cached answer"
+    assert b.calls == 2, "a cache hit is still a call and must be counted"
+
+
+def test_turning_the_cache_off_makes_every_stage_vary_with_the_seed(tmp_path) -> None:
+    """Otherwise full_stack_variance changes call counts and measures nothing."""
+    system_t = f"{role_marker(Role.THEORIST)} You are a persona."
+    responses = set()
+    for seed in range(20):
+        client = _client(tmp_path, seed=seed, cache_enabled=False)
+        responses.add(client.complete(role=Role.THEORIST, system=system_t, prompt="Q"))
+        assert client.cache_hits == 0
+    assert len(responses) > 1
+
+    cached = {
+        _client(tmp_path, seed=seed, cache_enabled=True).complete(
+            role=Role.THEORIST, system=system_t, prompt="Q"
+        )
+        for seed in range(20)
+    }
+    assert len(cached) == 1, "with caching on, a decontextualised answer is seed-invariant"
+
+
+def test_there_is_no_live_backend_in_phase_one() -> None:
+    """No network, no API key, no provider dependency until the loop is pinned down."""
+    assert get_backend("mock").name == "mock"
+    with pytest.raises(NotImplementedError):
+        get_backend("api")
+    with pytest.raises(ValueError):
+        get_backend("nonsense")
+
+
+def test_scoring_a_rung_makes_no_model_call() -> None:
+    """No model judge anywhere near the primary metric."""
+    client = _client()
+    for action in ActionType:
+        assert rung_for(action) == PresidentialAction(action=action, justification="MOCK:").rung
+    assert client.calls == 0
 
 
 def test_the_scenario_event_is_ambiguous_in_both_directions() -> None:
