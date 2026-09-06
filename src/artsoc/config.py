@@ -39,6 +39,15 @@ RETRIEVAL_MODES: frozenset[str] = frozenset({"stub", "corpus"})
 #: Where a panel comes from. `synthetic` is the celebrity-effect control.
 PANEL_SOURCES: frozenset[str] = frozenset({"registry", "synthetic"})
 
+#: How the panel for each question is chosen.
+#:
+#: `advisor` models the social act: the Advisor is shown who exists and what they work on,
+#: picks by name, and states why. The reason is recorded.
+#: `tag` is the mechanical control: deterministic overlap between question tags and
+#: declared areas, no model involved, perfectly reproducible. Keeping it runnable means the
+#: cost of modelling selection can be measured rather than assumed.
+ROUTING_MODES: frozenset[str] = frozenset({"advisor", "tag"})
+
 
 class RunConfig(BaseModel):
     """Everything that determines what a replication tests.
@@ -78,6 +87,14 @@ class RunConfig(BaseModel):
 
     synthesis_mode: str = "full_range"
 
+    routing_mode: str = "advisor"
+
+    #: Personas the world operates as though never existed. They are absent from the panel,
+    #: from every roster the Advisor is shown, and from every prompt of every role — not
+    #: merely unrouted. This is the forced-exclusion intervention that makes influence
+    #: causal rather than observational.
+    excluded_personas: list[str] = Field(default_factory=list)
+
     notes: str = ""
 
     @field_validator("persona_method")
@@ -99,6 +116,20 @@ class RunConfig(BaseModel):
     def _known_retrieval(cls, value: str) -> str:
         if value not in RETRIEVAL_MODES:
             raise ValueError(f"retrieval_mode {value!r} not in {sorted(RETRIEVAL_MODES)}")
+        return value
+
+    @field_validator("routing_mode")
+    @classmethod
+    def _known_routing(cls, value: str) -> str:
+        if value not in ROUTING_MODES:
+            raise ValueError(f"routing_mode {value!r} not in {sorted(ROUTING_MODES)}")
+        return value
+
+    @field_validator("excluded_personas")
+    @classmethod
+    def _excluded_are_unique(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("excluded_personas contains duplicates")
         return value
 
     @field_validator("panel_source")

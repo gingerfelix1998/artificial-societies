@@ -45,6 +45,9 @@ OUT_OF_RECORD_WARNING_RATE = 0.02
 #: The control arm. Every interpretable number in a report is a delta against this.
 CONTROL_ARM = "escalation_prior"
 
+#: Prefix marking a forced-exclusion arm: a world in which one theorist never existed.
+LOO_PREFIX = "loo_"
+
 
 def load_jsonl(path: Path) -> list[RunRecord]:
     """Load run records from a JSONL file, validating each against the schema."""
@@ -243,6 +246,67 @@ def _histogram(distribution: dict[int, int], n: int, width: int = 28) -> list[st
     return lines
 
 
+def _loo_section(summaries: list[ArmSummary]) -> list[str]:
+    """Per-theorist attribution, contrasted against the other exclusion arms.
+
+    **The comparison is against the mean of the exclusion arms, not against baseline.**
+    Every `loo_*` arm runs a panel one smaller than baseline, so a delta against baseline
+    carries two things at once: this theorist's absence, and the panel being smaller.
+    Contrasting the exclusion arms with each other holds panel size fixed, so what remains
+    is *which* theorist is missing — the quantity the intervention was built to isolate.
+
+    This is a causal contrast rather than an observational one. Routing correlates with
+    question tags, which correlate with outcome, so an association between a theorist and
+    an outcome proves nothing. Removing them and re-running is an intervention.
+
+    What it measures is "what the panel produces without X", which includes whoever was
+    promoted into the freed slot. That is the right quantity for a panel-design question
+    and the wrong one for "X's marginal contribution holding all else fixed" — no
+    leave-one-out design gives the latter.
+    """
+    loo = [s for s in summaries if s.arm.startswith(LOO_PREFIX)]
+    if len(loo) < 2:
+        return []
+
+    grand_mean = statistics.fmean(s.mean_rung for s in loo)
+    grand_nuclear = statistics.fmean(s.p_nuclear for s in loo)
+    baseline = next((s for s in summaries if s.arm == "baseline"), None)
+
+    out = ["", "=" * 78, "PER-THEORIST ATTRIBUTION (forced exclusion)", "=" * 78, ""]
+    out.append(
+        f"  Reference is the mean of the {len(loo)} exclusion arms, not baseline, so panel"
+    )
+    out.append("  size is held constant and only the identity of the missing theorist varies.")
+    out.append(f"  Reference mean rung {grand_mean:.3f}, P(nuclear) {grand_nuclear:.1%}")
+    out.append("")
+    out.append(f"  {'theorist removed':<24}{'n':>5}{'d mean rung':>14}{'d P(nuclear)':>15}")
+
+    for s in sorted(loo, key=lambda x: x.mean_rung - grand_mean):
+        who = s.arm[len(LOO_PREFIX) :]
+        out.append(
+            f"  {who:<24}{s.n:>5}{s.mean_rung - grand_mean:>+14.3f}"
+            f"{s.p_nuclear - grand_nuclear:>+15.2%}"
+        )
+
+    if baseline is not None:
+        out += [
+            "",
+            f"  Cost of losing any one theorist: baseline (panel {baseline.declared_panel_size}) "
+            f"mean rung {baseline.mean_rung:.3f}",
+            f"  versus the exclusion mean (panel {loo[0].declared_panel_size}) "
+            f"{grand_mean:.3f} — a difference of {baseline.mean_rung - grand_mean:+.3f}.",
+            "  That contrast is panel size, not any particular theorist.",
+        ]
+
+    out += [
+        "",
+        "  ! A null delta here is not evidence of no influence. It can also mean the",
+        "    theorist was rarely consulted, so removing them changed few replications.",
+        "    Read each row against how often that theorist was routed to in baseline.",
+    ]
+    return out
+
+
 def format_report(summaries: list[ArmSummary]) -> str:
     """Render the report, caveats included.
 
@@ -299,6 +363,8 @@ def format_report(summaries: list[ArmSummary]) -> str:
                 continue
             d = delta(s, control)
             out.append(f"  {d.arm:<22}{d.d_mean_rung:>+14.3f}{d.d_p_nuclear:>+16.2%}")
+
+    out += _loo_section(ordered)
 
     out += ["", "=" * 78, "HOW THIS MAY AND MAY NOT BE READ", "=" * 78, ""]
     out.append(

@@ -1,0 +1,13 @@
+# The mechanical control for advisor-chosen routing.
+#
+# Base uses routing_mode: advisor — the Advisor sees who exists and what they work on,
+# picks by name, and states why. That models the social act of deciding whom to consult,
+# but it puts a model inside panel selection, where its priors about famous names can act.
+#
+# This arm routes by deterministic tag overlap instead: no model, no rationale, exactly
+# reproducible. The contrast measures what modelling the selection step actually costs or
+# buys. Without it, every advisor-routed result would carry an unmeasured assumption.
+routing_mode: tag
+notes: >-
+  Deterministic tag-overlap routing instead of advisor selection. Control for what putting
+  a model inside panel choice does to the outcome.

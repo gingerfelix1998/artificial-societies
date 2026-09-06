@@ -69,16 +69,37 @@ def forbidden_tokens(scenario: Scenario) -> list[str]:
 def build_panel(config: RunConfig, rng: random.Random) -> list[Persona]:
     """The personas available to this replication.
 
+    Exclusion happens here, before anything else sees the registry, which is what makes
+    "the world operates as though they never existed" true rather than aspirational: an
+    excluded persona is absent from the panel, therefore from every roster the Advisor is
+    shown, therefore from every prompt. Filtering later — at routing, say — would leave
+    them visible to the Advisor as someone it declined to pick.
+
     Sampling to `panel_size` uses the run rng rather than taking the first N, so a small
     panel is not always the same personas — otherwise `small_panel` would measure "these
     four theorists" rather than "a panel of four".
     """
     if config.panel_source == "synthetic":
-        return synthetic_panel(config.panel_size, seed=rng.randrange(2**32))
-    registry = load_registry()
-    if config.panel_size >= len(registry):
-        return registry
-    return rng.sample(registry, config.panel_size)
+        pool = synthetic_panel(config.panel_size, seed=rng.randrange(2**32))
+    else:
+        pool = load_registry()
+
+    excluded = set(config.excluded_personas)
+    if excluded:
+        known = {p.persona_id for p in pool}
+        unknown = sorted(excluded - known)
+        if unknown:
+            # An arm that excludes a persona who does not exist silently tests nothing:
+            # it would run, produce a distribution, and be indistinguishable from baseline.
+            raise ValueError(
+                f"arm {config.arm!r} excludes unknown personas {unknown}; "
+                f"available: {sorted(known)}"
+            )
+        pool = [p for p in pool if p.persona_id not in excluded]
+
+    if config.panel_size >= len(pool):
+        return pool
+    return rng.sample(pool, config.panel_size)
 
 
 def _consult(
@@ -108,7 +129,13 @@ def _consult(
     by_id = {p.persona_id: p for p in panel}
 
     for question in questions:
-        record = route(question, panel, k=config.k_per_question, rng=rng)
+        # The only branch on arm behaviour in the consultation path. `advisor` models the
+        # social act of choosing whom to ask and records the reason; `tag` is the
+        # mechanical control that needs no model and is exactly reproducible.
+        if config.routing_mode == "advisor":
+            record = advisor.select(query, question, panel, config.k_per_question, rng)
+        else:
+            record = route(question, panel, k=config.k_per_question, rng=rng)
         routing.append(record)
         for persona_id in record.selected:
             theorist = Theorist(client, by_id[persona_id], config.persona_method, retriever)

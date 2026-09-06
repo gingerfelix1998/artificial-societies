@@ -28,6 +28,7 @@ finds out about.
 from __future__ import annotations
 
 import json
+import random
 from typing import Any
 
 from artsoc.llm import CONSENSUS_MARKER, LLMClient, Role, role_marker
@@ -47,6 +48,7 @@ from artsoc.schema import (
     PerceivedEvent,
     PresidentialAction,
     PresidentialQuery,
+    RoutingRecord,
     TheoristOpinion,
 )
 
@@ -279,6 +281,13 @@ _ADVISOR_QUESTIONS_SYSTEM = (
     "vocabulary you are given."
 )
 
+_ADVISOR_SELECTION_SYSTEM = (
+    "You are a strategic advisor, expert across the nuclear-strategy literature. You have "
+    "no access to intelligence reporting and no knowledge of any current situation. You "
+    "are choosing which members of a panel to put an analytical question to. Choose on "
+    "the basis of what each of them works on, and say why you chose them."
+)
+
 _ADVISOR_SYNTHESIS_SYSTEM = (
     "You are a strategic advisor. Compress the expert opinions you collected into a brief. "
     "You are not adding analysis of your own and you have no access to intelligence "
@@ -331,6 +340,97 @@ class Advisor:
             )
             for i, item in enumerate(raw)
         ]
+
+    def select(
+        self,
+        query: PresidentialQuery,
+        question: AnalyticalQuestion,
+        roster: list[Persona],
+        k: int,
+        rng: random.Random,
+    ) -> RoutingRecord:
+        """Choose whom to consult, and say why.
+
+        Deciding whom to ask is a social act, not a lookup, so it is modelled as one and
+        the reason is recorded rather than discarded. `personas.route` remains available as
+        the `tag` control: mechanical overlap, no model, perfectly reproducible.
+
+        The Advisor still has no situation. It sees the President's decontextualised query,
+        the question it wrote itself, and a roster of who exists and what each works on.
+        Under `synth_only` that roster carries no real names, so the celebrity component of
+        selection becomes measurable rather than assumed away.
+
+        Two things are enforced rather than trusted:
+
+        * A name that is not on the roster is dropped, never honoured, and recorded in
+          `hallucinated`. Otherwise a model could conjure a theorist, or reach one the arm
+          deliberately excluded.
+        * A shortfall is filled deterministically and recorded as `topped_up`, so a panel
+          that nobody actually judged relevant stays visible in the record.
+        """
+        system = _system(Role.ADVISOR_SELECTION, _ADVISOR_SELECTION_SYSTEM)
+        lines = [
+            "QUESTION FROM THE PRESIDENT:",
+            f"  {query.text}",
+            "",
+            "THE ANALYTICAL QUESTION YOU ARE PUTTING TO THE PANEL:",
+            f"  {question.text}",
+            "",
+            "AVAILABLE PANEL — you may consult only these people:",
+        ]
+        for persona in roster:
+            # The [[WHO:id]] marker is how the backend reads the roster. It is in the
+            # prompt, not an argument, so the access-matrix scan sees exactly who was
+            # offered — and an excluded persona's absence here is checkable.
+            lines.append(
+                f"  [[WHO:{persona.persona_id}]] {persona.name} — works on: "
+                f"{', '.join(persona.tags)}"
+            )
+        lines += [
+            "",
+            f"Select exactly [[N:{k}]] of them. Produce JSON with keys: rationale, "
+            "selected. `selected` is a list of the bracketed ids. `rationale` states why "
+            "those people and not the others.",
+        ]
+
+        payload = _parse_json(
+            self.client.complete(
+                role=Role.ADVISOR_SELECTION, system=system, prompt="\n".join(lines)
+            ),
+            Role.ADVISOR_SELECTION,
+        )
+
+        available = {p.persona_id for p in roster}
+        named = [str(x) for x in payload.get("selected", [])]
+
+        chosen: list[str] = []
+        hallucinated: list[str] = []
+        for pid in named:
+            if pid in available and pid not in chosen:
+                chosen.append(pid)
+            elif pid not in available:
+                hallucinated.append(pid)
+        chosen = chosen[:k]
+
+        # Deterministic top-up so the panel reaches k even when the Advisor under-selects.
+        # Shuffled with the run rng rather than taken in registry order, or the same few
+        # personas would backfill every under-selection.
+        topped_up: list[str] = []
+        if len(chosen) < k:
+            remaining = [p.persona_id for p in roster if p.persona_id not in chosen]
+            rng.shuffle(remaining)
+            topped_up = remaining[: k - len(chosen)]
+
+        return RoutingRecord(
+            question_id=question.question_id,
+            k_requested=k,
+            mode="advisor",
+            chosen_by_advisor=chosen,
+            topped_up=topped_up,
+            rationale=str(payload.get("rationale", "")),
+            roster=sorted(available),
+            hallucinated=hallucinated,
+        )
 
     def synthesise(
         self,

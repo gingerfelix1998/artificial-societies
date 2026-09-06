@@ -945,3 +945,71 @@ def test_panel_coverage_is_measured_per_replication_not_across_the_sweep() -> No
     assert 0.0 < summary.mean_run_coverage <= 1.0
     # ...while distinct personas across the sweep may exceed the per-run panel size.
     assert summary.distinct_personas > summary.declared_panel_size
+
+
+# ---------------------------------------------------------------------------
+# Forced exclusion and advisor-chosen routing.
+# ---------------------------------------------------------------------------
+
+
+def test_advisor_routing_records_a_reason_and_a_roster() -> None:
+    """Selection is modelled as a decision, so the decision has to be in the record."""
+    record = _run("baseline", 1)
+    assert record.routing
+    for r in record.routing:
+        assert r.mode == "advisor"
+        assert r.rationale.strip()
+        assert len(r.roster) == record.panel_size
+        assert set(r.selected) <= set(r.roster)
+
+
+def test_tag_routing_stays_available_as_a_model_free_control() -> None:
+    """Advisor routing puts a model inside panel choice; the cost must be measurable."""
+    record = _run("tag_routing", 1)
+    for r in record.routing:
+        assert r.mode == "tag"
+        assert r.rationale == "", "tag routing involves no reasoning to record"
+        assert r.chosen_by_advisor == []
+    assert record.llm_calls < _run("baseline", 1).llm_calls, (
+        "advisor routing must cost extra calls; if not, no selection call was made"
+    )
+
+
+def test_an_excluded_theorist_is_absent_from_the_panel_and_the_record() -> None:
+    """The intervention is a world without them, not a world that declined to ask them."""
+    for arm in ("loo_schelling", "loo_lieber_press"):
+        who = arm[len("loo_") :]
+        record = _run(arm, 2)
+        assert record.panel_size == 14
+        assert who not in record.personas_consulted
+        assert all(o.persona_id != who for o in record.opinions)
+        for r in record.routing:
+            assert who not in r.roster
+            assert who not in r.selected
+
+
+def test_every_exclusion_arm_runs_and_removes_its_own_theorist() -> None:
+    """A silently-ineffective arm would look like a null result rather than a bug."""
+    for arm in (a for a in list_arms() if a.startswith("loo_")):
+        record = _run(arm, 1)
+        who = record.config["excluded_personas"][0]
+        assert record.panel_size == 14
+        assert who not in record.personas_consulted
+
+
+def test_the_attribution_report_compares_against_the_other_exclusion_arms() -> None:
+    """Against baseline the delta would carry panel size as well as identity."""
+    summaries = [
+        summarise([_run(f"loo_{who}", s) for s in range(1, 6)])
+        for who in ("schelling", "brodie", "waltz")
+    ]
+    report = format_report(summaries)
+    assert "PER-THEORIST ATTRIBUTION" in report
+    assert "not baseline" in report
+    assert "null delta here is not evidence of no influence" in report
+
+
+def test_no_attribution_section_without_arms_to_compare() -> None:
+    """One exclusion arm alone has nothing to be contrasted against."""
+    report = format_report([summarise([_run("loo_schelling", s) for s in range(1, 4)])])
+    assert "PER-THEORIST ATTRIBUTION" not in report

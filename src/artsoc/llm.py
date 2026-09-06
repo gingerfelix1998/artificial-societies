@@ -38,7 +38,7 @@ MOCK_PREFIX = "MOCK:"
 
 #: Bumped whenever mock output changes shape. It is part of the cache key, so old cached
 #: responses cannot be silently served against new parsing code.
-MOCK_VERSION = "mock-1"
+MOCK_VERSION = "mock-2"
 
 
 class Role(str, Enum):
@@ -47,6 +47,7 @@ class Role(str, Enum):
     INTEL_OFFICER = "intelligence_officer"
     PRESIDENT_QUERY = "president_query"
     ADVISOR_QUESTIONS = "advisor_questions"
+    ADVISOR_SELECTION = "advisor_selection"
     THEORIST = "theorist"
     ADVISOR_SYNTHESIS = "advisor_synthesis"
     PRESIDENT_DECISION = "president_decision"
@@ -71,6 +72,9 @@ def parse_role(system: str) -> Role:
 # act on, expressed compactly enough for a deterministic stub to obey.
 N_MARKER = re.compile(r"\[\[N:(\d+)\]\]")
 NO_RECORD_MARKER = "[[CORPUS:none]]"
+#: One roster entry the Advisor may pick from. The roster lives in the prompt rather than
+#: in an argument so that a prompt-scanning test can see exactly who was on offer.
+ROSTER_ENTRY = re.compile(r"\[\[WHO:([A-Za-z0-9_]+)\]\]")
 CONSENSUS_MARKER = "[[SYNTHESIS:consensus]]"
 PASSAGE_ID = re.compile(r"\[([A-Za-z0-9_]+:[A-Za-z0-9_]+:\d+)\]")
 
@@ -153,6 +157,7 @@ class MockBackend:
             Role.INTEL_OFFICER: self._intel,
             Role.PRESIDENT_QUERY: self._query,
             Role.ADVISOR_QUESTIONS: self._questions,
+            Role.ADVISOR_SELECTION: self._selection,
             Role.THEORIST: self._theorist,
             Role.ADVISOR_SYNTHESIS: self._synthesis,
             Role.PRESIDENT_DECISION: self._decision,
@@ -198,6 +203,30 @@ class MockBackend:
             "questions": [
                 {"text": QUESTION_BANK[i][0], "tags": list(QUESTION_BANK[i][1])} for i in chosen
             ]
+        }
+
+    def _selection(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # The roster is read out of the prompt, never passed in. A side channel would be
+        # invisible to tests/test_access_matrix.py, which is the only thing standing
+        # between "the Advisor picked from these" and "the Advisor was told the answer".
+        roster = ROSTER_ENTRY.findall(prompt)
+        match = N_MARKER.search(prompt)
+        k = int(match.group(1)) if match else 4
+        k = max(1, min(k, len(roster))) if roster else 0
+        chosen = rng.sample(roster, k) if roster else []
+
+        # Occasionally name someone who is not on the roster. A real model does this, the
+        # host must drop it rather than honour it, and a rate pinned at zero would mean
+        # the guard is never exercised.
+        if roster and rng.random() < 0.10:
+            chosen.append(f"{MOCK_PREFIX.rstrip(':').lower()}_not_on_roster")
+
+        return {
+            "rationale": (
+                f"{MOCK_PREFIX} placeholder selection rationale {digest[:6]}; this text is "
+                "not reasoning and explains nothing"
+            ),
+            "selected": chosen,
         }
 
     def _theorist(self, prompt: str, rng: random.Random, digest: str) -> dict:

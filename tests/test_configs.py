@@ -30,16 +30,62 @@ MAKEFILE = REPO_ROOT / "Makefile"
 REFERENCE_ARM = "baseline"
 
 
-def _makefile_arms() -> list[str]:
+def _makefile_var(name: str) -> list[str]:
+    """Read a Make variable, following backslash line continuations."""
     text = MAKEFILE.read_text(encoding="utf-8")
-    match = re.search(r"^ARMS\s*:=\s*(.+)$", text, re.MULTILINE)
-    assert match, "Makefile no longer declares ARMS; the sweep and the configs cannot be compared"
-    return match.group(1).split()
+    match = re.search(rf"^{name}\s*:=\s*((?:.*\\\n)*.*)$", text, re.MULTILINE)
+    assert match, f"Makefile no longer declares {name}; the sweeps cannot be compared"
+    body = match.group(1).replace("\\\n", " ")
+    # LOO_ARMS uses $(addprefix loo_,a b c); expand it the way Make would.
+    prefix = re.match(r"\$\(addprefix\s+([A-Za-z0-9_]+),(.*)\)\s*$", body.strip())
+    if prefix:
+        return [prefix.group(1) + w for w in prefix.group(2).split()]
+    return body.split()
+
+
+def _makefile_arms() -> list[str]:
+    return _makefile_var("ARMS")
 
 
 def test_the_makefile_and_the_config_directory_cannot_drift() -> None:
-    """`make phase1` sweeping an arm that has no config fails halfway through a run."""
-    assert sorted(_makefile_arms()) == sorted(list_arms())
+    """A sweep naming an arm with no config fails halfway through, after spending time."""
+    declared = sorted(_makefile_var("ARMS") + _makefile_var("LOO_ARMS"))
+    assert declared == sorted(list_arms())
+
+
+def test_the_two_sweeps_do_not_overlap() -> None:
+    """They answer different questions and their contrasts have different baselines."""
+    assert not set(_makefile_var("ARMS")) & set(_makefile_var("LOO_ARMS"))
+
+
+def test_there_is_one_exclusion_arm_per_theorist() -> None:
+    """A missing arm is a theorist whose influence simply never gets measured."""
+    from artsoc.personas import load_registry
+
+    expected = {f"loo_{p.persona_id}" for p in load_registry()}
+    assert set(_makefile_var("LOO_ARMS")) == expected
+
+
+def test_every_exclusion_arm_removes_exactly_one_known_theorist() -> None:
+    """Two at once would confound them; zero would silently duplicate baseline."""
+    from artsoc.personas import load_registry
+
+    known = {p.persona_id for p in load_registry()}
+    for name in list_arms():
+        if not name.startswith("loo_"):
+            continue
+        excluded = load_arm(name).excluded_personas
+        assert len(excluded) == 1, f"{name} excludes {len(excluded)} personas"
+        assert excluded[0] in known
+        assert name == f"loo_{excluded[0]}", "arm name must state who it removes"
+
+
+def test_only_the_exclusion_arms_exclude_anyone() -> None:
+    """A core arm quietly missing a theorist would corrupt every contrast drawn from it."""
+    for name in list_arms():
+        if name.startswith("loo_"):
+            continue
+        assert load_arm(name).excluded_personas == []
 
 
 def test_every_arm_loads_and_validates() -> None:
@@ -66,10 +112,14 @@ def test_every_arm_except_the_reference_varies_something() -> None:
             assert varied, f"arm {name!r} is identical to base and tests nothing"
 
 
-def test_each_arm_varies_a_distinct_axis() -> None:
-    """Two arms varying the same field would produce a contrast that isolates nothing."""
+def test_each_core_arm_varies_a_distinct_axis() -> None:
+    """Two arms varying the same field would produce a contrast that isolates nothing.
+
+    Scoped to the core sweep. The exclusion arms all vary `excluded_personas`, which is the
+    point of them — they differ in the value, not the axis, and are checked separately.
+    """
     signatures = {}
-    for name in list_arms():
+    for name in _makefile_var("ARMS"):
         if name == REFERENCE_ARM:
             continue
         signature = tuple(sorted(varied_fields(load_arm(name))))

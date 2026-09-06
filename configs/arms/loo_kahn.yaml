@@ -1,0 +1,18 @@
+# FORCED EXCLUSION — Herman Kahn.
+#
+# The world operates as though this theorist never existed: absent from the panel, absent
+# from every roster the Advisor is shown, and therefore absent from every prompt of every
+# role. Not "available but not chosen" — never on offer.
+#
+# This is the intervention that makes influence causal rather than observational. Routing
+# correlates with question tags, which correlate with outcome, so an observed association
+# between a theorist and an outcome proves nothing. Removing them and re-running does.
+#
+# COMPARE AGAINST THE OTHER loo_* ARMS, NOT AGAINST baseline. Every loo_* arm has a
+# 14-person panel, so contrasting them holds panel size fixed and isolates *which* theorist
+# is missing. Against baseline (15) the delta also carries the cost of a smaller panel.
+excluded_personas: [kahn]
+notes: >-
+  Forced exclusion of Herman Kahn. Panel of 14. Compare against the mean of all loo_* arms to
+  hold panel size constant; comparing to baseline confounds this theorist's absence with
+  the panel being one smaller.

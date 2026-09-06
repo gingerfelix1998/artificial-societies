@@ -12,9 +12,16 @@ VENV ?= .venv.nosync
 BIN := $(VENV)/bin
 N ?= 100
 SEED0 ?= 1
-ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth_only full_stack_variance
+ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth_only full_stack_variance tag_routing
 
-.PHONY: install test lint fmt arms phase1 clean
+# Forced-exclusion arms: one per theorist, each running a world in which that theorist
+# never existed. Kept out of ARMS because they answer a different question — not "does the
+# panel matter" but "which member of it does" — and because their contrast is against each
+# other, not against escalation_prior.
+LOO_ARMS := $(addprefix loo_,brodie schelling kahn wohlstetter jervis waltz sagan posen \
+	tannenwald george freedman blair narang talmadge lieber_press)
+
+.PHONY: install test lint fmt arms phase1 attribution clean
 
 install:
 	$(PY) -m venv $(VENV)
@@ -46,6 +53,16 @@ phase1:
 		$(BIN)/artsoc run $$arm --n $(N) --seed0 $(SEED0) || exit 1; \
 	done
 	$(BIN)/artsoc analyse $(addprefix out/,$(addsuffix .jsonl,$(ARMS)))
+
+# Forced-exclusion sweep. Run `make phase1` first: every surviving theorist call is then
+# already cached, so each arm here costs only its own advisor synthesis and presidential
+# decision rather than a full re-run.
+attribution:
+	@for arm in $(LOO_ARMS); do \
+		echo "=== $$arm ==="; \
+		$(BIN)/artsoc run $$arm --n $(N) --seed0 $(SEED0) || exit 1; \
+	done
+	$(BIN)/artsoc analyse $(addprefix out/,$(addsuffix .jsonl,$(LOO_ARMS)))
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .cache

@@ -34,10 +34,12 @@ from artsoc.agents import (
     Theorist,
     assert_decontextualised,
 )
-from artsoc.llm import LLMClient, MockBackend, Role, role_marker
-from artsoc.personas import load_registry, route
+from artsoc.config import RunConfig
+from artsoc.llm import ROSTER_ENTRY, LLMClient, MockBackend, Role, role_marker
+from artsoc.personas import load_registry
 from artsoc.retrieval import get_retriever
 from artsoc.schema import PresidentialQuery
+from artsoc.sim import build_panel
 from artsoc.world import PerceptionFilter, build_world, load_scenario
 
 SCENARIO_ID = "phase1_tel_dispersal_v1"
@@ -61,7 +63,10 @@ class LoopRun:
     assembled.
     """
 
-    def __init__(self, seed: int = 7, k: int = 4, n_questions: int = 3) -> None:
+    def __init__(
+        self, seed: int = 7, k: int = 4, n_questions: int = 3,
+        excluded: list[str] | None = None,
+    ) -> None:
         self.scenario = load_scenario(SCENARIO_ID)
         rng = random.Random(seed)
         log = build_world(self.scenario)
@@ -88,11 +93,12 @@ class LoopRun:
         advisor = Advisor(self.client)
         self.questions = advisor.formulate(self.query, n_questions)
 
-        self.personas = load_registry()
+        excluded_set = set(excluded or [])
+        self.personas = [p for p in load_registry() if p.persona_id not in excluded_set]
         self.opinions = []
         self.routing = []
         for question in self.questions:
-            record = route(question, self.personas, k=k, rng=rng)
+            record = advisor.select(self.query, question, self.personas, k, rng)
             self.routing.append(record)
             for persona_id in record.selected:
                 persona = next(p for p in self.personas if p.persona_id == persona_id)
@@ -307,3 +313,92 @@ def test_the_intelligence_officer_is_the_only_role_shown_collection_output(run: 
     signature = run.scenario.events[0].observable_signature[0]
     seen_in = {role for role in Role if any(signature in t for t in run.texts_for(role))}
     assert seen_in == {Role.INTEL_OFFICER}
+
+
+# ---------------------------------------------------------------------------
+# Advisor-chosen routing. Deciding whom to consult is a modelled social act, so the
+# Advisor must be able to see who exists — and still nothing about the situation.
+# ---------------------------------------------------------------------------
+
+
+def test_the_advisor_selects_without_ever_seeing_the_situation(run: LoopRun) -> None:
+    """Selection is the newest channel into the Advisor, so it is the newest leak surface."""
+    forbidden = [
+        run.scenario.self_nation,
+        run.scenario.adversary_nation,
+        run.scenario.events[0].description[:60],
+        run.scenario.doctrine_card.collection_bias[:60],
+    ]
+    texts = run.texts_for(Role.ADVISOR_SELECTION)
+    assert texts, "advisor selection never ran; the scan proves nothing"
+    for text in texts:
+        assert run.intel.summary not in text
+        for token in forbidden:
+            assert token.lower() not in text.lower(), f"selection prompt leaked {token[:40]!r}"
+
+
+def test_the_selection_prompt_shows_the_roster_it_is_choosing_from(run: LoopRun) -> None:
+    """The roster must be in the prompt, not an argument, or no test can see who was offered."""
+    for _system, prompt in run.client.prompts_for(Role.ADVISOR_SELECTION):
+        offered = set(ROSTER_ENTRY.findall(prompt))
+        assert offered, "no roster markers in the selection prompt"
+        assert offered <= {p.persona_id for p in run.personas}
+
+
+def test_the_advisor_records_why_it_chose(run: LoopRun) -> None:
+    """A selection with no stated reason is not a modelled decision, just an outcome."""
+    for record in run.routing:
+        assert record.mode == "advisor"
+        assert record.rationale.strip(), "selection carries no rationale"
+        assert record.roster, "selection did not record who was on offer"
+
+
+def test_a_persona_the_advisor_invents_is_never_consulted(run: LoopRun) -> None:
+    """A model naming someone off-roster must be refused, or exclusion means nothing."""
+    for record in run.routing:
+        assert set(record.selected) <= set(record.roster)
+        assert not set(record.hallucinated) & set(record.selected)
+
+
+# ---------------------------------------------------------------------------
+# Forced exclusion. "As though they never existed" is a claim about prompts, not
+# about routing outcomes.
+# ---------------------------------------------------------------------------
+
+
+def test_an_excluded_theorist_reaches_no_prompt_of_any_role() -> None:
+    """The intervention is that the world never had them, not that nobody picked them.
+
+    Checked on the id and the display name, in every prompt of every role. If the name
+    survived anywhere the Advisor could still be influenced by knowing they exist, and the
+    exclusion contrast would be measuring something weaker than it claims.
+    """
+    excluded = "schelling"
+    run = LoopRun(excluded=[excluded])
+    persona = next(p for p in load_registry() if p.persona_id == excluded)
+
+    assert run.opinions, "no opinions collected; the scan proves nothing"
+    for text in run.all_texts():
+        assert excluded not in text.lower()
+        assert persona.name.lower() not in text.lower()
+
+    for record in run.routing:
+        assert excluded not in record.roster
+        assert excluded not in record.selected
+    assert excluded not in {o.persona_id for o in run.opinions}
+
+
+def test_the_surviving_panel_is_exactly_one_smaller() -> None:
+    """A silently-unchanged panel would make every exclusion arm a duplicate of baseline."""
+    full = LoopRun()
+    minus_one = LoopRun(excluded=["schelling"])
+    assert len(minus_one.personas) == len(full.personas) - 1
+    assert {p.persona_id for p in full.personas} - {p.persona_id for p in minus_one.personas} == {
+        "schelling"
+    }
+
+
+def test_excluding_an_unknown_theorist_raises_rather_than_running() -> None:
+    """An arm excluding someone who does not exist would run and duplicate baseline."""
+    with pytest.raises(ValueError):
+        build_panel(RunConfig(arm="typo", excluded_personas=["schelibg"]), random.Random(0))

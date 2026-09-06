@@ -267,19 +267,44 @@ class AnalyticalQuestion(_Model):
 class RoutingRecord(_Model):
     """Which personas a question was put to, and why each of them was chosen.
 
-    `matched_by_tag` and `topped_up` are kept apart so that a panel which is only nominally
-    large is visible in the record rather than inferred.
+    Selection happens one of two ways, and the record says which:
+
+    * ``tag`` — deterministic overlap between the question's tags and each persona's
+      declared areas. Reproducible and model-free, but not a social process.
+    * ``advisor`` — the Advisor is shown the roster and picks, giving a stated reason.
+      That is the modelled act of deciding whom to consult, so the reason is data and is
+      recorded here rather than discarded.
+
+    The selection reasons are kept in separate fields on purpose. A panel that is only
+    nominally large — reached by top-up rather than by anyone judging those personas
+    relevant — stays visible in the record instead of having to be inferred.
     """
 
     question_id: str
     k_requested: int
+    mode: str = "tag"
+
+    #: Populated under ``tag`` routing.
     matched_by_tag: list[str] = Field(default_factory=list)
+    #: Populated under ``advisor`` routing: the personas the Advisor asked for by name.
+    chosen_by_advisor: list[str] = Field(default_factory=list)
+    #: Either mode: personas added to reach ``k`` that nobody judged relevant.
     topped_up: list[str] = Field(default_factory=list)
+
+    #: The Advisor's stated reason for its selection. Qualitative data for the analyst; it
+    #: never feeds a metric, and under ``tag`` routing it is empty because no one reasoned.
+    rationale: str = ""
+    #: Who the Advisor was actually offered. An excluded persona must not appear here, and
+    #: a selection naming someone outside it was a hallucination.
+    roster: list[str] = Field(default_factory=list)
+    #: Ids the Advisor named that were not on the roster. Dropped, never honoured, and
+    #: reported: the rate is a finding about how reliably a model routes.
+    hallucinated: list[str] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def selected(self) -> list[str]:
-        return list(self.matched_by_tag) + list(self.topped_up)
+        return list(self.matched_by_tag) + list(self.chosen_by_advisor) + list(self.topped_up)
 
 
 class TheoristOpinion(_Model):
