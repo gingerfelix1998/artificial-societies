@@ -402,3 +402,46 @@ def test_excluding_an_unknown_theorist_raises_rather_than_running() -> None:
     """An arm excluding someone who does not exist would run and duplicate baseline."""
     with pytest.raises(ValueError):
         build_panel(RunConfig(arm="typo", excluded_personas=["schelibg"]), random.Random(0))
+
+
+def test_the_guard_matches_whole_words_not_substrings() -> None:
+    """A guard that fires on ordinary prose gets switched off, which is worse than useless.
+
+    The scenario contributes the token "tel" from the event label `tel_dispersal`. Under
+    substring matching that fired inside "intelligence", which aborted a perfectly clean
+    presidential query on the first live run. The mock never produced ordinary English, so
+    only a live call could surface it.
+    """
+    forbidden = ["Nation A", "Nation B", "TEL", "dispersal", "garrison"]
+
+    # Ordinary prose that merely contains the letters must pass.
+    for clean in (
+        "How should intelligence uncertainty shape a response?",
+        "What does satellite coverage imply for warning time?",
+        "Is telling an adversary your red lines stabilising?",
+    ):
+        assert_decontextualised(clean, forbidden, where="test")
+
+    # The tokens themselves, as words, must still be caught.
+    for leak in (
+        "What should we infer from the TEL movement?",
+        "How should we read a dispersal of mobile launchers?",
+        "What does Nation B intend?",
+    ):
+        with pytest.raises(BoundaryViolation):
+            assert_decontextualised(leak, forbidden, where="test")
+
+
+def test_no_prompt_uses_a_real_persona_id_as_a_worked_example() -> None:
+    """An example id is still that persona's name appearing in a prompt.
+
+    A format example written as `["brodie", "schelling"]` put an excluded theorist back
+    into the selection prompt, which is exactly what forced exclusion is supposed to
+    prevent. Examples must use ids that belong to nobody.
+    """
+    run = LoopRun()
+    real = {p.persona_id for p in load_registry()}
+    for _system, prompt in run.client.prompts_for(Role.ADVISOR_SELECTION):
+        # Ids inside the roster block are legitimate; anything quoted as an example is not.
+        for quoted in __import__("re").findall(r'"([a-z_]+)"', prompt):
+            assert quoted not in real, f"{quoted!r} is a real persona used as an example"

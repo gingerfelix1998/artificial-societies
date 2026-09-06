@@ -224,7 +224,17 @@ class IntelBrief(_Model):
 
     summary: str
     assessed_activity: str
+    #: A qualitative band ("low"/"moderate"/"high"), which the prompt asks for by name.
+    #: Coerced rather than rejected when a model answers numerically, which one did on the
+    #: first live run: the record then shows what was actually said, off-spec and visible,
+    #: instead of a validation error ending a hundred-replication sweep. Normalising a
+    #: representation is not the same as inventing content.
     confidence: str
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _as_text(cls, value: Any) -> Any:
+        return value if isinstance(value, str) else str(value)
     alternative_explanations: list[str] = Field(default_factory=list)
     collection_gaps: list[str] = Field(default_factory=list)
 
@@ -322,8 +332,19 @@ class TheoristOpinion(_Model):
     reasoning: str
     citations: list[str] = Field(default_factory=list)
     out_of_record: bool = False
+    #: 0-1. A model asked for a number sometimes answers with a word, so the common bands
+    #: are mapped and anything else raises — the same leniency as `IntelBrief.confidence`
+    #: and for the same reason, but numeric here because this field is averaged.
     confidence: float = 0.5
     method: str = "m2"
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _as_number(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            bands = {"low": 0.25, "moderate": 0.5, "medium": 0.5, "high": 0.8}
+            return bands.get(value.strip().lower(), value)
+        return value
 
 
 class AdvisorBrief(_Model):

@@ -11,6 +11,7 @@ import ast
 import inspect
 import json
 import os
+import pathlib
 import random
 import subprocess
 
@@ -21,7 +22,7 @@ from artsoc import llm as llm_module
 from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
-from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
+from artsoc.config import RunConfig, list_arms, load_arm
 from artsoc.llm import (
     DEFAULT_MODELS,
     MOCK_PREFIX,
@@ -373,17 +374,17 @@ def test_turning_the_cache_off_makes_every_stage_vary_with_the_seed(tmp_path) ->
     assert len(cached) == 1, "with caching on, a decontextualised answer is seed-invariant"
 
 
-def test_the_suite_never_reaches_a_live_backend() -> None:
-    """`make test` runs on a disconnected machine with no API key.
+def test_a_live_backend_must_be_opted_into() -> None:
+    """A config built in code defaults to the mock; going live is a deliberate edit.
 
-    ADR 0002 retired "there is no live backend in phase 1". That invariant protected the
-    offline guarantee by making a live backend impossible; this one protects it directly,
-    which is both narrower and harder to satisfy by accident: the mock is the default, a
-    live run is opted into, and nothing in this suite may construct one.
+    This no longer asserts anything about `configs/base.yaml`. That file is the operator's
+    switch and may legitimately say `anthropic` for a real run — asserting it said `mock`
+    conflated "the suite is offline" with "nobody is running live", and the first stopped
+    being protected the moment the second became false. The offline guarantee now lives in
+    tests/conftest.py, which no config can override.
     """
     assert get_backend("mock").name == "mock"
-    assert RunConfig(arm="x").backend == "mock", "a live backend must be opted into"
-    assert base_defaults().backend == "mock", "configs/base.yaml must default to the mock"
+    assert RunConfig(arm="x").backend == "mock", "the code default must be the mock"
     with pytest.raises(ValueError):
         get_backend("nonsense")
 
@@ -743,8 +744,18 @@ def test_persona_construction_makes_no_model_call() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _mock(config: RunConfig) -> RunConfig:
+    """An arm's experimental configuration, pinned to the mock backend.
+
+    Arms may declare a live backend for real runs. The suite must not inherit that, so the
+    backend is overridden here rather than relying on configs/base.yaml staying on mock.
+    Everything else about the arm — panel, routing, exclusions, models — is untouched.
+    """
+    return config.model_copy(update={"backend": "mock"})
+
+
 def _run(arm: str, seed: int = 1) -> RunRecord:
-    return run_once(load_arm(arm), seed, use_disk_cache=False)
+    return run_once(_mock(load_arm(arm)), seed, use_disk_cache=False)
 
 
 def test_a_replication_is_reproducible_from_a_config_and_a_seed() -> None:
@@ -805,7 +816,7 @@ def test_no_arm_claims_grounding_under_the_stub() -> None:
 
 def test_the_record_carries_the_config_that_produced_it() -> None:
     """A record whose config is not the one that ran cannot be reproduced from."""
-    config = load_arm("small_panel")
+    config = _mock(load_arm("small_panel"))
     record = run_once(config, 2, use_disk_cache=False)
     assert record.config == config.model_dump()
     assert record.arm == "small_panel"
@@ -1050,7 +1061,7 @@ def test_provenance_comes_from_the_backend_not_the_config() -> None:
     """The config states an intention; only the backend knows what actually answered."""
     config = load_arm("baseline")
     assert config.models["theorist"] == "claude-haiku-4-5"
-    record = run_once(config, 1, use_disk_cache=False)
+    record = run_once(_mock(config), 1, use_disk_cache=False)
     assert record.models["theorist"] == "mock", (
         "the mock served this run, so the record must say mock regardless of the config"
     )
@@ -1089,10 +1100,18 @@ def test_the_model_is_part_of_the_cache_key(tmp_path) -> None:
 
 
 def test_a_live_backend_is_never_constructed_by_the_suite() -> None:
-    """The offline guarantee ADR 0002 kept: make test needs no key and no network."""
-    assert base_defaults().backend == "mock"
-    for name in list_arms():
-        assert load_arm(name).backend == "mock", f"arm {name!r} would spend money"
+    """The offline guarantee ADR 0002 kept: `make test` needs no key and no network.
+
+    Asserted against the guard in conftest.py rather than against configs/base.yaml.
+    Checking that every arm declares the mock looked equivalent, but it silently stopped
+    protecting anything the moment base.yaml was switched over for a real run — which is a
+    normal thing to do. This holds regardless of what any config says.
+    """
+    with pytest.raises(AssertionError, match="must never spend money"):
+        get_backend("anthropic")
+    for name in ("api", "live", "anthropic"):
+        with pytest.raises(AssertionError):
+            get_backend(name)
 
 
 def test_the_provider_sdk_is_an_optional_dependency() -> None:
@@ -1275,8 +1294,48 @@ def test_a_missing_env_file_is_not_an_error(tmp_path) -> None:
 
 
 def test_the_suite_never_reads_the_env_file() -> None:
-    """.env is read only when a live backend is constructed, which no test does."""
-    source = inspect.getsource(llm_module)
-    assert "load_dotenv()" in source
-    assert source.count("load_dotenv()") == 1, "one call site, inside AnthropicBackend"
-    assert "load_dotenv()" in inspect.getsource(llm_module.AnthropicBackend.__init__)
+    """.env is read only when a live backend is constructed, which no test does.
+
+    Read from the module file rather than by inspecting the live class: conftest.py
+    replaces `AnthropicBackend.__init__` to keep the suite offline, so introspecting the
+    running object would examine the guard instead of the real code.
+    """
+    source = pathlib.Path(llm_module.__file__).read_text(encoding="utf-8")
+    assert source.count("load_dotenv()") == 1, "one call site only"
+    body = source.split("class AnthropicBackend:", 1)[1].split("\ndef ", 1)[0]
+    assert "load_dotenv()" in body, "the only call site must be inside AnthropicBackend"
+
+
+def test_the_advisor_may_answer_with_the_marker_it_was_shown() -> None:
+    """Naming a real persona in the syntax it was given is formatting, not hallucination.
+
+    The roster is presented as `[[WHO:jervis]]`, and a live model answered with exactly
+    that. Treating it as an invented name discarded every selection and filled the panel
+    entirely by top-up, which silently threw away the reasoning the arm exists to capture.
+    """
+
+    class WrapperBackend:
+        name = "wrapper"
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "wrapper-model"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            ids = PASSAGE_ID and __import__("re").findall(r"\[\[WHO:([a-z_]+)\]\]", prompt)
+            return json.dumps(
+                {"rationale": "MOCK: reason", "selected": [f"[[WHO:{i}]]" for i in ids[:4]]}
+            )
+
+    personas = load_registry()
+    client = LLMClient(backend=WrapperBackend(), run_seed=1)
+    record = Advisor(client).select(
+        PresidentialQuery(text="MOCK: q", concerns=[]),
+        AnalyticalQuestion(question_id="q0", text="MOCK: question", tags=["deterrence"]),
+        personas,
+        4,
+        random.Random(0),
+    )
+    assert record.hallucinated == [], "the wrapper form must not read as invented"
+    assert len(record.chosen_by_advisor) == 4
+    assert record.topped_up == [], "a fully-honoured selection needs no top-up"
+    assert set(record.chosen_by_advisor) <= {p.persona_id for p in personas}

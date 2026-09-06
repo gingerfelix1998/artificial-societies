@@ -8,10 +8,12 @@
 
 scenario_id: phase1_tel_dispersal_v1
 
-# The mock is the default and is offline and deliberately content-nonsense, so no number
-# produced under it is a finding. A live run is opted into here, never from the command
-# line (ADR 0002). Set `backend: anthropic` and run `make install-live`.
-backend: mock
+# LIVE. Every `artsoc run` now makes real API calls and costs real money.
+#
+# Set back to `mock` to return to free offline runs. The test suite is unaffected either
+# way: tests/conftest.py refuses to construct a live backend, so `make test` stays offline
+# regardless of what this says.
+backend: anthropic
 
 # Model per role, used only by a live backend. Assignment follows measured cost share:
 #

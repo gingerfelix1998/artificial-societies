@@ -335,6 +335,55 @@ DEFAULT_MODELS: dict[str, str] = {
 _ADAPTIVE_THINKING = ("claude-opus-", "claude-sonnet-", "claude-fable-")
 
 
+#: A fenced JSON block anywhere in the response, not necessarily the whole of it.
+_FENCE = re.compile(r"```(?:json|JSON)?\s*\n(.*?)\n?\s*```", re.DOTALL)
+
+
+def extract_json(text: str) -> str:
+    """Pull the JSON object out of a response that may be wrapped in prose or fences.
+
+    Live models return the requested object inside a ```json fence, and often add
+    commentary after it. That is well-formed output in a chatty envelope, not a malformed
+    response — the observed failure was a 3,465-character reply that fenced its JSON and
+    then explained it, with `stop_reason: end_turn`.
+
+    Handled here rather than only by instructing the model, because the access matrix
+    scans what `LLMClient` was given: a backend that rewrote prompts on the way out would
+    put text in front of a model that no test ever sees. The prompts do also ask for bare
+    JSON — both, so neither hides the other failing.
+
+    Braces are matched by depth, with string literals and escapes respected, so an object
+    containing a `}` inside a quoted value is not cut short.
+    """
+    fenced = _FENCE.search(text)
+    if fenced:
+        text = fenced.group(1)
+
+    start = text.find("{")
+    if start == -1:
+        return text.strip()
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text[start:], start):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+        elif ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+    return text.strip()
+
+
 def load_dotenv(path: Path | None = None) -> list[str]:
     """Load `KEY=VALUE` lines from `.env` into the environment.
 
@@ -447,6 +496,7 @@ class AnthropicBackend:
                     f"({getattr(response.stop_details, 'category', None)}); not retried"
                 )
             text = "".join(b.text for b in response.content if b.type == "text").strip()
+            text = extract_json(text)
             try:
                 json.loads(text)
             except ValueError:

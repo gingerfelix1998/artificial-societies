@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from typing import Any
 
-from artsoc.llm import CONSENSUS_MARKER, LLMClient, Role, role_marker
+from artsoc.llm import CONSENSUS_MARKER, ROSTER_ENTRY, LLMClient, Role, role_marker
 from artsoc.personas import (
     Persona,
     build_identity_prompt,
@@ -52,6 +53,15 @@ from artsoc.schema import (
     TheoristOpinion,
 )
 
+#: Appended to every role's output instruction. Live models otherwise fence the object in
+#: markdown and add commentary around it, which is well-formed output in an envelope the
+#: parser then has to dig through. Asking plainly is cheaper than parsing around it, and
+#: it lives here rather than in the backend so the access-matrix scan sees the real prompt.
+JSON_ONLY = (
+    "Respond with a single JSON object and nothing else: no markdown code fences, and no "
+    "commentary before or after it."
+)
+
 #: Synthesis modes. `consensus_only` drops minority positions; `full_range` keeps them.
 #: The contrast between them isolates what compression costs, which is why it is an arm
 #: rather than a formatting preference.
@@ -66,15 +76,36 @@ class BoundaryViolation(RuntimeError):
     """
 
 
+def _token_pattern(token: str) -> re.Pattern[str]:
+    """A whole-word matcher for one forbidden token.
+
+    Substring matching is wrong here and was actively harmful: the scenario contributes
+    the token "tel" (from the event label `tel_dispersal`), which matches inside
+    "intelligence", "satellite" and "telling". The first live run tripped on exactly that
+    and aborted a clean query. Whole-word matching keeps "TEL" as a real signal while
+    letting ordinary English through.
+
+    Word boundaries are applied only at ends that are themselves word characters, so a
+    multi-word token like "Nation A" still matches and one with punctuation is not broken
+    by an unsatisfiable boundary.
+    """
+    escaped = re.escape(token)
+    prefix = r"\b" if token[:1].isalnum() or token[:1] == "_" else ""
+    suffix = r"\b" if token[-1:].isalnum() or token[-1:] == "_" else ""
+    return re.compile(f"{prefix}{escaped}{suffix}", re.IGNORECASE)
+
+
 def assert_decontextualised(text: str, forbidden_tokens: list[str], *, where: str) -> None:
     """Refuse to pass `text` onward if it carries situational detail.
 
     Raises rather than redacting. A scrubbed leak still means the upstream role wrote
     situational detail into a channel that is supposed to be analytical, and silently
     cleaning it up would hide that the prompt needs fixing.
+
+    Matching is whole-word. A guard that fires on ordinary prose gets switched off, which
+    would be far worse than the false positives it was catching.
     """
-    lowered = text.lower()
-    found = sorted({t for t in forbidden_tokens if t and t.lower() in lowered})
+    found = sorted({t for t in forbidden_tokens if t and _token_pattern(t).search(text)})
     if found:
         raise BoundaryViolation(
             f"{where} carries situational detail {found}; the Advisor has no collection "
@@ -144,7 +175,9 @@ class IntelligenceOfficer:
             lines.append("")
         lines.append(
             "Produce JSON with keys: summary, assessed_activity, confidence, "
-            "alternative_explanations, collection_gaps."
+            "alternative_explanations, collection_gaps. `confidence` is one of the "
+            "strings \"low\", \"moderate\" or \"high\"; the two list fields are lists of "
+            "strings. " + JSON_ONLY
         )
         payload = _parse_json(
             self.client.complete(role=Role.INTEL_OFFICER, system=system, prompt="\n".join(lines)),
@@ -198,7 +231,8 @@ class President:
                 f"  confidence: {intel.confidence}",
                 "",
                 "Produce JSON with keys: text, concerns. `text` must be a general "
-                "analytical question about strategy, carrying no situational detail.",
+                "analytical question about strategy, carrying no situational detail. "
+                + JSON_ONLY,
             ]
         )
         payload = _parse_json(
@@ -253,7 +287,7 @@ class President:
             "AVAILABLE ACTIONS (choose exactly one):",
             *(f"  - {action.value}" for action in ActionType),
             "",
-            "Produce JSON with keys: action, justification.",
+            "Produce JSON with keys: action, justification. " + JSON_ONLY,
         ]
         payload = _parse_json(
             self.client.complete(
@@ -320,7 +354,7 @@ class Advisor:
                 # The mock reads this marker for the count; a real model reads the
                 # sentence around it. Both see the same instruction.
                 f"Produce exactly [[N:{n_questions}]] questions as JSON with key "
-                "`questions`, each an object with keys `text` and `tags`.",
+                "`questions`, each an object with keys `text` and `tags`. " + JSON_ONLY,
             ]
         )
         payload = _parse_json(
@@ -389,8 +423,9 @@ class Advisor:
         lines += [
             "",
             f"Select exactly [[N:{k}]] of them. Produce JSON with keys: rationale, "
-            "selected. `selected` is a list of the bracketed ids. `rationale` states why "
-            "those people and not the others.",
+            "selected. `selected` is a list of the bare ids — the text inside "
+            '[[WHO:...]], for example ["first_id", "second_id"], not the wrapper '
+            "itself. `rationale` states why those people and not the others. " + JSON_ONLY,
         ]
 
         payload = _parse_json(
@@ -401,7 +436,16 @@ class Advisor:
         )
 
         available = {p.persona_id for p in roster}
-        named = [str(x) for x in payload.get("selected", [])]
+        # A model shown "[[WHO:jervis]]" often answers "[[WHO:jervis]]". That names a real
+        # roster entry in the exact syntax it was given, so it is a formatting difference
+        # and not a hallucination — counting it as one discarded every selection on the
+        # first live run and filled the whole panel by top-up, silently throwing away the
+        # Advisor's reasoning. Unwrapped here; genuinely unknown names still fall through.
+        named = []
+        for raw in payload.get("selected", []):
+            candidate = str(raw).strip()
+            wrapper = ROSTER_ENTRY.fullmatch(candidate)
+            named.append(wrapper.group(1) if wrapper else candidate)
 
         chosen: list[str] = []
         hallucinated: list[str] = []
@@ -464,7 +508,8 @@ class Advisor:
                 "including those held by a single respondent."
             )
         lines.append(
-            "Produce JSON with keys: summary, consensus_points, minority_positions."
+            "Produce JSON with keys: summary, consensus_points, minority_positions. "
+            + JSON_ONLY
         )
         payload = _parse_json(
             self.client.complete(
@@ -523,7 +568,9 @@ class Theorist:
         prompt = build_question_prompt(question, record_block, self.method)
         prompt = (
             f"{prompt}\n\nProduce JSON with keys: position, reasoning, citations, "
-            "out_of_record, confidence."
+            "out_of_record, confidence. `citations` is a list of the bracketed passage "
+            "ids you relied on, `out_of_record` is a boolean, and `confidence` is a "
+            "number between 0 and 1. " + JSON_ONLY
         )
 
         payload = _parse_json(
