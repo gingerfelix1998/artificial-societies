@@ -21,7 +21,7 @@ ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth
 LOO_ARMS := $(addprefix loo_,brodie schelling kahn wohlstetter jervis waltz sagan posen \
 	tannenwald george freedman blair narang talmadge lieber_press)
 
-.PHONY: install test lint fmt arms phase1 attribution clean
+.PHONY: install install-live test lint fmt arms phase1 attribution clean
 
 install:
 	$(PY) -m venv $(VENV)
@@ -32,6 +32,11 @@ install:
 	@# breaks the editable install with a bare ModuleNotFoundError. Clear the flag on
 	@# the .pth only; no-op on any other platform.
 	-@chflags nohidden $(VENV)/lib/python*/site-packages/*.pth 2>/dev/null || true
+
+# Adds the provider SDK. Separate from `install` so the default path stays offline and
+# the test suite keeps running on a machine with no provider dependency.
+install-live:
+	$(BIN)/python -m pip install -e ".[dev,live]"
 
 test:
 	$(BIN)/python -m pytest

@@ -171,7 +171,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
 
     cache = DiskCache(CACHE_DIR) if use_disk_cache else None
     client = LLMClient(
-        backend=get_backend(config.backend),
+        backend=get_backend(config.backend, config.models, effort=config.effort),
         run_seed=seed,
         cache=cache,
         cache_enabled=config.cache_enabled,
@@ -203,6 +203,8 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         wall_time_s=round(time.perf_counter() - started, 4),
         config=config.model_dump(),
         backend=config.backend,
+        # From the call log, so it reports what served rather than what was configured.
+        models=client.models_used(),
         cache_enabled=config.cache_enabled,
         retrieval_mode=retriever.mode,
         # From the retriever object, not the config: only the thing that did the

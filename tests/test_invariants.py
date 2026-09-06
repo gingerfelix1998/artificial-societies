@@ -20,6 +20,7 @@ from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
 from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
+    DEFAULT_MODELS,
     MOCK_PREFIX,
     NO_RECORD_MARKER,
     PASSAGE_ID,
@@ -66,7 +67,7 @@ from artsoc.schema import (
     WorldEvent,
     rung_for,
 )
-from artsoc.sim import run_once
+from artsoc.sim import REPO_ROOT, run_once
 from artsoc.world import (
     PerceptionFilter,
     PerceptionParams,
@@ -705,6 +706,9 @@ def test_a_malformed_backend_response_raises_rather_than_being_salvaged() -> Non
     class BrokenBackend:
         name = "broken"
 
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "broken-model"
+
         def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
             return "not json at all"
 
@@ -1019,3 +1023,99 @@ def test_no_attribution_section_without_arms_to_compare() -> None:
     """One exclusion arm alone has nothing to be contrasted against."""
     report = format_report([summarise([_run("loo_schelling", s) for s in range(1, 4)])])
     assert "PER-THEORIST ATTRIBUTION" not in report
+
+
+# ---------------------------------------------------------------------------
+# Per-role models and provenance. ADR 0002: a live backend may exist, but a record must
+# say what actually served it, and the suite must never reach one.
+# ---------------------------------------------------------------------------
+
+
+def test_the_record_says_which_model_served_each_role() -> None:
+    """A single backend string becomes a lie once different models serve different roles."""
+    record = _run("baseline", 1)
+    assert record.models, "no models recorded"
+    # Every role that ran is named, and under the mock every one of them reports "mock".
+    assert set(record.models) <= {r.value for r in Role}
+    assert set(record.models.values()) == {"mock"}, (
+        "a mock sweep must never be readable later as a cheap live run"
+    )
+
+
+def test_provenance_comes_from_the_backend_not_the_config() -> None:
+    """The config states an intention; only the backend knows what actually answered."""
+    config = load_arm("baseline")
+    assert config.models["theorist"] == "claude-haiku-4-5"
+    record = run_once(config, 1, use_disk_cache=False)
+    assert record.models["theorist"] == "mock", (
+        "the mock served this run, so the record must say mock regardless of the config"
+    )
+
+
+def test_the_control_arm_records_only_the_roles_it_actually_used() -> None:
+    """escalation_prior consults nobody, so no advisory role may appear in its provenance."""
+    record = _run("escalation_prior", 1)
+    assert set(record.models) == {
+        Role.INTEL_OFFICER.value,
+        Role.PRESIDENT_DECISION.value,
+    }
+
+
+def test_the_model_is_part_of_the_cache_key(tmp_path) -> None:
+    """Serving one model's cached answer as another's would attribute it to the wrong model."""
+
+    class TwoModelBackend:
+        name = "twomodel"
+
+        def __init__(self, model: str) -> None:
+            self._model = model
+
+        def model_for(self, role: Role) -> str:
+            return self._model
+
+        def complete(self, role, system, prompt, seed_hint):
+            return json.dumps({"m": self._model})
+
+    system = f"{role_marker(Role.THEORIST)} identity"
+    a = LLMClient(backend=TwoModelBackend("model-a"), run_seed=1, cache=DiskCache(tmp_path))
+    b = LLMClient(backend=TwoModelBackend("model-b"), run_seed=1, cache=DiskCache(tmp_path))
+    a.complete(role=Role.THEORIST, system=system, prompt="Q")
+    b.complete(role=Role.THEORIST, system=system, prompt="Q")
+    assert b.cache_hits == 0, "a different model must miss the cache, not inherit an answer"
+
+
+def test_a_live_backend_is_never_constructed_by_the_suite() -> None:
+    """The offline guarantee ADR 0002 kept: make test needs no key and no network."""
+    assert base_defaults().backend == "mock"
+    for name in list_arms():
+        assert load_arm(name).backend == "mock", f"arm {name!r} would spend money"
+
+
+def test_the_provider_sdk_is_an_optional_dependency() -> None:
+    """`make install` and `make test` must work with no provider SDK installed."""
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    core = pyproject.split("[project.optional-dependencies]")[0]
+    assert "anthropic" not in core, "the provider SDK must not be a core dependency"
+    assert "anthropic" in pyproject, "the live extra should still declare it"
+
+
+def test_the_declared_models_match_the_defaults() -> None:
+    """base.yaml and DEFAULT_MODELS are two statements of one thing; they must agree."""
+    assert load_arm("baseline").models == DEFAULT_MODELS
+    assert set(DEFAULT_MODELS) == {r.value for r in Role}
+
+
+def test_a_model_for_an_unknown_role_is_rejected() -> None:
+    """A typo'd role name would silently leave that role on the default model."""
+    with pytest.raises(ValidationError):
+        RunConfig(arm="x", models={"presidnet_decision": "claude-opus-5"})
+    with pytest.raises(ValidationError):
+        RunConfig(arm="x", effort="maximum")
+
+
+def test_the_decision_is_never_served_by_the_cheapest_model() -> None:
+    """The decision is the primary metric and ~45% of billable input; it is not the place
+    to economise, and a config that quietly downgraded it would change what is measured."""
+    models = load_arm("baseline").models
+    assert models[Role.PRESIDENT_DECISION.value] == "claude-opus-5"
+    assert models[Role.PRESIDENT_DECISION.value] != models[Role.THEORIST.value]

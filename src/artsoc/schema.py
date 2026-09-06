@@ -377,6 +377,13 @@ class RunRecord(_Model):
 
     config: dict[str, Any]
     backend: str
+    #: Which model actually served each role, taken from the backend that served it rather
+    #: than from the config that requested it. A single `backend` string was adequate while
+    #: one backend served every role; it becomes a lie the moment different models serve
+    #: different roles, and a record that cannot say what produced its numbers is not a
+    #: record. Under the mock every role reports "mock", so a mock sweep can never be read
+    #: later as a cheap live run.
+    models: dict[str, str] = Field(default_factory=dict)
     cache_enabled: bool
     retrieval_mode: str
     grounded: bool = Field(

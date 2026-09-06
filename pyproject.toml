@@ -12,12 +12,17 @@ dependencies = [
     "pyyaml>=6",
 ]
 
-# No model-provider SDK is listed on purpose. Phase 1 runs entirely offline against the
-# mock backend in artsoc.llm; a live backend is a later task and would add a dependency.
+# The provider SDK is OPTIONAL, not a core dependency. `make install` and `make test` must
+# keep working on a machine with no provider SDK and no network — that is the offline
+# guarantee ADR 0002 kept when it retired "there is no live backend". A live run installs
+# the extra explicitly with `make install-live`.
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
     "ruff>=0.4",
+]
+live = [
+    "anthropic>=1",
 ]
 
 [project.scripts]

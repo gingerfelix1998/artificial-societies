@@ -25,6 +25,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artsoc.agents import SYNTHESIS_MODES
+from artsoc.llm import DEFAULT_MODELS
 from artsoc.personas import METHODS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,8 +63,18 @@ class RunConfig(BaseModel):
     arm: str
     scenario_id: str = "phase1_tel_dispersal_v1"
 
-    #: Not a CLI flag. See the module docstring.
+    #: Not a CLI flag. See the module docstring. The mock is the default; a live backend
+    #: is opted into here, never from the command line (ADR 0002).
     backend: str = "mock"
+
+    #: Model per role, for a live backend. Ignored by the mock, which serves every role
+    #: itself and records "mock" for all of them. Partial maps are merged over the
+    #: defaults, so an arm can move one role without restating the rest.
+    models: dict[str, str] = Field(default_factory=dict)
+
+    #: Thinking depth for models that take adaptive thinking. Thinking tokens bill as
+    #: output, and output already dominates this workload, so this is the main cost dial.
+    effort: str = "medium"
 
     #: An experimental choice, not an optimisation. With caching on, measured variance is
     #: variance in the decision step given fixed advisory input; with it off, it is
@@ -130,6 +141,25 @@ class RunConfig(BaseModel):
     def _excluded_are_unique(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("excluded_personas contains duplicates")
+        return value
+
+    @field_validator("models")
+    @classmethod
+    def _known_roles(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(DEFAULT_MODELS))
+        if unknown:
+            raise ValueError(
+                f"models names roles that do not exist: {unknown}; "
+                f"valid roles: {sorted(DEFAULT_MODELS)}"
+            )
+        return value
+
+    @field_validator("effort")
+    @classmethod
+    def _known_effort(cls, value: str) -> str:
+        allowed = {"low", "medium", "high", "xhigh", "max"}
+        if value not in allowed:
+            raise ValueError(f"effort {value!r} not in {sorted(allowed)}")
         return value
 
     @field_validator("panel_source")
