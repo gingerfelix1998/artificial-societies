@@ -17,9 +17,9 @@ operational. The backend changes what produced the numbers, so it is experimenta
 lives in `configs/base.yaml` and is recorded in every output record.
 `tests/test_configs.py` asserts the parser exposes nothing else.
 
-There is also no live backend to select. Phase 1 runs entirely offline against the mock,
-which is deliberately shape-correct and content-nonsense — no number it produces is a
-finding. `llm.get_backend("api")` raises.
+The mock remains the default and every run in this repo so far has used it — deliberately
+shape-correct and content-nonsense, so no number it produces is a finding. A live backend
+is opted into per ADR 0002; `make test` still runs disconnected with no API key.
 
 ## Delivery
 Wider context for anyone — human or agent — working in this repo. What follows is what the code is *for*, so that implementation trade-offs can be judged against it.

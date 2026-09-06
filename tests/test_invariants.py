@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
-from artsoc.config import list_arms, load_arm
+from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
     MOCK_PREFIX,
     NO_RECORD_MARKER,
@@ -368,11 +368,17 @@ def test_turning_the_cache_off_makes_every_stage_vary_with_the_seed(tmp_path) ->
     assert len(cached) == 1, "with caching on, a decontextualised answer is seed-invariant"
 
 
-def test_there_is_no_live_backend_in_phase_one() -> None:
-    """No network, no API key, no provider dependency until the loop is pinned down."""
+def test_the_suite_never_reaches_a_live_backend() -> None:
+    """`make test` runs on a disconnected machine with no API key.
+
+    ADR 0002 retired "there is no live backend in phase 1". That invariant protected the
+    offline guarantee by making a live backend impossible; this one protects it directly,
+    which is both narrower and harder to satisfy by accident: the mock is the default, a
+    live run is opted into, and nothing in this suite may construct one.
+    """
     assert get_backend("mock").name == "mock"
-    with pytest.raises(NotImplementedError):
-        get_backend("api")
+    assert RunConfig(arm="x").backend == "mock", "a live backend must be opted into"
+    assert base_defaults().backend == "mock", "configs/base.yaml must default to the mock"
     with pytest.raises(ValueError):
         get_backend("nonsense")
 
