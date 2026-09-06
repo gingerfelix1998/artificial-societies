@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,9 @@ from pathlib import Path
 from typing import Protocol
 
 from artsoc.schema import ActionType
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = REPO_ROOT / ".env"
 
 MOCK_PREFIX = "MOCK:"
 
@@ -331,6 +335,43 @@ DEFAULT_MODELS: dict[str, str] = {
 _ADAPTIVE_THINKING = ("claude-opus-", "claude-sonnet-", "claude-fable-")
 
 
+def load_dotenv(path: Path | None = None) -> list[str]:
+    """Load `KEY=VALUE` lines from `.env` into the environment.
+
+    Deliberately tiny rather than a dependency: this is a dozen lines and the project
+    lists no library it does not need.
+
+    Two rules, both about not surprising anyone:
+
+    * **An already-exported variable wins.** A one-off `ANTHROPIC_API_KEY=... artsoc run`
+      must not be silently overridden by a stale file.
+    * **Empty values are skipped.** An unfilled template then behaves exactly as if no
+      file existed, rather than setting an empty key and turning a clear "no credentials"
+      error into a confusing authentication failure.
+
+    Returns the names it set, never the values, so a caller cannot accidentally log a
+    secret by printing the result.
+    """
+    target = path or ENV_FILE
+    if not target.exists():
+        return []
+
+    loaded: list[str] = []
+    for raw in target.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 class AnthropicBackend:
     """A live Anthropic backend, one model per role.
 
@@ -368,8 +409,16 @@ class AnthropicBackend:
         self._models = {**DEFAULT_MODELS, **(models or {})}
         self.effort = effort
         self.max_tokens = max_tokens
-        # Credentials resolve through the SDK (env var, or an `ant auth login` profile).
-        # An auth failure surfaces at call time as an SDK error and is never swallowed.
+
+        # Loaded here rather than at import, so nothing reads .env unless a live backend is
+        # actually being constructed — the mock path, and therefore the whole test suite,
+        # never touches it.
+        self.env_loaded = load_dotenv()
+
+        # Credentials resolve through the SDK: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or
+        # a profile from `ant auth login`. An unset variable does not mean no credentials,
+        # so this does not pre-check one. An auth failure surfaces at call time as an SDK
+        # error and is never swallowed.
         self._client = anthropic.Anthropic()
 
     def model_for(self, role: Role) -> str:

@@ -8,6 +8,13 @@ data/corpora/*
 # LLM disk cache
 .cache/
 
+# Credentials. .env holds a real API key and must never be committed; .env.example is the
+# committed template and holds none. A test asserts this rule still applies, because a
+# secret committed once stays in the history whether or not it is later removed.
+.env
+.env.*
+!.env.example
+
 # Environments and build artefacts
 .venv/
 *.nosync/

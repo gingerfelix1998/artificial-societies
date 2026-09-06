@@ -10,11 +10,14 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import os
 import random
+import subprocess
 
 import pytest
 from pydantic import ValidationError
 
+from artsoc import llm as llm_module
 from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
@@ -29,6 +32,7 @@ from artsoc.llm import (
     MockBackend,
     Role,
     get_backend,
+    load_dotenv,
     role_marker,
 )
 from artsoc.metrics import delta, format_report, summarise
@@ -1186,3 +1190,93 @@ def test_the_cli_warns_before_a_smoke_run_rather_than_after(capsys) -> None:
     assert source.index("SMOKE TEST") < source.index("write_jsonl"), (
         "the warning must be printed before the run starts"
     )
+
+
+# ---------------------------------------------------------------------------
+# Credentials. A key committed once stays in the history whether or not it is later
+# removed, so the protection is asserted rather than assumed.
+# ---------------------------------------------------------------------------
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_the_env_file_is_ignored_by_git() -> None:
+    """Asked of git itself, not of .gitignore's text, so the real behaviour is checked."""
+    assert _git("check-ignore", ".env") == ".env", ".env is not ignored"
+
+
+def test_the_template_is_committed_but_the_env_file_is_not() -> None:
+    """The template documents the variables; only the real file holds a key."""
+    tracked = set(_git("ls-files").splitlines())
+    assert ".env.example" in tracked, "the template should be committed"
+    assert ".env" not in tracked, "a real key must never be tracked"
+
+
+def test_no_tracked_file_contains_an_api_key() -> None:
+    """A committed key is leaked even if a later commit removes it.
+
+    The needle is assembled at runtime rather than written as a literal, so this file
+    does not match its own scan — which it did on the first run.
+    """
+    needle = "sk-" + "ant-" + "api"
+    for path in _git("ls-files").splitlines():
+        full = REPO_ROOT / path
+        if not full.is_file():
+            continue
+        try:
+            text = full.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        assert needle not in text, f"{path} looks like it contains a real API key"
+
+
+def test_the_template_holds_no_value() -> None:
+    """A template with a key in it is not a template."""
+    text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY" in text
+    for line in text.splitlines():
+        if line.startswith("ANTHROPIC_API_KEY"):
+            assert line.split("=", 1)[1].strip() == "", "the template must carry no value"
+
+
+def test_an_exported_variable_beats_the_file(tmp_path, monkeypatch) -> None:
+    """A one-off override on the command line must not be silently replaced by a stale file."""
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=from-file\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-export")
+    assert load_dotenv(env) == []
+    assert os.environ["ANTHROPIC_API_KEY"] == "from-export"
+
+
+def test_an_unfilled_template_behaves_as_if_absent(tmp_path, monkeypatch) -> None:
+    """An empty value would turn 'no credentials' into a confusing auth failure."""
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=\n", encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert load_dotenv(env) == []
+    assert "ANTHROPIC_API_KEY" not in os.environ
+
+
+def test_the_loader_returns_names_never_values(tmp_path, monkeypatch) -> None:
+    """So a caller cannot leak a secret by printing what was loaded."""
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=placeholder-not-a-real-key\n", encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert load_dotenv(env) == ["ANTHROPIC_API_KEY"]
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path) -> None:
+    """Credentials may come from an exported variable or an `ant auth` profile instead."""
+    assert load_dotenv(tmp_path / "nope") == []
+
+
+def test_the_suite_never_reads_the_env_file() -> None:
+    """.env is read only when a live backend is constructed, which no test does."""
+    source = inspect.getsource(llm_module)
+    assert "load_dotenv()" in source
+    assert source.count("load_dotenv()") == 1, "one call site, inside AnthropicBackend"
+    assert "load_dotenv()" in inspect.getsource(llm_module.AnthropicBackend.__init__)
