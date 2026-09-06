@@ -60,16 +60,34 @@ models_override: claude-haiku-4-5
 # decision step given fixed advisory input. Off: whole-system variance.
 cache_enabled: true
 
-# StubRetriever returns registry paraphrases and reports grounded=false. No run under it
-# may be described as corpus-grounded.
-retrieval_mode: stub
+# Real per-persona retrieval over the ingested corpus. Run `artsoc ingest` first; the
+# retriever raises rather than falling back to the stub if nothing has been ingested.
+#
+# The corpus is currently Wikipedia, which is TERTIARY: an encyclopedia article about each
+# theorist, not their own writing. It proves the pipeline and calibrates the threshold. It
+# cannot support the held-out-writings check, and baseline-vs-m1_ungrounded may measure
+# little because a model has already read Wikipedia.
+retrieval_mode: corpus
+
+# How many passages a theorist sees, and how many distinct content terms a passage must
+# share with the question to be eligible at all. The second is the dial on the
+# out-of-record rate: raise it and personas decline more.
+#
+# Set permissively on purpose. BM25 is scaffolding for the retrieval pipeline, not the
+# final ranker — it has no notion of paraphrase, so a question about "deterrent
+# credibility" and a page saying "deterrence" and "credibility" only meet because of the
+# stemmer. Retrieval surfaces candidates; the persona still judges whether what it was
+# shown supports a position, and declines if not. Tightening this is a job for the ranker
+# that replaces BM25, not for the threshold.
+retrieval_top_k: 3
+retrieval_min_terms: 1
 
 # The full loop: intelligence brief, presidential query, panel, advisory brief, decision.
 consult_panel: true
 
 persona_method: m2
 panel_source: registry
-panel_size: 15
+panel_size: 12
 
 k_per_question: 4
 n_questions: 3

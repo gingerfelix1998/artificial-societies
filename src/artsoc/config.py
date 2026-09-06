@@ -95,6 +95,14 @@ class RunConfig(BaseModel):
 
     retrieval_mode: str = "stub"
 
+    #: How many passages a theorist is shown. More context, more tokens.
+    retrieval_top_k: int = Field(default=3, ge=1)
+
+    #: Distinct content terms the best passage must share with the question before it is
+    #: shown at all. This is the dial that decides the out-of-record rate, so it is
+    #: experimental rather than operational: raise it and personas decline more.
+    retrieval_min_terms: int = Field(default=1, ge=0)
+
     #: False for the control arm: President and intelligence brief, no advisor, no panel.
     consult_panel: bool = True
 

@@ -21,6 +21,17 @@
 # rejects one at load rather than letting it fail silently at route time.
 #
 # `era` is host-side metadata for later period comparison (phase 3). It is not routed on.
+#
+# `wikipedia` is the page title `artsoc ingest` fetches for this persona. WIKIPEDIA IS A
+# TERTIARY SOURCE: an encyclopedia article *about* the theorist, not the theorist's own
+# writing. It proves the retrieval pipeline and calibrates the decline threshold against
+# real text. It cannot support the held-out-writings check the approach doc claims as this
+# population's advantage, and the baseline-vs-m1_ungrounded contrast may measure little,
+# because a model has already read Wikipedia.
+#
+# Three personas were removed when the pages were checked: Caitlin Talmadge and
+# Keir Lieber / Daryl Press have no article, and Vipin Narang's is about 150 words. They
+# belong back in the registry the moment a primary-text corpus exists.
 
 schema_version: "1.0.0"
 
@@ -28,6 +39,7 @@ personas:
   - persona_id: brodie
     name: Bernard Brodie
     era: early_deterrence
+    wikipedia: 'Bernard Brodie (military strategist)'
     prominence: 0.85 # INVENTED
     tags: [deterrence, doctrine, credibility, escalation]
     corpus_notes: >-
@@ -37,6 +49,7 @@ personas:
   - persona_id: schelling
     name: Thomas Schelling
     era: early_deterrence
+    wikipedia: 'Thomas Schelling'
     prominence: 0.95 # INVENTED
     tags: [signalling, coercion, credibility, escalation, deterrence]
     corpus_notes: >-
@@ -46,6 +59,7 @@ personas:
   - persona_id: kahn
     name: Herman Kahn
     era: early_deterrence
+    wikipedia: 'Herman Kahn'
     prominence: 0.75 # INVENTED
     tags: [escalation, escalation_control, doctrine, posture]
     corpus_notes: >-
@@ -55,6 +69,7 @@ personas:
   - persona_id: wohlstetter
     name: Albert Wohlstetter
     era: early_deterrence
+    wikipedia: 'Albert Wohlstetter'
     prominence: 0.70 # INVENTED
     tags: [survivability, first_strike, posture, deterrence]
     corpus_notes: >-
@@ -64,6 +79,7 @@ personas:
   - persona_id: jervis
     name: Robert Jervis
     era: cold_war_theory
+    wikipedia: 'Robert Jervis'
     prominence: 0.90 # INVENTED
     tags: [misperception, signalling, escalation, credibility, inadvertent_escalation]
     corpus_notes: >-
@@ -73,6 +89,7 @@ personas:
   - persona_id: waltz
     name: Kenneth Waltz
     era: cold_war_theory
+    wikipedia: 'Kenneth Waltz'
     prominence: 0.88 # INVENTED
     tags: [proliferation, deterrence, posture, norms]
     corpus_notes: >-
@@ -82,6 +99,7 @@ personas:
   - persona_id: sagan
     name: Scott Sagan
     era: post_cold_war
+    wikipedia: 'Scott Sagan'
     prominence: 0.87 # INVENTED
     tags: [organisational, c2, inadvertent_escalation, proliferation, taboo]
     corpus_notes: >-
@@ -91,6 +109,7 @@ personas:
   - persona_id: posen
     name: Barry Posen
     era: cold_war_theory
+    wikipedia: 'Barry Posen'
     prominence: 0.65 # INVENTED
     tags: [inadvertent_escalation, organisational, doctrine, escalation_control]
     corpus_notes: >-
@@ -100,6 +119,7 @@ personas:
   - persona_id: tannenwald
     name: Nina Tannenwald
     era: post_cold_war
+    wikipedia: 'Nina Tannenwald'
     prominence: 0.72 # INVENTED
     tags: [taboo, norms, deterrence]
     corpus_notes: >-
@@ -109,6 +129,7 @@ personas:
   - persona_id: george
     name: Alexander George
     era: cold_war_theory
+    wikipedia: 'Alexander L. George'
     prominence: 0.68 # INVENTED
     tags: [coercion, signalling, credibility, escalation_control]
     corpus_notes: >-
@@ -118,6 +139,7 @@ personas:
   - persona_id: freedman
     name: Lawrence Freedman
     era: post_cold_war
+    wikipedia: 'Lawrence Freedman'
     prominence: 0.80 # INVENTED
     tags: [doctrine, deterrence, escalation, regional]
     corpus_notes: >-
@@ -127,35 +149,9 @@ personas:
   - persona_id: blair
     name: Bruce Blair
     era: post_cold_war
+    wikipedia: 'Bruce G. Blair'
     prominence: 0.62 # INVENTED
     tags: [c2, survivability, organisational, inadvertent_escalation]
     corpus_notes: >-
       PLACEHOLDER paraphrase. Examined command and control, launch procedures and the
       pressures that compress decision time in a crisis.
-
-  - persona_id: narang
-    name: Vipin Narang
-    era: contemporary
-    prominence: 0.70 # INVENTED
-    tags: [posture, regional, proliferation, deterrence, doctrine]
-    corpus_notes: >-
-      PLACEHOLDER paraphrase. Classified regional powers' nuclear postures and argued that
-      posture choice, not possession, drives deterrent effect.
-
-  - persona_id: talmadge
-    name: Caitlin Talmadge
-    era: contemporary
-    prominence: 0.66 # INVENTED
-    tags: [inadvertent_escalation, escalation_control, c2, regional]
-    corpus_notes: >-
-      PLACEHOLDER paraphrase. Analysed how conventional campaigns against a nuclear-armed
-      state can generate escalation pressure through entanglement of forces.
-
-  - persona_id: lieber_press
-    name: Keir Lieber and Daryl Press
-    era: contemporary
-    prominence: 0.64 # INVENTED
-    tags: [first_strike, survivability, posture, credibility]
-    corpus_notes: >-
-      PLACEHOLDER paraphrase. Argued that improvements in accuracy and remote sensing
-      erode the survivability on which assured retaliation has been assumed to rest.

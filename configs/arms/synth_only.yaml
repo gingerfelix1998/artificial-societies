@@ -5,6 +5,12 @@
 # prior about famous people. Without this arm the two are inseparable.
 panel_source: synthetic
 persona_method: m3
+
+# Synthetic personas have no corpus store, so under corpus retrieval every one of them
+# would retrieve nothing and decline, and this arm would measure nothing at all. Their
+# corpus_notes IS their record — a position statement rather than a source — which is
+# exactly what the stub returns.
+retrieval_mode: stub
 notes: >-
   Anonymous position-defined personas. Controls for celebrity effects: a real name in a
   prompt carries the model's prior about that person as well as their position.

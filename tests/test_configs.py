@@ -203,7 +203,11 @@ def test_there_is_no_backend_flag() -> None:
         parser.parse_args(["run", "baseline", "--backend", "mock"])
 
 
-def test_arms_and_analyse_take_no_experimental_options() -> None:
-    """Neither reads a config, so neither may acquire a way to change one."""
-    for name in ("arms", "analyse"):
+def test_the_other_subcommands_take_no_experimental_options() -> None:
+    """None of them runs an experiment, so none may acquire a way to configure one.
+
+    `ingest` is included deliberately: chunking and passage ids are fixed by ADR 0003, and
+    a `--chunk-size` flag would let someone silently invalidate every stored citation.
+    """
+    for name in ("arms", "analyse", "ingest"):
         assert _subparser_flags(name) == set()

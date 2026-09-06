@@ -66,6 +66,19 @@ def forbidden_tokens(scenario: Scenario) -> list[str]:
     return sorted(t for t in tokens if t)
 
 
+def _retriever_for(config: RunConfig):
+    """The retriever an arm asks for, with its threshold applied.
+
+    Only the corpus retriever takes the knobs; the stub does no relevance selection at all,
+    so passing them would imply a choice it does not make.
+    """
+    if config.retrieval_mode == "corpus":
+        return get_retriever(
+            "corpus", top_k=config.retrieval_top_k, min_terms=config.retrieval_min_terms
+        )
+    return get_retriever(config.retrieval_mode)
+
+
 def build_panel(config: RunConfig, rng: random.Random) -> list[Persona]:
     """The personas available to this replication.
 
@@ -121,7 +134,7 @@ def _consult(
 
     advisor = Advisor(client)
     questions = advisor.formulate(query, config.n_questions)
-    retriever = get_retriever(config.retrieval_mode)
+    retriever = _retriever_for(config)
 
     routing: list[RoutingRecord] = []
     opinions: list[TheoristOpinion] = []
@@ -176,7 +189,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         cache=cache,
         cache_enabled=config.cache_enabled,
     )
-    retriever = get_retriever(config.retrieval_mode)
+    retriever = _retriever_for(config)
 
     intel = IntelligenceOfficer(client).brief(view, scenario.doctrine_card)
 

@@ -195,8 +195,17 @@ _PRESIDENT_QUERY_SYSTEM = (
     "during a developing situation. You are about to consult a strategic advisor who has "
     "no access to intelligence reporting and must not acquire any. Ask a general "
     "analytical question about strategy. Do not name any nation, describe the situation, "
-    "or repeat anything from the brief."
+    "or repeat anything from the brief. Do not mention any specific military activity, "
+    "movement, capability or posture change. Ask about the general problem, not this case."
 )
+
+#: How many times the President may be asked to rewrite a query that leaked.
+#:
+#: A single attempt makes every replication fragile — the guard fired on a real run
+#: because the President wrote "dispersal" — while scrubbing the text would hide that the
+#: prompt needs work. Asking again, naming what leaked, keeps the boundary absolute: no
+#: text that failed the guard is ever passed on, and exhausting the retries still raises.
+QUERY_ATTEMPTS = 3
 
 _PRESIDENT_DECISION_SYSTEM = (
     "You are the head of state of a nuclear-armed nation. You have an intelligence brief "
@@ -220,31 +229,64 @@ class President:
         rather than trusting the instruction above to have been followed.
         """
         system = _system(Role.PRESIDENT_QUERY, _PRESIDENT_QUERY_SYSTEM)
-        prompt = "\n".join(
-            [
-                f"YOUR STANDING DOCTRINE: {self.doctrine.doctrine}",
-                f"YOUR DISPOSITION: {self.doctrine.disposition}",
-                "",
-                "INTELLIGENCE BRIEF:",
-                f"  {intel.summary}",
-                f"  assessment: {intel.assessed_activity}",
-                f"  confidence: {intel.confidence}",
-                "",
-                "Produce JSON with keys: text, concerns. `text` must be a general "
-                "analytical question about strategy, carrying no situational detail. "
-                + JSON_ONLY,
-            ]
-        )
-        payload = _parse_json(
-            self.client.complete(role=Role.PRESIDENT_QUERY, system=system, prompt=prompt),
-            Role.PRESIDENT_QUERY,
-        )
-        query = PresidentialQuery.model_validate(payload)
+        base = [
+            f"YOUR STANDING DOCTRINE: {self.doctrine.doctrine}",
+            f"YOUR DISPOSITION: {self.doctrine.disposition}",
+            "",
+            "INTELLIGENCE BRIEF:",
+            f"  {intel.summary}",
+            f"  assessment: {intel.assessed_activity}",
+            f"  confidence: {intel.confidence}",
+            "",
+            "Produce JSON with keys: text, concerns. `text` must be a general "
+            "analytical question about strategy, carrying no situational detail. "
+            + JSON_ONLY,
+        ]
 
-        assert_decontextualised(query.text, forbidden_tokens, where="the presidential query")
-        for concern in query.concerns:
-            assert_decontextualised(concern, forbidden_tokens, where="a presidential concern")
-        return query
+        last: BoundaryViolation | None = None
+        for attempt in range(QUERY_ATTEMPTS):
+            lines = list(base)
+            if attempt:
+                # Naming the offending words is not a leak: the President already read the
+                # brief they came from. The Advisor never sees this prompt.
+                lines += [
+                    "",
+                    "Your previous attempt was rejected because it named specific "
+                    f"situational detail. Avoid these words entirely: "
+                    f"{', '.join(forbidden_tokens)}. Ask about the general strategic "
+                    "problem instead.",
+                ]
+            # Not cacheable on a retry: the same prompt must not replay the rejected answer.
+            payload = _parse_json(
+                self.client.complete(
+                    role=Role.PRESIDENT_QUERY,
+                    system=system,
+                    prompt="\n".join(lines),
+                    cacheable=attempt == 0,
+                ),
+                Role.PRESIDENT_QUERY,
+            )
+            query = PresidentialQuery.model_validate(payload)
+            try:
+                assert_decontextualised(
+                    query.text, forbidden_tokens, where="the presidential query"
+                )
+                for concern in query.concerns:
+                    assert_decontextualised(
+                        concern, forbidden_tokens, where="a presidential concern"
+                    )
+            except BoundaryViolation as exc:
+                last = exc
+                continue
+            return query
+
+        # Every attempt leaked. Raising is still correct: no text that failed the guard is
+        # passed on, and a President that cannot ask a decontextualised question after
+        # three tries is a prompt problem that must not be papered over.
+        raise BoundaryViolation(
+            f"the presidential query still carried situational detail after "
+            f"{QUERY_ATTEMPTS} attempts: {last}"
+        )
 
     def decide(self, intel: IntelBrief, brief: AdvisorBrief | None) -> PresidentialAction:
         """Select one action. The rung is derived from the action afterwards, not here.

@@ -22,7 +22,7 @@ from artsoc import llm as llm_module
 from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
-from artsoc.config import RunConfig, list_arms, load_arm
+from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
     DEFAULT_MODELS,
     MOCK_PREFIX,
@@ -568,12 +568,17 @@ def test_a_stub_run_can_never_be_read_as_grounded() -> None:
     assert stub.grounded is False
 
 
-def test_the_corpus_retriever_raises_rather_than_degrading() -> None:
-    """Invariant 4. A fallback here is undetectable afterwards: the record looks real."""
-    with pytest.raises(NotImplementedError):
-        get_retriever("corpus")
-    with pytest.raises(NotImplementedError):
-        CorpusRetriever()
+def test_the_corpus_retriever_raises_rather_than_degrading(tmp_path) -> None:
+    """Invariant 4. A fallback here is undetectable afterwards: the record looks real.
+
+    The retriever is implemented now, so the invariant is no longer "it cannot be built".
+    It is that a retriever with no corpus refuses to run rather than quietly returning stub
+    text while still reporting grounded=true.
+    """
+    with pytest.raises(FileNotFoundError, match="artsoc ingest"):
+        get_retriever("corpus", corpus_root=tmp_path / "never-ingested")
+    with pytest.raises(FileNotFoundError):
+        CorpusRetriever(tmp_path / "never-ingested")
     with pytest.raises(ValueError):
         get_retriever("nonsense")
 
@@ -745,13 +750,20 @@ def test_persona_construction_makes_no_model_call() -> None:
 
 
 def _mock(config: RunConfig) -> RunConfig:
-    """An arm's experimental configuration, pinned to the mock backend.
+    """An arm's experimental configuration, pinned to the mock backend and the stub corpus.
 
-    Arms may declare a live backend for real runs. The suite must not inherit that, so the
-    backend is overridden here rather than relying on configs/base.yaml staying on mock.
-    Everything else about the arm — panel, routing, exclusions, models — is untouched.
+    Two overrides, both so the suite depends on nothing outside the repository:
+
+    * **backend** — arms may declare a live backend for real runs; the suite must never
+      inherit that, and conftest.py refuses to construct one anyway.
+    * **retrieval_mode** — base declares `corpus`, which needs `artsoc ingest` to have been
+      run. `make test` has to pass on a fresh clone, and a suite that quietly degraded to
+      empty retrieval would leave several tests vacuous rather than failing.
+
+    Corpus retrieval itself is covered directly in tests/test_retrieval.py, against
+    fixture corpora built in a temporary directory.
     """
-    return config.model_copy(update={"backend": "mock"})
+    return config.model_copy(update={"backend": "mock", "retrieval_mode": "stub"})
 
 
 def _run(arm: str, seed: int = 1) -> RunRecord:
@@ -806,12 +818,25 @@ def test_the_control_arm_consults_nobody() -> None:
     assert record.llm_calls == 2
 
 
-def test_no_arm_claims_grounding_under_the_stub() -> None:
-    """Invariant 4, checked at the record level where an analyst would read it."""
+def test_grounding_in_the_record_reports_what_actually_retrieved() -> None:
+    """Invariant 4, checked where an analyst would read it rather than in the config.
+
+    The suite pins retrieval to the stub, so every record here must say so. A record
+    claiming grounded=true while the stub produced the text is the exact failure that
+    cannot be detected after the fact.
+    """
     for arm in list_arms():
         record = _run(arm, 1)
         assert record.grounded is False
         assert record.retrieval_mode == "stub"
+
+
+def test_the_default_configuration_asks_for_real_retrieval() -> None:
+    """Guards the pinning above: if base fell back to the stub, the suite would not notice."""
+    assert base_defaults().retrieval_mode == "corpus"
+    assert load_arm("synth_only").retrieval_mode == "stub", (
+        "synthetic personas have no corpus store; corpus mode would silently mute the arm"
+    )
 
 
 def test_the_record_carries_the_config_that_produced_it() -> None:
@@ -1002,10 +1027,10 @@ def test_tag_routing_stays_available_as_a_model_free_control() -> None:
 
 def test_an_excluded_theorist_is_absent_from_the_panel_and_the_record() -> None:
     """The intervention is a world without them, not a world that declined to ask them."""
-    for arm in ("loo_schelling", "loo_lieber_press"):
+    for arm in ("loo_schelling", "loo_wohlstetter"):
         who = arm[len("loo_") :]
         record = _run(arm, 2)
-        assert record.panel_size == 14
+        assert record.panel_size == 11
         assert who not in record.personas_consulted
         assert all(o.persona_id != who for o in record.opinions)
         for r in record.routing:
@@ -1018,7 +1043,7 @@ def test_every_exclusion_arm_runs_and_removes_its_own_theorist() -> None:
     for arm in (a for a in list_arms() if a.startswith("loo_")):
         record = _run(arm, 1)
         who = record.config["excluded_personas"][0]
-        assert record.panel_size == 14
+        assert record.panel_size == 11
         assert who not in record.personas_consulted
 
 

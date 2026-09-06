@@ -64,6 +64,9 @@ class Persona(BaseModel):
     persona_id: str
     name: str
     era: str = "unspecified"
+    #: Wikipedia page title for `artsoc ingest`. None means this persona has no corpus and
+    #: will decline every question — correct behaviour, not a failure to work around.
+    wikipedia: str | None = None
     prominence: float = Field(
         default=0.5,
         description="INVENTED placeholder, not a citation count. Not used for weighting.",

@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 
 from artsoc.config import list_arms, load_arm, varied_fields
+from artsoc.ingest import ingest_all
 from artsoc.metrics import report_for_files
+from artsoc.personas import load_registry
+from artsoc.retrieval import CORPUS_ROOT
 from artsoc.sim import DEFAULT_OUT_DIR, run_many, write_jsonl
 
 #: The only options that may exist outside a config file. Asserted by a test.
@@ -50,6 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed0", type=int, default=1, help="first seed (default 1)")
     run.add_argument("--out-dir", type=Path, default=None, help="output directory")
     run.add_argument("--append", action="store_true", help="append rather than overwrite")
+
+    sub.add_parser(
+        "ingest",
+        help="build each persona's corpus from its Wikipedia page",
+        description=(
+            "Fetches, chunks and indexes one page per persona into data/corpora/. "
+            "Wikipedia is a TERTIARY source — an article about each theorist, not their "
+            "writing. Re-running is safe and produces identical passage ids from identical "
+            "text (ADR 0003)."
+        ),
+    )
 
     analyse = sub.add_parser("analyse", help="summarise one or more run outputs")
     analyse.add_argument("paths", nargs="+", type=Path, help="JSONL files from `artsoc run`")
@@ -109,6 +123,30 @@ def cmd_run(arm: str, n: int, seed0: int, out_dir: Path | None, append: bool) ->
     return 0
 
 
+def cmd_ingest() -> int:
+    personas = load_registry()
+    print(f"ingesting {len(personas)} personas from Wikipedia (tertiary source)\n")
+    manifests, failures = ingest_all(personas)
+
+    for m in sorted(manifests, key=lambda x: x["persona_id"]):
+        print(
+            f"  {m['persona_id']:<14} {m['n_chunks']:>3} chunks  rev {m['revision_id']}  "
+            f"{m['title']}"
+        )
+    for persona_id, reason in failures:
+        # Reported, never swallowed: a persona with no corpus declines every question, and
+        # an analyst reading a 0% contribution needs to know it was a missing page.
+        print(f"  {persona_id:<14} FAILED — {reason}", file=sys.stderr)
+
+    print(f"\n{len(manifests)} ingested, {len(failures)} failed -> {CORPUS_ROOT}")
+    if manifests:
+        print(
+            "  Wikipedia text is CC BY-SA and is not committed; re-run this to rebuild.\n"
+            "  A persona with no corpus declines every question, which is correct."
+        )
+    return 1 if failures and not manifests else 0
+
+
 def cmd_analyse(paths: list[Path]) -> int:
     print(report_for_files(paths))
     return 0
@@ -118,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "arms":
         return cmd_arms()
+    if args.command == "ingest":
+        return cmd_ingest()
     if args.command == "run":
         return cmd_run(args.arm, args.n, args.seed0, args.out_dir, args.append)
     if args.command == "analyse":

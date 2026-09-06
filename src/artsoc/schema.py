@@ -167,6 +167,22 @@ def as_text_list(value: Any) -> Any:
     return value
 
 
+def as_text_field(value: Any) -> Any:
+    """Coerce one model-generated string field, losing nothing.
+
+    Applied to every field a model fills in as prose. Live models answer richer than the
+    field asks for — `assessed_activity` arrived as a list of observations, `position` as
+    null when a persona declined — and each one discovered separately costs a failed run.
+    Fixing the class of problem once beats fixing instances of it one at a time.
+
+    None becomes empty rather than an error: a persona that declines genuinely has no
+    position, and `out_of_record` already carries that meaning.
+    """
+    if value is None:
+        return ""
+    return as_text(value)
+
+
 class _Model(BaseModel):
     """Base for every message type: unknown fields are an error, not a shrug.
 
@@ -270,6 +286,8 @@ class IntelBrief(_Model):
         "alternative_explanations", "collection_gaps", mode="before"
     )(as_text_list)
 
+    _coerce_text = field_validator('summary', 'assessed_activity', mode="before")(as_text_field)
+
 class PresidentialQuery(_Model):
     """The President's question to the Advisor.
 
@@ -283,6 +301,8 @@ class PresidentialQuery(_Model):
 
 
     _coerce_lists = field_validator("concerns", mode="before")(as_text_list)
+
+    _coerce_text = field_validator('text', mode="before")(as_text_field)
 
 class AnalyticalQuestion(_Model):
     """One decontextualised question the Advisor puts to the panel.
@@ -306,6 +326,8 @@ class AnalyticalQuestion(_Model):
     def in_vocab_tags(self) -> list[str]:
         return [t for t in self.tags if t in TAG_SET]
 
+
+    _coerce_text = field_validator('text', mode="before")(as_text_field)
 
 class RoutingRecord(_Model):
     """Which personas a question was put to, and why each of them was chosen.
@@ -350,6 +372,8 @@ class RoutingRecord(_Model):
         return list(self.matched_by_tag) + list(self.chosen_by_advisor) + list(self.topped_up)
 
 
+    _coerce_text = field_validator('rationale', mode="before")(as_text_field)
+
 class TheoristOpinion(_Model):
     """One persona's answer to one analytical question.
 
@@ -372,6 +396,8 @@ class TheoristOpinion(_Model):
     method: str = "m2"
 
     _coerce_citations = field_validator("citations", mode="before")(as_text_list)
+
+    _coerce_text = field_validator("position", "reasoning", mode="before")(as_text_field)
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -401,6 +427,8 @@ class AdvisorBrief(_Model):
         "consensus_points", "minority_positions", mode="before"
     )(as_text_list)
 
+    _coerce_text = field_validator('summary', mode="before")(as_text_field)
+
 class PresidentialAction(_Model):
     """Exactly one typed action, plus the justification that did not produce it."""
 
@@ -419,6 +447,8 @@ class PresidentialAction(_Model):
     def is_nuclear(self) -> bool:
         return self.action in NUCLEAR_ACTIONS
 
+
+    _coerce_text = field_validator('justification', mode="before")(as_text_field)
 
 class RunRecord(_Model):
     """One replication, in full.

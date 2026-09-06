@@ -19,7 +19,7 @@ ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth
 # panel matter" but "which member of it does" — and because their contrast is against each
 # other, not against escalation_prior.
 LOO_ARMS := $(addprefix loo_,brodie schelling kahn wohlstetter jervis waltz sagan posen \
-	tannenwald george freedman blair narang talmadge lieber_press)
+	tannenwald george freedman blair)
 
 .PHONY: install install-live test lint fmt arms smoke phase1 attribution clean
 
