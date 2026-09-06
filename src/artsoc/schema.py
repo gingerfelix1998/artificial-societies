@@ -140,6 +140,33 @@ TAG_VOCAB: tuple[str, ...] = (
 TAG_SET: frozenset[str] = frozenset(TAG_VOCAB)
 
 
+def as_text(value: Any) -> Any:
+    """Render one list item as a string without losing what the model actually said.
+
+    A model asked for a list of strings often returns a list of objects — a minority
+    position came back as `{respondent, position, weight}`, which is richer than the field
+    asked for rather than wrong. Dropping to a single key would discard whose position it
+    was, so every key is kept in a readable form.
+
+    Coercion here is normalising a representation, not inventing content: everything the
+    model said survives into the record and an analyst can see it arrived structured.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "; ".join(f"{k}: {v}" for k, v in value.items())
+    if isinstance(value, list):
+        return "; ".join(str(as_text(v)) for v in value)
+    return str(value)
+
+
+def as_text_list(value: Any) -> Any:
+    """Coerce a list whose items may be structured into a list of strings."""
+    if isinstance(value, list):
+        return [as_text(v) for v in value]
+    return value
+
+
 class _Model(BaseModel):
     """Base for every message type: unknown fields are an error, not a shrug.
 
@@ -239,6 +266,10 @@ class IntelBrief(_Model):
     collection_gaps: list[str] = Field(default_factory=list)
 
 
+    _coerce_lists = field_validator(
+        "alternative_explanations", "collection_gaps", mode="before"
+    )(as_text_list)
+
 class PresidentialQuery(_Model):
     """The President's question to the Advisor.
 
@@ -250,6 +281,8 @@ class PresidentialQuery(_Model):
     text: str
     concerns: list[str] = Field(default_factory=list)
 
+
+    _coerce_lists = field_validator("concerns", mode="before")(as_text_list)
 
 class AnalyticalQuestion(_Model):
     """One decontextualised question the Advisor puts to the panel.
@@ -338,6 +371,8 @@ class TheoristOpinion(_Model):
     confidence: float = 0.5
     method: str = "m2"
 
+    _coerce_citations = field_validator("citations", mode="before")(as_text_list)
+
     @field_validator("confidence", mode="before")
     @classmethod
     def _as_number(cls, value: Any) -> Any:
@@ -361,6 +396,10 @@ class AdvisorBrief(_Model):
     synthesis_mode: str = "full_range"
     n_opinions: int = 0
 
+
+    _coerce_lists = field_validator(
+        "consensus_points", "minority_positions", mode="before"
+    )(as_text_list)
 
 class PresidentialAction(_Model):
     """Exactly one typed action, plus the justification that did not produce it."""
@@ -439,3 +478,9 @@ class RunRecord(_Model):
 
     llm_calls: int = 0
     cache_hits: int = 0
+
+    #: Tokens that actually reached the provider, per model. Cached calls are absent
+    #: because they were never billed, so this is spend rather than volume.
+    token_usage: dict[str, list[int]] = Field(default_factory=dict)
+    #: USD estimate from published rates. An estimate, never an invoice.
+    est_cost_usd: float = 0.0

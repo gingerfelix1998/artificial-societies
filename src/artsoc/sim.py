@@ -30,7 +30,7 @@ from pathlib import Path
 
 from artsoc.agents import Advisor, IntelligenceOfficer, President, Theorist
 from artsoc.config import RunConfig
-from artsoc.llm import DiskCache, LLMClient, get_backend
+from artsoc.llm import DiskCache, LLMClient, estimate_cost, get_backend
 from artsoc.personas import (
     Persona,
     load_registry,
@@ -229,6 +229,8 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         personas_consulted=sorted(panel_coverage(routing)),
         llm_calls=client.calls,
         cache_hits=client.cache_hits,
+        token_usage={m: list(v) for m, v in getattr(client.backend, "usage", {}).items()},
+        est_cost_usd=estimate_cost(getattr(client.backend, "usage", {})),
     )
 
 

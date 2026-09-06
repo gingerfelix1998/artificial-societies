@@ -87,8 +87,20 @@ def cmd_run(arm: str, n: int, seed0: int, out_dir: Path | None, append: bool) ->
             "  Remove models_override from configs/base.yaml before collecting results."
         )
     target = (out_dir or DEFAULT_OUT_DIR) / f"{arm}.jsonl"
-    written = write_jsonl(run_many(config, n, seed0), target, append=append)
+    records = list(run_many(config, n, seed0))
+    written = write_jsonl(records, target, append=append)
     print(f"{arm}: wrote {written} records to {target}")
+
+    spend = sum(r.est_cost_usd for r in records)
+    if spend:
+        tin = sum(v[0] for r in records for v in r.token_usage.values())
+        tout = sum(v[1] for r in records for v in r.token_usage.values())
+        print(
+            f"  billed {tin:,} in / {tout:,} out tokens across "
+            f"{sum(r.llm_calls - r.cache_hits for r in records)} calls\n"
+            f"  estimated ${spend:.4f} (published rates, not an invoice) "
+            f"-- ${spend / max(written, 1):.4f} per replication"
+        )
     if config.backend == "mock":
         print(
             "  note: mock backend — output is shape-correct and content-nonsense. "

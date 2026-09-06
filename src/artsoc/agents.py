@@ -509,7 +509,8 @@ class Advisor:
             )
         lines.append(
             "Produce JSON with keys: summary, consensus_points, minority_positions. "
-            + JSON_ONLY
+            "Both lists are lists of plain strings, not objects; name the respondent "
+            "inside the string where it matters. " + JSON_ONLY
         )
         payload = _parse_json(
             self.client.complete(

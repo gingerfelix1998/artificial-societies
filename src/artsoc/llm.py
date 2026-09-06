@@ -160,6 +160,9 @@ class MockBackend:
 
     name = "mock"
 
+    def __init__(self) -> None:
+        self.usage: dict[str, tuple[int, int]] = {}
+
     def model_for(self, role: Role) -> str:
         # Every role is served by the same nonsense generator. Recording "mock" for all of
         # them is what stops a mock sweep being read later as a cheap live run.
@@ -309,6 +312,29 @@ class MockBackend:
                 "and no part of it produced the action above"
             ),
         }
+
+
+#: Published per-1M-token rates, USD, for turning a measured token count into an estimate.
+#: An estimate is all it is: the invoice is the provider's, and these move.
+PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5": (5.00, 25.00),
+}
+
+
+def estimate_cost(usage: dict[str, tuple[int, int]]) -> float:
+    """USD estimate from {model: (input_tokens, output_tokens)}.
+
+    Unknown models contribute nothing rather than a guess, so an unpriced model shows up
+    as a suspiciously low estimate instead of a fabricated one.
+    """
+    total = 0.0
+    for model, (tin, tout) in usage.items():
+        rate = PRICE_PER_MTOK.get(model)
+        if rate:
+            total += tin * rate[0] / 1e6 + tout * rate[1] / 1e6
+    return round(total, 4)
 
 
 #: Default model per role. Chosen from measured cost share, not from vibes.
@@ -464,6 +490,10 @@ class AnthropicBackend:
         # never touches it.
         self.env_loaded = load_dotenv()
 
+        #: {model: (input_tokens, output_tokens)} for calls that actually reached the API.
+        #: Cached calls never get here, so this is billed usage rather than attempted usage.
+        self.usage: dict[str, tuple[int, int]] = {}
+
         # Credentials resolve through the SDK: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or
         # a profile from `ant auth login`. An unset variable does not mean no credentials,
         # so this does not pre-check one. An auth failure surfaces at call time as an SDK
@@ -495,6 +525,11 @@ class AnthropicBackend:
                     f"{role.value} was refused by {model} "
                     f"({getattr(response.stop_details, 'category', None)}); not retried"
                 )
+            tin, tout = self.usage.get(model, (0, 0))
+            self.usage[model] = (
+                tin + response.usage.input_tokens,
+                tout + response.usage.output_tokens,
+            )
             text = "".join(b.text for b in response.content if b.type == "text").strip()
             text = extract_json(text)
             try:
