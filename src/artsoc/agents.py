@@ -210,8 +210,14 @@ class President:
             assert_decontextualised(concern, forbidden_tokens, where="a presidential concern")
         return query
 
-    def decide(self, intel: IntelBrief, brief: AdvisorBrief) -> PresidentialAction:
-        """Select one action. The rung is derived from the action afterwards, not here."""
+    def decide(self, intel: IntelBrief, brief: AdvisorBrief | None) -> PresidentialAction:
+        """Select one action. The rung is derived from the action afterwards, not here.
+
+        `brief` is `None` in the `escalation_prior` control arm, where the President has no
+        advisory input at all. The advisory section is then omitted rather than sent empty:
+        a heading with nothing under it still tells the model an advisor was consulted and
+        had nothing to say, which is a different situation from not having one.
+        """
         system = _system(Role.PRESIDENT_DECISION, _PRESIDENT_DECISION_SYSTEM)
         lines = [
             f"YOUR STANDING DOCTRINE: {self.doctrine.doctrine}",
@@ -228,15 +234,20 @@ class President:
             "  collection gaps:",
             *(f"    - {gap}" for gap in intel.collection_gaps),
             "",
-            # The advisory brief only. Raw opinions are never reproduced here: what the
-            # compression dropped is a finding, and showing both would erase it.
-            "ADVISOR'S BRIEF:",
-            f"  {brief.summary}",
-            "  points of consensus:",
-            *(f"    - {point}" for point in brief.consensus_points),
-            "  minority positions:",
-            *(f"    - {pos}" for pos in brief.minority_positions),
-            "",
+        ]
+        if brief is not None:
+            lines += [
+                # The advisory brief only. Raw opinions are never reproduced here: what the
+                # compression dropped is a finding, and showing both would erase it.
+                "ADVISOR'S BRIEF:",
+                f"  {brief.summary}",
+                "  points of consensus:",
+                *(f"    - {point}" for point in brief.consensus_points),
+                "  minority positions:",
+                *(f"    - {pos}" for pos in brief.minority_positions),
+                "",
+            ]
+        lines += [
             "AVAILABLE ACTIONS (choose exactly one):",
             *(f"  - {action.value}" for action in ActionType),
             "",

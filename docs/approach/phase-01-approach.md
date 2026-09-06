@@ -1,19 +1,25 @@
 # Phase 1 Approach:
 LLM persona panels for simulating nuclear escalation dynamics. Phase 1: one nation, one event, one closed decision loop, replicated under Monte Carlo.
 
-> The commands below are the intended interface. Only `make install` and `make test` work
-> today — `cli.py` is not written. See **Status** at the end of this document.
-
 ```bash
 make install
 make test          # full loop, mock backend, no API key needed
 artsoc arms
-artsoc run baseline --n 30 --backend mock
+artsoc run baseline --n 30
 artsoc analyse out/baseline.jsonl
 ```
 
-Real model calls: `export ANTHROPIC_API_KEY=...` then `artsoc run baseline --n 100 --backend api`.
 Full sweep: `make phase1`.
+
+There is **no `--backend` flag**, and there was never meant to be one. Invariant 5 permits
+only `--n`, `--seed0`, `--out-dir` and `--append` on the command line, because those are
+operational. The backend changes what produced the numbers, so it is experimental: it
+lives in `configs/base.yaml` and is recorded in every output record.
+`tests/test_configs.py` asserts the parser exposes nothing else.
+
+There is also no live backend to select. Phase 1 runs entirely offline against the mock,
+which is deliberately shape-correct and content-nonsense — no number it produces is a
+finding. `llm.get_backend("api")` raises.
 
 ## Delivery
 Wider context for anyone — human or agent — working in this repo. What follows is what the code is *for*, so that implementation trade-offs can be judged against it.
@@ -99,30 +105,36 @@ out/                   run outputs, gitignored
 
 ## Status
 
-The **Layout** section above is the target architecture, not an inventory. Most of it does
-not exist yet. Status as of 2026-09-06:
+Status as of 2026-09-06. `make test`: 101 tests passing. `make lint`: clean.
 
-Built and passing (`make test`: 23 tests, `make lint`: clean):
+**The scaffold is complete and the loop runs end to end.** `artsoc run`, `artsoc analyse`
+and `make phase1` work offline against the mock backend with no API key.
 
-- `schema.py` — the closed action space, the deterministic rung ladder, every message type
-- `world.py` — append-only world log, President-only write access, perception filter
-- `llm.py` — the single model choke point, offline mock backend, disk cache
-- `data/scenarios/phase1_tel_dispersal_v1.json` — the ambiguous injected event
+Built: `schema.py` (closed action space, deterministic ladder), `world.py` (world log,
+perception filter), `llm.py` (model choke point, mock backend, disk cache), `personas.py`
+(M1/M2/M3, tag routing, panel coverage), `retrieval.py` (`StubRetriever`; `CorpusRetriever`
+raises), `agents.py` (the four roles), `config.py` and the seven arms in `configs/arms/`,
+`sim.py` (orchestration, Monte Carlo, JSONL output), `metrics.py` (distributions, contrasts,
+printed caveats), `cli.py`. Role context boundaries are enforced by
+`tests/test_access_matrix.py`, which was validated by deliberately breaking four boundaries
+and confirming each was caught.
 
-Not written yet: `personas.py`, `retrieval.py`, `agents.py`, `config.py`, `sim.py`,
-`coder.py`, `metrics.py`, `cli.py`. `configs/base.yaml`, `configs/arms/*` and
-`data/theorists/registry.yaml` are empty; so are `docs/design.md`, `docs/access-matrix.md`
-and `docs/measurement.md`. There is no `tests/test_access_matrix.py`, so **no role context
-boundary is currently enforced by a test** — the invariant is stated in `CLAUDE.md` and
-nothing yet checks it. `pyproject.toml` declares the `artsoc` console script, but `cli.py`
-does not exist, so the command does not run.
+Not written: `coder.py` (reasoning-theme coding), and `docs/design.md`,
+`docs/access-matrix.md`, `docs/measurement.md` are still empty.
 
-So the foundation layer is done and the four roles, persona construction, routing,
-orchestration and metrics are untouched.
+**A complete scaffold is not a finished phase 1.** Nothing below has been done, and the
+project must not be described as producing grounded results until it has:
 
-Beyond that scaffold, and not to be described as done: real corpus retrieval
-(`StubRetriever` is not written; nothing is grounded), rung validation against a published
-ladder, `prominence` weights from real citation counts, hand-coded agreement sample for
-reasoning themes.
+- Real corpus retrieval. `StubRetriever` returns registry paraphrases and reports
+  `grounded=false`; **no run is corpus-grounded**.
+- `registry.yaml` `corpus_notes` are placeholders, not evidence; `prominence` values are
+  invented and weight nothing.
+- `schema.RUNG` has not been reconciled with a published escalation ladder.
+- Reasoning themes have no hand-coded agreement sample.
+- Every arm run at n≥100 with a live backend, written up as a distribution and a delta,
+  limitations section first.
+
+Every number the loop currently produces comes from a mock whose output is deliberately
+content-nonsense. Arms differ under it only because their prompts hash differently.
 
 See `CLAUDE.md` for the invariants and `docs/measurement.md` for what may and may not be claimed from a run.

@@ -1,0 +1,15 @@
+# THE CONTROL. Every other arm's delta is measured against this one.
+#
+# The President reads the intelligence brief and decides. No advisor, no panel, no expert
+# opinion of any kind. This isolates the base model's escalation tendency given the same
+# situation — the confound CLAUDE.md requires be reported against, because off-the-shelf
+# models escalate in wargame settings even from neutral starting conditions (Rivera et
+# al., FAccT 2024).
+#
+# A delta against this arm therefore reads as the effect of the whole advisory apparatus.
+# The absolute rung distribution of ANY arm, including this one, is not a finding.
+
+consult_panel: false
+notes: >-
+  Control arm. President plus intelligence brief only. Absolute rates from any arm are
+  uninterpretable; only contrasts against this arm are.

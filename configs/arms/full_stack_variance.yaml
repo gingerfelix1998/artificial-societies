@@ -1,0 +1,10 @@
+# What is the variance actually of?
+#
+# With caching on, a theorist's answer is fixed across replications and the measured
+# variance is variance in perception and in the decision step. With it off, every stage
+# varies per replication and the variance is whole-system. Both are legitimate; they
+# answer different questions, and a report must say which it is showing.
+cache_enabled: false
+notes: >-
+  Caching off, so every stage varies with the seed. Measures whole-system variance rather
+  than decision-step variance given fixed advisory input.

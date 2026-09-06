@@ -1,0 +1,9 @@
+# Does grounding change decisions, or only prose?
+#
+# M1 personas are a name and nothing else: no retrieved record, and no out-of-record
+# escape hatch, because with no record there is nothing to be outside of. Contrast with
+# baseline (M2) isolates what the record contributes.
+persona_method: m1
+notes: >-
+  Name-only personas with no record. Tests whether grounding changes the decision or only
+  the prose. Produces no citations by construction.

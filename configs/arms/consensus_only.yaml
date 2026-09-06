@@ -1,0 +1,9 @@
+# What does compression cost?
+#
+# The advisor reports points of consensus and drops minority positions. What gets dropped
+# is usually the minority view, and whether that changes the decision is exactly the
+# question the compression step raises. Contrast with baseline (full_range).
+synthesis_mode: consensus_only
+notes: >-
+  Advisor reports consensus only, dropping minority positions. Isolates the cost of the
+  compression step against baseline's full_range.

@@ -1,0 +1,33 @@
+# Defaults inherited by every arm. An arm file overlays this and should differ in as few
+# fields as possible: the point of an arm is to vary one thing so the contrast is
+# attributable to that thing.
+#
+# Nothing here is a CLI flag. Only --n, --seed0, --out-dir and --append are operational
+# enough to live on the command line (CLAUDE.md invariant 5); everything below changes
+# what is being tested and is therefore recorded in every output record.
+
+scenario_id: phase1_tel_dispersal_v1
+
+# No live backend exists in phase 1. The mock is offline and deliberately
+# content-nonsense, so no number produced under it is a finding.
+backend: mock
+
+# An experimental choice, not an optimisation. On: measured variance is variance in the
+# decision step given fixed advisory input. Off: whole-system variance.
+cache_enabled: true
+
+# StubRetriever returns registry paraphrases and reports grounded=false. No run under it
+# may be described as corpus-grounded.
+retrieval_mode: stub
+
+# The full loop: intelligence brief, presidential query, panel, advisory brief, decision.
+consult_panel: true
+
+persona_method: m2
+panel_source: registry
+panel_size: 15
+
+k_per_question: 4
+n_questions: 3
+
+synthesis_mode: full_range

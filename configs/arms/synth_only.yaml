@@ -1,0 +1,10 @@
+# Is the effect the positions, or the celebrity of the names?
+#
+# Anonymous, position-defined personas carrying no real theorist name. If the panel effect
+# survives anonymisation it was the positions; if it does not, some of it was the model's
+# prior about famous people. Without this arm the two are inseparable.
+panel_source: synthetic
+persona_method: m3
+notes: >-
+  Anonymous position-defined personas. Controls for celebrity effects: a real name in a
+  prompt carries the model's prior about that person as well as their position.

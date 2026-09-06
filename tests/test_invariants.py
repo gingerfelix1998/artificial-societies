@@ -15,8 +15,10 @@ import random
 import pytest
 from pydantic import ValidationError
 
+from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
+from artsoc.config import list_arms, load_arm
 from artsoc.llm import (
     MOCK_PREFIX,
     NO_RECORD_MARKER,
@@ -28,6 +30,7 @@ from artsoc.llm import (
     get_backend,
     role_marker,
 )
+from artsoc.metrics import delta, format_report, summarise
 from artsoc.personas import (
     Persona,
     Registry,
@@ -58,10 +61,12 @@ from artsoc.schema import (
     PerceivedEvent,
     PresidentialAction,
     PresidentialQuery,
+    RunRecord,
     TheoristOpinion,
     WorldEvent,
     rung_for,
 )
+from artsoc.sim import run_once
 from artsoc.world import (
     PerceptionFilter,
     PerceptionParams,
@@ -716,3 +721,227 @@ def test_persona_construction_makes_no_model_call() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     assert "artsoc.llm" not in imported
+
+
+# ---------------------------------------------------------------------------
+# Orchestration. A replication must be reproducible from a config plus a seed, and the
+# record it produces must be readable back or nothing in out/ can be audited.
+# ---------------------------------------------------------------------------
+
+
+def _run(arm: str, seed: int = 1) -> RunRecord:
+    return run_once(load_arm(arm), seed, use_disk_cache=False)
+
+
+def test_a_replication_is_reproducible_from_a_config_and_a_seed() -> None:
+    """Without this, no record in out/ can be re-derived and the log is unverifiable."""
+    first, second = _run("baseline", 5), _run("baseline", 5)
+    assert first.action == second.action
+    assert first.rung == second.rung
+    assert [o.position for o in first.opinions] == [o.position for o in second.opinions]
+    assert first.personas_consulted == second.personas_consulted
+
+
+def test_seeds_move_the_outcome_across_replications() -> None:
+    """If every seed gave the same action, the Monte Carlo sweep would measure nothing."""
+    rungs = {_run("baseline", s).rung for s in range(1, 25)}
+    assert len(rungs) > 1
+
+
+def test_a_run_record_survives_a_round_trip_through_json() -> None:
+    """Computed fields are dumped but are not inputs; a record that cannot be re-read
+    makes every run in out/ unauditable, which is how this was found."""
+    record = _run("baseline", 3)
+    restored = RunRecord.model_validate(json.loads(json.dumps(record.model_dump(mode="json"))))
+    assert restored.action.action == record.action.action
+    assert restored.rung == record.rung
+    assert restored.routing[0].selected == record.routing[0].selected
+
+
+def test_the_recorded_rung_is_always_the_deterministic_one() -> None:
+    """The primary metric is derived from the typed action, never read from the file."""
+    for seed in range(1, 8):
+        record = _run("baseline", seed)
+        assert record.rung == RUNG[record.action.action]
+    # A record claiming a different rung is ignored rather than believed.
+    tampered = _run("baseline", 3).model_dump(mode="json")
+    tampered["action"]["rung"] = 8
+    assert RunRecord.model_validate(tampered).action.rung != 8
+
+
+def test_the_control_arm_consults_nobody() -> None:
+    """escalation_prior isolates the base model's tendency, so any advisory input voids it."""
+    record = _run("escalation_prior", 1)
+    assert record.advisor_brief is None
+    assert record.presidential_query is None
+    assert record.opinions == []
+    assert record.routing == []
+    assert record.panel_size == 0
+    # Two calls only: the intelligence brief and the decision.
+    assert record.llm_calls == 2
+
+
+def test_no_arm_claims_grounding_under_the_stub() -> None:
+    """Invariant 4, checked at the record level where an analyst would read it."""
+    for arm in list_arms():
+        record = _run(arm, 1)
+        assert record.grounded is False
+        assert record.retrieval_mode == "stub"
+
+
+def test_the_record_carries_the_config_that_produced_it() -> None:
+    """A record whose config is not the one that ran cannot be reproduced from."""
+    config = load_arm("small_panel")
+    record = run_once(config, 2, use_disk_cache=False)
+    assert record.config == config.model_dump()
+    assert record.arm == "small_panel"
+
+
+def test_host_ground_truth_is_recorded_for_the_analyst_but_never_prompted() -> None:
+    """It exists so misperception can be scored, not so an agent can be correct."""
+    record = _run("baseline", 1)
+    assert record.host_ground_truth
+    assert any("HOST-ONLY" in v for v in record.host_ground_truth.values())
+    # The record is host-side output; the prompt-side guarantee is in test_access_matrix.py.
+    assert "HOST-ONLY" not in record.intel_brief.model_dump_json()
+
+
+def _answers_by_persona_and_question(arm: str, seeds: range) -> dict[tuple[str, str], set[str]]:
+    """Every answer each (persona, question) pair gave, across replications.
+
+    Keyed on the question *text* rather than its id: ids are positional within a run, so
+    the same question can be q0 in one replication and q2 in another.
+    """
+    answers: dict[tuple[str, str], set[str]] = {}
+    for seed in seeds:
+        record = _run(arm, seed)
+        text_for = {q.question_id: q.text for q in record.questions}
+        for opinion in record.opinions:
+            key = (opinion.persona_id, text_for[opinion.question_id])
+            answers.setdefault(key, set()).add(opinion.position)
+    return answers
+
+
+def test_caching_decides_what_the_measured_variance_is_of() -> None:
+    """The two arms must differ in what varies, not merely in how many calls they make.
+
+    Which personas are routed still varies with the seed in both arms — that is routing
+    doing its job. What caching changes is whether the *same* persona asked the *same*
+    question answers the same way, which is what makes baseline's variance
+    decision-step variance and full_stack_variance's whole-system variance.
+    """
+    cached = _answers_by_persona_and_question("baseline", range(1, 8))
+    assert cached, "no opinions were collected; the comparison would be vacuous"
+    assert all(len(v) == 1 for v in cached.values()), (
+        "with caching on, one persona asked one question must give one answer"
+    )
+
+    uncached = _answers_by_persona_and_question("full_stack_variance", range(1, 8))
+    assert any(len(v) > 1 for v in uncached.values()), (
+        "with caching off, every stage must vary with the seed or the arm measures nothing"
+    )
+
+
+def test_m1_produces_no_citations_because_it_has_no_record() -> None:
+    """The ungrounded arm must be visibly ungrounded, not merely differently grounded."""
+    record = _run("m1_ungrounded", 1)
+    assert record.opinions
+    assert all(o.citations == [] for o in record.opinions)
+    assert all(o.method == "m1" for o in record.opinions)
+
+
+def test_the_synthetic_arm_consults_no_real_theorist() -> None:
+    """If real names leaked in, synth_only would not control for celebrity effects."""
+    record = _run("synth_only", 1)
+    real_names = {p.name for p in load_registry()}
+    assert record.personas_consulted
+    assert all(pid.startswith("synth_") for pid in record.personas_consulted)
+    assert all(o.persona_name not in real_names for o in record.opinions)
+
+
+def test_a_small_panel_cannot_consult_more_personas_than_it_has() -> None:
+    """panel_size is what the panel-coverage diagnostic is measured against."""
+    record = _run("small_panel", 1)
+    assert record.panel_size == 4
+    assert len(record.personas_consulted) <= 4
+
+
+# ---------------------------------------------------------------------------
+# Reporting. A number that travels without its caveat becomes a finding.
+# ---------------------------------------------------------------------------
+
+
+def test_the_report_refuses_to_let_absolute_rates_stand_alone() -> None:
+    """CLAUDE.md forbids reporting absolute escalation rates as results."""
+    records = [_run("baseline", s) for s in range(1, 6)]
+    report = format_report([summarise(records)])
+    assert "deltas" in report.lower()
+    assert "not a finding" in report.lower()
+    assert "NOT GROUNDED" in report
+    assert "MOCK BACKEND" in report
+
+
+def test_a_report_without_the_control_says_so_loudly() -> None:
+    """Contrasts against escalation_prior are the only interpretable quantity."""
+    report = format_report([summarise([_run("baseline", s) for s in range(1, 4)])])
+    assert "NOT PRESENT" in report
+
+
+def test_the_report_contrasts_each_arm_against_the_control() -> None:
+    """The delta is the deliverable; the absolute distribution is not."""
+    control = summarise([_run("escalation_prior", s) for s in range(1, 11)])
+    baseline = summarise([_run("baseline", s) for s in range(1, 11)])
+    report = format_report([control, baseline])
+    assert "CONTRASTS AGAINST escalation_prior" in report
+    contrast = delta(baseline, control)
+    assert contrast.control == "escalation_prior"
+
+
+def test_summarise_refuses_to_average_across_arms() -> None:
+    """Mixing arms would average over exactly the thing being contrasted."""
+    with pytest.raises(ValueError):
+        summarise([_run("baseline", 1), _run("small_panel", 1)])
+
+
+def test_a_nominal_panel_is_reported_as_a_warning() -> None:
+    """Panel coverage gates the panel-size claim; silence here would let it stand."""
+    summary = summarise([_run("baseline", 1)])
+    summary.declared_panel_size = 100
+    summary.mean_run_coverage = 0.09
+    assert any("NOMINAL PANEL" in w for w in metrics_module._warnings(summary))
+
+
+def test_a_silent_escape_hatch_is_reported_as_a_warning() -> None:
+    """A near-zero out-of-record rate means personas are extrapolating past their record."""
+    summary = summarise([_run("baseline", 1)])
+    summary.out_of_record_rate = 0.0
+    assert any("ESCAPE HATCH NOT FIRING" in w for w in metrics_module._warnings(summary))
+
+
+def test_m1_is_not_warned_about_for_a_hatch_it_never_had() -> None:
+    """M1 gets no record, so a zero out-of-record rate is correct, not a diagnostic failure.
+
+    Warning on it would be a false positive on every m1 run, and a warning that always
+    fires is a warning readers learn to skip past.
+    """
+    summary = summarise([_run("m1_ungrounded", s) for s in range(1, 4)])
+    assert summary.persona_method == "m1"
+    assert summary.out_of_record_rate == 0.0
+    warnings = metrics_module._warnings(summary)
+    assert not any("ESCAPE HATCH NOT FIRING" in w for w in warnings)
+    assert any("UNGROUNDED BY CONSTRUCTION" in w for w in warnings)
+
+    # The same zero rate under M2 IS a failure, and must still be reported.
+    m2 = summarise([_run("baseline", 1)])
+    m2.out_of_record_rate = 0.0
+    assert any("ESCAPE HATCH NOT FIRING" in w for w in metrics_module._warnings(m2))
+
+
+def test_panel_coverage_is_measured_per_replication_not_across_the_sweep() -> None:
+    """An arm that resamples its panel would otherwise report coverage above 100%."""
+    summary = summarise([_run("small_panel", s) for s in range(1, 21)])
+    assert summary.declared_panel_size == 4
+    # Each run consults from its own panel of 4, so per-run coverage is a real fraction...
+    assert 0.0 < summary.mean_run_coverage <= 1.0
+    # ...while distinct personas across the sweep may exceed the per-run panel size.
+    assert summary.distinct_personas > summary.declared_panel_size

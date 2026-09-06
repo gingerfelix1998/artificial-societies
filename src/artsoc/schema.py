@@ -24,7 +24,14 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 SCHEMA_VERSION = "1.0.0"
 
@@ -134,9 +141,26 @@ TAG_SET: frozenset[str] = frozenset(TAG_VOCAB)
 
 
 class _Model(BaseModel):
-    """Base for every message type: unknown fields are an error, not a shrug."""
+    """Base for every message type: unknown fields are an error, not a shrug.
+
+    With one exception, which exists so that a written record can be read back. Computed
+    fields — `PresidentialAction.rung`, `RoutingRecord.selected` — are serialised on dump
+    but are not inputs, so `extra="forbid"` would reject a model's own output and no run
+    in `out/` would be reproducible. They are dropped on the way in and recomputed, which
+    also means a hand-edited `rung` in a JSONL file cannot override the deterministic
+    ladder: the primary metric is always derived, never read.
+
+    Genuinely unknown fields still raise.
+    """
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_computed_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict) and cls.model_computed_fields:
+            return {k: v for k, v in data.items() if k not in cls.model_computed_fields}
+        return data
 
 
 class WorldEvent(_Model):
