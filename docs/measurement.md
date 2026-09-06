@@ -1,0 +1,143 @@
+# Measurement
+
+What is measured, what gates a number being read as a result, and what may never be claimed.
+Implemented in `src/artsoc/metrics.py`; the primary metric is defined in
+`src/artsoc/schema.py`.
+
+## The primary metric: escalation rung
+
+Deterministic. The President selects exactly one `ActionType` from a closed set of fifteen;
+`RUNG` maps each to an ordinal 0–8. `rung_for` takes the action and nothing else — it has no
+access to the justification, the brief, or a model.
+
+This buys three things. The metric cannot drift between runs or between model versions.
+There is no inter-coder agreement to defend for the headline number. And two identical
+actions with different justifications score identically, which a judge model would not
+guarantee.
+
+It is enforced at the schema level too: `PresidentialAction.rung` is a computed field, and
+`_Model._drop_computed_fields` discards any `rung` present in a file being read back and
+recomputes it. A hand-edited rung in a JSONL record cannot override the ladder.
+
+`NUCLEAR_THRESHOLD = 6`. `NUCLEAR_ACTIONS` is declared independently of `RUNG` so a test can
+assert the two agree rather than deriving one from the other.
+
+**Outstanding: the ladder is not externally validated.** `RUNG` carries an explicit note that
+it has not been reconciled with a published escalation ladder. Until it is, the ordering is
+this project's own and must be described that way. Reconciling it with a Kahn-derived scale
+and cross-scoring against a published framework would make the numbers comparable to the
+wargaming literature.
+
+## What a report contains
+
+`format_report` renders, per arm: n, the rung distribution as a histogram, mean and median
+rung, P(rung ≥ 6), and the conditions that produced them — backend, models per role,
+`cache_enabled`, `retrieval_mode`, `grounded`.
+
+**The distribution leads, because the distribution is the result.** A single run reaching a
+nuclear rung is an anecdote. "This proportion of n replications crossed the threshold" is a
+finding.
+
+## The only interpretable quantity
+
+`CONTROL_ARM = "escalation_prior"`. Every interpretable number in a report is a **delta
+against it**.
+
+This is not a stylistic preference. Off-the-shelf models escalate in wargame settings even
+from neutral starting conditions, and this behaviour is well documented across several
+independent replications. The absolute rung distribution from any arm is therefore the base
+model's prior, not a finding about nuclear strategists. Only the contrast — what the advisory
+apparatus changed — is attributable to the thing this project builds.
+
+`delta(arm, control)` computes it; `Delta` is documented as the only interpretable quantity
+in the module.
+
+## Diagnostics that gate interpretation
+
+Three diagnostics decide whether a distribution may be read at all. `_warnings` raises them
+into the report automatically.
+
+**Panel coverage.** Distinct personas actually consulted against declared panel size, plus
+mean per-run coverage. Below `COVERAGE_WARNING_RATIO = 0.5` the panel is nominal and the
+panel-size claim must be restated. This exists because a routing bug once reduced a
+nominally large panel to six respondents while every other number looked healthy.
+
+**Citation integrity.** The out-of-record decline rate and the count of unsupported
+citations. At or below `OUT_OF_RECORD_WARNING_RATE = 0.02` the escape hatch is suspected of
+not firing — personas are answering everything, which means they are extrapolating past their
+record rather than declining. **A near-zero decline rate is a warning, not a success.**
+
+`unsupported_citations` are passage ids an opinion cited that were absent from the block it
+was shown. They are reported, never corrected: the rate is a finding about the method, and
+silently dropping bad citations would erase it.
+
+**Provenance.** `RunRecord.models` records which model actually served each role. One
+distinct value across every role means a smoke test under `models_override`, and the report
+marks it **SMOKE TEST, NOT A RESULT** — the presidential decision is the primary metric, and
+serving it from the same cheap model as everything else changes what was measured, not just
+what it cost.
+
+Mock output is `MOCK_PREFIX`-marked and content-nonsense by design, so a mock sweep can never
+be read later as a cheap live run. Under the mock every role reports `"mock"` in
+`RunRecord.models`.
+
+## Influence attribution
+
+`_loo_section` contrasts each `loo_<theorist>` arm against the others. Because exclusion is a
+**forced intervention** — the persona is absent from the panel, every roster and every prompt
+— this is causal in a way the earlier observational approach was not.
+
+The observational alternative, comparing runs where a persona happened to be routed in
+against runs where it was not, is confounded: routing correlates with question tags, which
+correlate with outcome. That approach is not used here, and any influence number reported
+must state which of the two produced it.
+
+Fifteen exclusion arms against one baseline is a multiple-comparisons exposure. With fifteen
+theorists you will find a most-influential one whether or not one exists. Pre-register the
+comparison and state the correction, or report the ranking descriptively without significance
+claims.
+
+## Secondary coding
+
+Reasoning-theme coding of the President's justification is where an LLM judge genuinely adds
+something a lookup table cannot: variation in phrasing is the object of study rather than
+noise. It is **not implemented**. When it is, it may never feed the rung, and it needs
+inter-coder agreement against a hand-coded stratified sample before any theme count appears
+in a claim.
+
+## Standing constraints on any claim
+
+**No prediction claim.** There have been nine nuclear crises and no instances of central war.
+There is no outcome ground truth, so the simulation cannot be validated against outcomes —
+only against reasoning. The honest framing is structured elicitation of a bounded expert
+literature under crisis conditions: a tool for surfacing which theoretical commitments drive
+which recommendations. That framing must not be quietly upgraded in a write-up, which is
+where the upgrade usually happens.
+
+**No grounding claim while `retrieval_mode: stub`.** `StubRetriever` returns registry
+paraphrases and reports `grounded=false`. `RunRecord.grounded` is taken from the retriever
+that produced the text, so a stub run can never be read as grounded — but nothing stops a
+careless write-up saying otherwise. It is stated here so that it cannot be claimed by
+accident.
+
+**Absolute rates are not findings.** Repeated because it is the constraint most likely to be
+forgotten between running a sweep and writing it up.
+
+**State what varied.** `cache_enabled` changes what the variance means: on, it is variance in
+the decision step given fixed advisory input; off, it is whole-system variance. Both are
+legitimate and they answer different questions. Any reported dispersion must say which.
+
+## What would strengthen the measurement
+
+In rough order of value:
+
+1. Reconcile `RUNG` with a published escalation ladder and cross-score against an established
+   framework, so the numbers are comparable to prior work.
+2. Implement corpus retrieval, so the M1-versus-M2 contrast tests grounding rather than
+   testing one paraphrase against no paraphrase.
+3. Add process-level metrics beyond the terminal rung — which options were raised and
+   rejected, the order considerations enter, dispersion of positions across the panel. These
+   are richer than a single terminal action and are harder for a model to have memorised.
+4. Implement reasoning-theme coding with a validated agreement sample.
+5. Probe for parametric leakage directly: ask period-restricted personas about post-cutoff
+   concepts and measure how often they answer anyway.
