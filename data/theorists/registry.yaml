@@ -1,0 +1,161 @@
+# The persona registry: the population this project claims to model.
+#
+# The group being modelled is the authors of the nuclear-strategy literature. These are
+# the 100 personas in the claim (15 here in phase 1); President, Advisor and Intelligence
+# Officer are instruments that aggregate and act on their opinions, not members of the
+# population.
+#
+# TWO FIELDS HERE ARE PLACEHOLDERS AND MUST NOT BE DESCRIBED OTHERWISE:
+#
+#   corpus_notes  One-line paraphrases written so the loop runs under StubRetriever. They
+#                 are not evidence, they are not quotations, and no claim of grounding may
+#                 rest on them. They are replaced by real per-theorist corpus retrieval.
+#
+#   prominence    INVENTED NUMBERS. They are not citation counts and are not calibrated
+#                 against anything. Routing does not weight by them today; before any
+#                 weighted routing is switched on they must be set from a real citation
+#                 source, or the weighting silently encodes a guess.
+#
+# `tags` must be drawn from schema.TAG_VOCAB. An off-vocabulary tag matches no question
+# and leaves the persona reachable only by routing top-up, so personas.load_registry
+# rejects one at load rather than letting it fail silently at route time.
+#
+# `era` is host-side metadata for later period comparison (phase 3). It is not routed on.
+
+schema_version: "1.0.0"
+
+personas:
+  - persona_id: brodie
+    name: Bernard Brodie
+    era: early_deterrence
+    prominence: 0.85 # INVENTED
+    tags: [deterrence, doctrine, credibility, escalation]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Argued that the arrival of the atomic bomb shifted the
+      purpose of a military establishment from winning wars to averting them.
+
+  - persona_id: schelling
+    name: Thomas Schelling
+    era: early_deterrence
+    prominence: 0.95 # INVENTED
+    tags: [signalling, coercion, credibility, escalation, deterrence]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Treated deterrence as bargaining, emphasising commitment,
+      the threat that leaves something to chance, and the salience of limits.
+
+  - persona_id: kahn
+    name: Herman Kahn
+    era: early_deterrence
+    prominence: 0.75 # INVENTED
+    tags: [escalation, escalation_control, doctrine, posture]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Set out escalation as a ladder of discrete, recognisable
+      rungs, and insisted that thinking about use was a precondition of controlling it.
+
+  - persona_id: wohlstetter
+    name: Albert Wohlstetter
+    era: early_deterrence
+    prominence: 0.70 # INVENTED
+    tags: [survivability, first_strike, posture, deterrence]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Argued that deterrence is not automatic and depends on the
+      survivability of second-strike forces against a determined first strike.
+
+  - persona_id: jervis
+    name: Robert Jervis
+    era: cold_war_theory
+    prominence: 0.90 # INVENTED
+    tags: [misperception, signalling, escalation, credibility, inadvertent_escalation]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Showed how states misread each other's intentions, and how
+      the security dilemma turns defensive preparation into perceived threat.
+
+  - persona_id: waltz
+    name: Kenneth Waltz
+    era: cold_war_theory
+    prominence: 0.88 # INVENTED
+    tags: [proliferation, deterrence, posture, norms]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Held that nuclear weapons induce caution, and that gradual
+      spread need not be destabilising given survivable forces.
+
+  - persona_id: sagan
+    name: Scott Sagan
+    era: post_cold_war
+    prominence: 0.87 # INVENTED
+    tags: [organisational, c2, inadvertent_escalation, proliferation, taboo]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Argued from organisational and normal-accident theory that
+      complex military organisations produce failures deterrence theory does not predict.
+
+  - persona_id: posen
+    name: Barry Posen
+    era: cold_war_theory
+    prominence: 0.65 # INVENTED
+    tags: [inadvertent_escalation, organisational, doctrine, escalation_control]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Described inadvertent escalation arising when conventional
+      operations threaten an adversary's nuclear forces without anyone intending it.
+
+  - persona_id: tannenwald
+    name: Nina Tannenwald
+    era: post_cold_war
+    prominence: 0.72 # INVENTED
+    tags: [taboo, norms, deterrence]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Traced a normative prohibition on nuclear use that
+      constrains states beyond what deterrence calculations alone would predict.
+
+  - persona_id: george
+    name: Alexander George
+    era: cold_war_theory
+    prominence: 0.68 # INVENTED
+    tags: [coercion, signalling, credibility, escalation_control]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Developed coercive diplomacy, stressing the conditions under
+      which limited force communicates resolve without provoking escalation.
+
+  - persona_id: freedman
+    name: Lawrence Freedman
+    era: post_cold_war
+    prominence: 0.80 # INVENTED
+    tags: [doctrine, deterrence, escalation, regional]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Surveyed the evolution of nuclear strategy and the recurring
+      gap between declaratory doctrine and operational reality.
+
+  - persona_id: blair
+    name: Bruce Blair
+    era: post_cold_war
+    prominence: 0.62 # INVENTED
+    tags: [c2, survivability, organisational, inadvertent_escalation]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Examined command and control, launch procedures and the
+      pressures that compress decision time in a crisis.
+
+  - persona_id: narang
+    name: Vipin Narang
+    era: contemporary
+    prominence: 0.70 # INVENTED
+    tags: [posture, regional, proliferation, deterrence, doctrine]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Classified regional powers' nuclear postures and argued that
+      posture choice, not possession, drives deterrent effect.
+
+  - persona_id: talmadge
+    name: Caitlin Talmadge
+    era: contemporary
+    prominence: 0.66 # INVENTED
+    tags: [inadvertent_escalation, escalation_control, c2, regional]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Analysed how conventional campaigns against a nuclear-armed
+      state can generate escalation pressure through entanglement of forces.
+
+  - persona_id: lieber_press
+    name: Keir Lieber and Daryl Press
+    era: contemporary
+    prominence: 0.64 # INVENTED
+    tags: [first_strike, survivability, posture, credibility]
+    corpus_notes: >-
+      PLACEHOLDER paraphrase. Argued that improvements in accuracy and remote sensing
+      erode the survivability on which assured retaliation has been assumed to rest.

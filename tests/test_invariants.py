@@ -7,6 +7,7 @@ would otherwise have caught.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import random
@@ -14,8 +15,10 @@ import random
 import pytest
 from pydantic import ValidationError
 
+from artsoc import personas as personas_module
 from artsoc.llm import (
     MOCK_PREFIX,
+    NO_RECORD_MARKER,
     DiskCache,
     LLMClient,
     MockBackend,
@@ -23,11 +26,22 @@ from artsoc.llm import (
     get_backend,
     role_marker,
 )
+from artsoc.personas import (
+    Persona,
+    Registry,
+    build_persona_prompt,
+    load_registry,
+    panel_coverage,
+    route,
+    synthetic_panel,
+)
 from artsoc.schema import (
     NUCLEAR_ACTIONS,
     NUCLEAR_THRESHOLD,
     RUNG,
+    TAG_SET,
     ActionType,
+    AnalyticalQuestion,
     PerceivedEvent,
     PresidentialAction,
     WorldEvent,
@@ -359,3 +373,148 @@ def test_the_scenario_event_is_ambiguous_in_both_directions() -> None:
     prep_indicators = ["readiness directive", "emissions control"]
     assert any(s in signature for s in hedge_indicators)
     assert any(s in signature for s in prep_indicators)
+
+
+# ---------------------------------------------------------------------------
+# Personas and routing. A panel that is nominally large but really answers from a handful
+# of personas is the central threat to the claim, so it has to be visible in the record.
+# ---------------------------------------------------------------------------
+
+
+def _question(tags: list[str], qid: str = "q1") -> AnalyticalQuestion:
+    return AnalyticalQuestion(question_id=qid, text="MOCK: decontextualised question", tags=tags)
+
+
+def test_every_registry_tag_is_in_the_vocabulary() -> None:
+    """An off-vocabulary tag matches no question and is unreachable except by top-up."""
+    personas = load_registry()
+    assert personas, "the registry is empty"
+    for persona in personas:
+        assert set(persona.tags) <= TAG_SET, f"{persona.persona_id} carries a tag outside TAG_VOCAB"
+
+
+def test_an_off_vocabulary_tag_is_rejected_at_load_not_at_route_time() -> None:
+    """Silent unreachability is worse than a loud failure, so it must fail at the boundary."""
+    with pytest.raises(ValidationError):
+        Persona(persona_id="p", name="MOCK", tags=["not_a_real_tag"])
+
+
+def test_duplicate_persona_ids_are_rejected() -> None:
+    """Ids key the routing record and the response cache; a collision corrupts both."""
+    entry = {"persona_id": "dup", "name": "MOCK", "tags": ["deterrence"]}
+    with pytest.raises(ValidationError):
+        Registry.model_validate({"schema_version": "1.0.0", "personas": [entry, dict(entry)]})
+
+
+def test_routing_records_tag_matches_and_top_ups_separately() -> None:
+    """A panel reached entirely by top-up consulted nobody claiming relevant expertise."""
+    personas = load_registry()
+    record = route(_question(["deterrence"]), personas, k=5, rng=random.Random(0))
+    assert len(record.selected) == 5
+    assert len(set(record.selected)) == 5, "a persona must not be selected twice"
+    assert record.matched_by_tag, "personas tagged 'deterrence' exist and should match"
+    for pid in record.matched_by_tag:
+        persona = next(p for p in personas if p.persona_id == pid)
+        assert "deterrence" in persona.tags
+    for pid in record.topped_up:
+        persona = next(p for p in personas if p.persona_id == pid)
+        assert "deterrence" not in persona.tags
+
+
+def test_a_question_with_no_in_vocab_tags_is_filled_entirely_by_top_up() -> None:
+    """The panel still answers, but the record must show nobody matched on expertise."""
+    personas = load_registry()
+    record = route(_question(["not_a_real_tag"]), personas, k=4, rng=random.Random(0))
+    assert record.matched_by_tag == []
+    assert len(record.topped_up) == 4
+
+
+def test_routing_is_reproducible_under_a_seed_and_varies_across_seeds() -> None:
+    """A run must replay from config plus seed, and must not always pick the same panel."""
+    personas = load_registry()
+    question = _question(["deterrence", "escalation"])
+    first = route(question, personas, k=4, rng=random.Random(11)).selected
+    again = route(question, personas, k=4, rng=random.Random(11)).selected
+    assert first == again
+
+    panels = {
+        tuple(route(question, personas, k=4, rng=random.Random(s)).selected) for s in range(40)
+    }
+    assert len(panels) > 1, "tie-breaking must not be fixed by registry order"
+
+
+def test_a_small_k_leaves_the_panel_only_nominally_large() -> None:
+    """The coverage diagnostic has to fire, or the '100 personas' claim goes unchecked."""
+    personas = load_registry()
+    routing = [
+        route(_question(["first_strike"], qid=f"q{i}"), personas, k=2, rng=random.Random(i))
+        for i in range(30)
+    ]
+    consulted = panel_coverage(routing)
+    assert 0 < len(consulted) < len(personas), (
+        "with k=2 on a narrow tag, coverage must fall short of the declared panel size"
+    )
+
+
+def test_panel_coverage_counts_top_ups_as_consulted() -> None:
+    """A persona reached by top-up still answered; excluding it would overstate the gap."""
+    personas = load_registry()
+    record = route(_question(["not_a_real_tag"]), personas, k=3, rng=random.Random(0))
+    assert panel_coverage([record]) == set(record.topped_up)
+
+
+def test_synthetic_personas_carry_no_real_theorist_name() -> None:
+    """If M3 leaked real names, synth_only would not control for celebrity effects."""
+    real_names = {p.name for p in load_registry()}
+    for persona in synthetic_panel(12, seed=3):
+        assert persona.is_synthetic
+        assert persona.name not in real_names
+        assert set(persona.tags) <= TAG_SET
+
+
+def test_persona_prompts_never_carry_scenario_context() -> None:
+    """Invariant 1: a theorist gets a decontextualised question and its own record only."""
+    scenario = load_scenario(SCENARIO_ID)
+    forbidden = [
+        scenario.self_nation.lower(),
+        scenario.adversary_nation.lower(),
+        "host-only",
+        "tel",
+    ]
+    for persona in load_registry():
+        for method in ("m1", "m2", "m3"):
+            prompt = build_persona_prompt(persona, method).lower()
+            for token in forbidden:
+                assert token not in prompt, f"{method} prompt leaked {token!r}"
+
+
+def test_m2_without_a_record_signals_the_escape_hatch() -> None:
+    """Empty retrieval must make out_of_record available, not silently invent a record."""
+    persona = load_registry()[0]
+    assert NO_RECORD_MARKER in build_persona_prompt(persona, "m2", record_block="")
+    assert NO_RECORD_MARKER not in build_persona_prompt(
+        persona, "m2", record_block="[brodie:ch1:1] MOCK: placeholder passage"
+    )
+
+
+def test_m1_offers_no_escape_hatch_and_no_record() -> None:
+    """M1 is the name-only baseline; 'out of record' has no meaning without a record."""
+    prompt = build_persona_prompt(load_registry()[0], "m1")
+    assert "out_of_record" not in prompt
+    assert NO_RECORD_MARKER not in prompt
+
+
+def test_persona_construction_makes_no_model_call() -> None:
+    """Personas produce prompt text; only agents.py may send it to a backend.
+
+    Checked against the import graph rather than the source text: a prose mention of the
+    boundary in a docstring is not an import of it.
+    """
+    tree = ast.parse(inspect.getsource(personas_module))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert "artsoc.llm" not in imported
