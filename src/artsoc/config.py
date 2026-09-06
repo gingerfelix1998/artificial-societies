@@ -76,6 +76,18 @@ class RunConfig(BaseModel):
     #: output, and output already dominates this workload, so this is the main cost dial.
     effort: str = "medium"
 
+    #: SMOKE TEST ONLY. Forces every role onto one model, superseding `models`.
+    #:
+    #: This exists to check the wiring — that credentials resolve, that every role returns
+    #: parseable JSON, that the escape hatch fires, that a record round-trips — before any
+    #: of that is paid for at Opus rates. It is not a cheap way to get results.
+    #:
+    #: Nothing produced under it is comparable to anything produced without it: the
+    #: presidential decision is the primary metric, and serving it from the cheapest model
+    #: changes what is being measured rather than only what it costs. `metrics` warns
+    #: whenever a report contains such a run, and `artsoc run` warns before starting one.
+    models_override: str | None = None
+
     #: An experimental choice, not an optimisation. With caching on, measured variance is
     #: variance in the decision step given fixed advisory input; with it off, it is
     #: whole-system variance. Both are legitimate and they answer different questions.
@@ -161,6 +173,21 @@ class RunConfig(BaseModel):
         if value not in allowed:
             raise ValueError(f"effort {value!r} not in {sorted(allowed)}")
         return value
+
+    def resolved_models(self) -> dict[str, str]:
+        """The model that will actually serve each role.
+
+        One place computes this, so `sim`, `metrics` and the CLI cannot disagree about
+        what a run is doing.
+        """
+        if self.models_override:
+            return dict.fromkeys(DEFAULT_MODELS, self.models_override)
+        return {**DEFAULT_MODELS, **self.models}
+
+    @property
+    def is_smoke_test(self) -> bool:
+        """True when every role is pinned to one model by `models_override`."""
+        return self.models_override is not None
 
     @field_validator("panel_source")
     @classmethod

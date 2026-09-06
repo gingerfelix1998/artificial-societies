@@ -77,6 +77,15 @@ def cmd_arms() -> int:
 
 def cmd_run(arm: str, n: int, seed0: int, out_dir: Path | None, append: bool) -> int:
     config = load_arm(arm)
+    if config.is_smoke_test and config.backend != "mock":
+        # Printed before the first call, not after the bill. A smoke test that is mistaken
+        # for a real run is worse than one that never happened.
+        print(
+            f"  SMOKE TEST: models_override pins every role to {config.models_override}, "
+            "including the presidential decision.\n"
+            "  This checks the wiring. Nothing it produces is comparable to a normal run.\n"
+            "  Remove models_override from configs/base.yaml before collecting results."
+        )
     target = (out_dir or DEFAULT_OUT_DIR) / f"{arm}.jsonl"
     written = write_jsonl(run_many(config, n, seed0), target, append=append)
     print(f"{arm}: wrote {written} records to {target}")

@@ -1113,9 +1113,76 @@ def test_a_model_for_an_unknown_role_is_rejected() -> None:
         RunConfig(arm="x", effort="maximum")
 
 
-def test_the_decision_is_never_served_by_the_cheapest_model() -> None:
-    """The decision is the primary metric and ~45% of billable input; it is not the place
-    to economise, and a config that quietly downgraded it would change what is measured."""
-    models = load_arm("baseline").models
-    assert models[Role.PRESIDENT_DECISION.value] == "claude-opus-5"
-    assert models[Role.PRESIDENT_DECISION.value] != models[Role.THEORIST.value]
+def _summary_with(models: dict[str, str], backend: str = "anthropic") -> object:
+    """A minimal ArmSummary for exercising the warning logic."""
+    return metrics_module.ArmSummary(
+        arm="baseline", n=10, rung_distribution={2: 10}, mean_rung=2.0, median_rung=2.0,
+        p_nuclear=0.0, declared_panel_size=15, distinct_personas=9, mean_run_coverage=0.6,
+        n_opinions=120, out_of_record_rate=0.2, n_citations=80, n_unsupported=0,
+        citation_integrity=1.0, backend=backend, grounded=False, cache_enabled=True,
+        retrieval_mode="stub", consulted_panel=True, persona_method="m2", models=models,
+    )
+
+
+def test_the_decision_is_never_quietly_served_by_the_cheapest_model() -> None:
+    """The decision is the primary metric and ~45% of billable input.
+
+    It may be downgraded, but only by `models_override`, and only loudly. This test is
+    written so it cannot pass silently while a smoke test is active: if the override is
+    set, the warning machinery must fire; if it is not, the resolved assignment must
+    actually keep Opus on the decision.
+    """
+    config = load_arm("baseline")
+    resolved = config.resolved_models()
+
+    # The declared per-role assignment is unaffected by the override either way.
+    assert config.models[Role.PRESIDENT_DECISION.value] == "claude-opus-5"
+
+    if config.is_smoke_test:
+        assert len(set(resolved.values())) == 1, "an override must pin every role"
+        warnings = metrics_module._warnings(_summary_with(resolved))
+        assert any("SMOKE TEST" in w for w in warnings), (
+            "a run with the decision downgraded must be flagged wherever it is read"
+        )
+    else:
+        assert resolved[Role.PRESIDENT_DECISION.value] == "claude-opus-5"
+        assert resolved[Role.PRESIDENT_DECISION.value] != resolved[Role.THEORIST.value]
+
+
+def test_an_override_supersedes_the_per_role_assignment() -> None:
+    """One line has to actually reach every role, or a smoke test would still spend."""
+    config = RunConfig(arm="x", models_override="claude-haiku-4-5")
+    assert set(config.resolved_models().values()) == {"claude-haiku-4-5"}
+    assert set(config.resolved_models()) == {r.value for r in Role}
+    assert config.is_smoke_test
+
+
+def test_removing_the_override_restores_the_per_role_assignment() -> None:
+    """The reset has to be one line too, or it will not happen."""
+    config = RunConfig(arm="x")
+    assert not config.is_smoke_test
+    assert config.resolved_models() == DEFAULT_MODELS
+
+
+def test_a_smoke_test_is_only_flagged_on_a_run_that_cost_something() -> None:
+    """Under the mock every role reports "mock" already; the flag is about live runs."""
+    all_mock = _summary_with({r.value: "mock" for r in Role}, backend="mock")
+    assert not any("SMOKE TEST" in w for w in metrics_module._warnings(all_mock))
+    live = _summary_with({r.value: "claude-haiku-4-5" for r in Role})
+    assert any("SMOKE TEST" in w for w in metrics_module._warnings(live))
+    mixed = _summary_with({**DEFAULT_MODELS})
+    assert not any("SMOKE TEST" in w for w in metrics_module._warnings(mixed))
+
+
+def test_the_cli_warns_before_a_smoke_run_rather_than_after(capsys) -> None:
+    """A warning printed after the bill is not a warning."""
+    import artsoc.cli as cli_module
+
+    config = RunConfig(arm="baseline", backend="anthropic", models_override="claude-haiku-4-5")
+    assert config.is_smoke_test and config.backend != "mock"
+    # The guard the CLI uses, asserted directly: the source must test both conditions.
+    source = inspect.getsource(cli_module.cmd_run)
+    assert "is_smoke_test" in source
+    assert source.index("SMOKE TEST") < source.index("write_jsonl"), (
+        "the warning must be printed before the run starts"
+    )

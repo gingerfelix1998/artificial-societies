@@ -21,7 +21,7 @@ ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth
 LOO_ARMS := $(addprefix loo_,brodie schelling kahn wohlstetter jervis waltz sagan posen \
 	tannenwald george freedman blair narang talmadge lieber_press)
 
-.PHONY: install install-live test lint fmt arms phase1 attribution clean
+.PHONY: install install-live test lint fmt arms smoke phase1 attribution clean
 
 install:
 	$(PY) -m venv $(VENV)
@@ -49,6 +49,12 @@ fmt:
 
 arms:
 	$(BIN)/artsoc arms
+
+# First live run. Ten replications of one arm, to check the wiring before a sweep.
+# Whether it costs anything depends on `backend` in configs/base.yaml.
+smoke:
+	$(BIN)/artsoc run baseline --n 10 --out-dir out/smoke
+	$(BIN)/artsoc analyse out/smoke/baseline.jsonl
 
 # Full offline sweep. escalation_prior runs first: it is the baseline every other arm's
 # contrast is measured against, and an absolute rate without it means nothing.

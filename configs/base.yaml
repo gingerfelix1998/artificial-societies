@@ -38,6 +38,22 @@ models:
 # and output already dominates this workload, so this is the main cost dial.
 effort: medium
 
+# ==========================================================================
+# TEMPORARY — REMOVE BEFORE COLLECTING ANY RESULTS
+# ==========================================================================
+# Forces every role onto one cheap model so the first live runs check the wiring
+# without paying Opus rates: that credentials resolve, that every role returns
+# parseable JSON, that the out-of-record hatch fires, that a record round-trips.
+#
+# This supersedes `models` above, including president_decision. That call is the
+# primary metric, so a run under this override measures something different from
+# a run without it — it is not a cheaper version of the same experiment.
+#
+# `artsoc run` prints a warning before starting, and `artsoc analyse` marks any
+# report containing such a run as SMOKE TEST, NOT A RESULT. Delete this line to
+# restore the per-role assignment above.
+models_override: claude-haiku-4-5
+
 # An experimental choice, not an optimisation. On: measured variance is variance in the
 # decision step given fixed advisory input. Off: whole-system variance.
 cache_enabled: true

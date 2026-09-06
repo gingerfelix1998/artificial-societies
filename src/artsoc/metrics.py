@@ -102,6 +102,11 @@ class ArmSummary:
     #: zero rate there is correct rather than a warning.
     persona_method: str
 
+    #: Which model served each role. One distinct value across every role means a smoke
+    #: test: the presidential decision is the primary metric, and serving it from the same
+    #: cheap model as everything else changes what was measured, not just what it cost.
+    models: dict[str, str] = field(default_factory=dict)
+
     warnings: list[str] = field(default_factory=list)
 
 
@@ -146,6 +151,7 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
         n_unsupported=unsupported,
         citation_integrity=round(1 - unsupported / citations, 4) if citations else 1.0,
         backend=first.backend,
+        models=dict(first.models),
         grounded=first.grounded,
         cache_enabled=first.cache_enabled,
         retrieval_mode=first.retrieval_mode,
@@ -163,6 +169,15 @@ def _warnings(s: ArmSummary) -> list[str]:
         out.append(
             "NOT GROUNDED: StubRetriever was in use. No result here is corpus-grounded, "
             "and the registry corpus_notes are placeholders rather than evidence."
+        )
+    distinct = set(s.models.values())
+    if s.backend != "mock" and len(distinct) == 1 and len(s.models) > 1:
+        out.append(
+            f"SMOKE TEST, NOT A RESULT ({s.arm}): every role was served by "
+            f"{distinct.pop()}. models_override was set, which pins the presidential "
+            "decision — the primary metric — to the same cheap model as everything else. "
+            "This run checks that the wiring works. It is not comparable to any run "
+            "without the override and must not appear in a write-up."
         )
     if s.backend == "mock":
         out.append(

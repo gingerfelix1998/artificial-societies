@@ -171,7 +171,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
 
     cache = DiskCache(CACHE_DIR) if use_disk_cache else None
     client = LLMClient(
-        backend=get_backend(config.backend, config.models, effort=config.effort),
+        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
         run_seed=seed,
         cache=cache,
         cache_enabled=config.cache_enabled,
