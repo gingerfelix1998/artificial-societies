@@ -146,15 +146,25 @@ _OUT_OF_RECORD_INSTRUCTION = (
 )
 
 
-def build_persona_prompt(persona: Persona, method: str, record_block: str = "") -> str:
-    """The system prompt for one persona under one construction method.
+#: Emitted into the *user* prompt when retrieval returned nothing. Kept identical to
+#: `llm.NO_RECORD_MARKER` but not imported from there: this module must not depend on the
+#: backend module (see the header, and `test_persona_construction_makes_no_model_call`).
+#: A test asserts the two constants agree, so they cannot drift apart silently.
+NO_RECORD_MARKER = "[[CORPUS:none]]"
 
-    `record_block` is retrieved text supplied by the caller for M2. This function does not
-    retrieve anything itself, so a persona cannot reach a corpus that routing did not give
-    it, and cannot reach another persona's corpus at all.
-    """
+
+def _check_method(method: str) -> None:
     if method not in METHODS:
         raise ValueError(f"unknown persona method {method!r}; expected one of {sorted(METHODS)}")
+
+
+def build_identity_prompt(persona: Persona, method: str) -> str:
+    """The system prompt for one persona: who it is and how it must answer.
+
+    Carries no record and no question, so it is stable across every question this persona
+    is ever asked. See ADR 0001 for why the record lives in the user prompt instead.
+    """
+    _check_method(method)
 
     if method == "m1":
         # No record at all. The escape hatch is deliberately not offered: with nothing to
@@ -171,13 +181,34 @@ def build_persona_prompt(persona: Persona, method: str, record_block: str = "") 
             f"{_OUT_OF_RECORD_INSTRUCTION}"
         )
 
-    block = record_block.strip() or "[[CORPUS:none]]"
     return (
         f"You are {persona.name}, a nuclear-strategy theorist. Answer from your own "
-        "written record, reproduced below, and cite the passage ids you rely on.\n\n"
-        f"RECORD:\n{block}\n\n"
-        f"{_SHARED_INSTRUCTION}\n{_OUT_OF_RECORD_INSTRUCTION}"
+        "written record, which is supplied with each question, and cite the passage ids "
+        f"you rely on.\n\n{_SHARED_INSTRUCTION}\n{_OUT_OF_RECORD_INSTRUCTION}"
     )
+
+
+def build_question_prompt(
+    question: AnalyticalQuestion, record_block: str = "", method: str = "m2"
+) -> str:
+    """The user prompt: one decontextualised question, plus this persona's own record.
+
+    `record_block` is retrieved text supplied by the caller. This function retrieves
+    nothing itself, so a persona cannot reach a corpus that routing did not give it, and
+    cannot reach another persona's corpus at all.
+
+    The record goes here rather than in the identity prompt because that is where a
+    backend reads its structured markers — without it the out-of-record hatch never fires
+    and no citation is ever offered. ADR 0001.
+    """
+    _check_method(method)
+
+    if method == "m1":
+        # M1 has no record by construction, so it gets no RECORD section and no marker.
+        return f"QUESTION:\n{question.text}"
+
+    block = record_block.strip() or NO_RECORD_MARKER
+    return f"QUESTION:\n{question.text}\n\nRECORD:\n{block}"
 
 
 def synthetic_panel(n: int, seed: int = 0) -> list[Persona]:

@@ -29,7 +29,8 @@ from artsoc.llm import (
 from artsoc.personas import (
     Persona,
     Registry,
-    build_persona_prompt,
+    build_identity_prompt,
+    build_question_prompt,
     load_registry,
     panel_coverage,
     route,
@@ -481,27 +482,46 @@ def test_persona_prompts_never_carry_scenario_context() -> None:
         "host-only",
         "tel",
     ]
+    question = _question(["deterrence"])
     for persona in load_registry():
         for method in ("m1", "m2", "m3"):
-            prompt = build_persona_prompt(persona, method).lower()
-            for token in forbidden:
-                assert token not in prompt, f"{method} prompt leaked {token!r}"
+            texts = [
+                build_identity_prompt(persona, method).lower(),
+                build_question_prompt(question, "", method).lower(),
+            ]
+            for text in texts:
+                for token in forbidden:
+                    assert token not in text, f"{method} prompt leaked {token!r}"
+
+
+def test_the_no_record_marker_agrees_with_the_backend() -> None:
+    """personas.py cannot import llm.py, so the shared marker must be pinned by a test."""
+    assert personas_module.NO_RECORD_MARKER == NO_RECORD_MARKER
 
 
 def test_m2_without_a_record_signals_the_escape_hatch() -> None:
-    """Empty retrieval must make out_of_record available, not silently invent a record."""
-    persona = load_registry()[0]
-    assert NO_RECORD_MARKER in build_persona_prompt(persona, "m2", record_block="")
-    assert NO_RECORD_MARKER not in build_persona_prompt(
-        persona, "m2", record_block="[brodie:ch1:1] MOCK: placeholder passage"
+    """Empty retrieval must make out_of_record available, not silently invent a record.
+
+    Asserted against the user prompt, which is where a backend reads its markers. See
+    ADR 0001: in the identity prompt the marker would be invisible to the mock and the
+    hatch would never fire.
+    """
+    question = _question(["deterrence"])
+    assert NO_RECORD_MARKER in build_question_prompt(question, "", "m2")
+    assert NO_RECORD_MARKER not in build_question_prompt(
+        question, "[brodie:notes:0] MOCK: placeholder passage", "m2"
     )
 
 
 def test_m1_offers_no_escape_hatch_and_no_record() -> None:
     """M1 is the name-only baseline; 'out of record' has no meaning without a record."""
-    prompt = build_persona_prompt(load_registry()[0], "m1")
-    assert "out_of_record" not in prompt
-    assert NO_RECORD_MARKER not in prompt
+    persona = load_registry()[0]
+    identity = build_identity_prompt(persona, "m1")
+    user = build_question_prompt(_question(["deterrence"]), "", "m1")
+    assert "out_of_record" not in identity
+    assert NO_RECORD_MARKER not in identity
+    assert NO_RECORD_MARKER not in user
+    assert "RECORD:" not in user
 
 
 def test_persona_construction_makes_no_model_call() -> None:
