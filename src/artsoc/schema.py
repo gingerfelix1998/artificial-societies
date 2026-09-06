@@ -350,6 +350,11 @@ class RunRecord(_Model):
     opinions: list[TheoristOpinion] = Field(default_factory=list)
     advisor_brief: AdvisorBrief | None = None
 
+    #: Passage ids an opinion cited that were absent from the block it was shown. A
+    #: hallucinated citation is reported, never corrected: the rate is a finding about the
+    #: method, and silently dropping bad citations would erase it.
+    unsupported_citations: list[str] = Field(default_factory=list)
+
     action: PresidentialAction
     rung: int
     panel_size: int = 0

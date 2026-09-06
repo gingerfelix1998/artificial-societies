@@ -16,9 +16,11 @@ import pytest
 from pydantic import ValidationError
 
 from artsoc import personas as personas_module
+from artsoc.agents import Advisor, President, Theorist
 from artsoc.llm import (
     MOCK_PREFIX,
     NO_RECORD_MARKER,
+    PASSAGE_ID,
     DiskCache,
     LLMClient,
     MockBackend,
@@ -36,15 +38,27 @@ from artsoc.personas import (
     route,
     synthetic_panel,
 )
+from artsoc.retrieval import (
+    CorpusRetriever,
+    StubRetriever,
+    format_passage,
+    get_retriever,
+    verify_citations,
+)
 from artsoc.schema import (
     NUCLEAR_ACTIONS,
     NUCLEAR_THRESHOLD,
     RUNG,
     TAG_SET,
     ActionType,
+    AdvisorBrief,
     AnalyticalQuestion,
+    DoctrineCard,
+    IntelBrief,
     PerceivedEvent,
     PresidentialAction,
+    PresidentialQuery,
+    TheoristOpinion,
     WorldEvent,
     rung_for,
 )
@@ -522,6 +536,170 @@ def test_m1_offers_no_escape_hatch_and_no_record() -> None:
     assert NO_RECORD_MARKER not in identity
     assert NO_RECORD_MARKER not in user
     assert "RECORD:" not in user
+
+
+# ---------------------------------------------------------------------------
+# Retrieval. Invariant 4: a real retriever raises rather than degrading, because a silent
+# fallback would let an ungrounded run be written up as corpus-grounded.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stub_run_can_never_be_read_as_grounded() -> None:
+    """`grounded` travels with the retriever so a caller cannot assert it for itself."""
+    stub = get_retriever("stub")
+    assert stub.mode == "stub"
+    assert stub.grounded is False
+
+
+def test_the_corpus_retriever_raises_rather_than_degrading() -> None:
+    """Invariant 4. A fallback here is undetectable afterwards: the record looks real."""
+    with pytest.raises(NotImplementedError):
+        get_retriever("corpus")
+    with pytest.raises(NotImplementedError):
+        CorpusRetriever()
+    with pytest.raises(ValueError):
+        get_retriever("nonsense")
+
+
+def test_stub_passages_are_citable_by_the_backend() -> None:
+    """An id the backend cannot parse can never be cited, and the metric would read zero."""
+    persona = load_registry()[0]
+    block = StubRetriever().retrieve(persona, "MOCK: question")
+    assert PASSAGE_ID.findall(block) == [f"{persona.persona_id}:notes:0"]
+
+
+def test_one_store_per_persona() -> None:
+    """Persona A retrieving persona B's text could cite another theorist's argument as its own."""
+    personas = load_registry()
+    stub = StubRetriever()
+    a, b = personas[0], personas[1]
+    block_a = stub.retrieve(a, "MOCK: question")
+    assert b.corpus_notes.strip() not in block_a
+    assert b.persona_id not in block_a
+
+
+def test_empty_retrieval_returns_empty_rather_than_inventing() -> None:
+    """Returning "" is what makes the out-of-record hatch fire; it is a feature, not an error."""
+    bare = Persona(persona_id="bare", name="MOCK", tags=["deterrence"], corpus_notes="")
+    assert StubRetriever().retrieve(bare, "MOCK: question") == ""
+
+
+def test_verify_citations_flags_an_id_that_was_never_shown() -> None:
+    """A hallucinated citation is reported, never corrected: the rate is the finding."""
+    block = format_passage("brodie", "notes", 0, "MOCK: placeholder")
+    assert verify_citations(["brodie:notes:0"], block) == []
+    assert verify_citations(["brodie:notes:9"], block) == ["brodie:notes:9"]
+    assert verify_citations([], block) == []
+
+
+# ---------------------------------------------------------------------------
+# The four roles. Boundaries are checked in tests/test_access_matrix.py; these pin the
+# behaviour each role is responsible for.
+# ---------------------------------------------------------------------------
+
+
+def _loop_client(seed: int = 3) -> LLMClient:
+    return LLMClient(backend=MockBackend(), run_seed=seed)
+
+
+def _doctrine() -> DoctrineCard:
+    return load_scenario(SCENARIO_ID).doctrine_card
+
+
+def test_the_advisor_returns_the_number_of_questions_it_asked_for() -> None:
+    """The count marker must reach the prompt, or panel breadth is set by the backend."""
+    advisor = Advisor(_loop_client())
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    for n in (1, 3, 5):
+        questions = advisor.formulate(query, n)
+        assert len(questions) == n
+        assert [q.question_id for q in questions] == [f"q{i}" for i in range(n)]
+
+
+def test_advisor_question_ids_are_assigned_by_the_advisor_not_the_model() -> None:
+    """Ids key the routing record; a model-chosen id could collide or repeat."""
+    advisor = Advisor(_loop_client())
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    ids = [q.question_id for q in advisor.formulate(query, 4)]
+    assert len(set(ids)) == 4
+
+
+def test_consensus_only_drops_minority_positions_and_full_range_keeps_them() -> None:
+    """This contrast is what measures the cost of compression, so it must actually differ."""
+    client = _loop_client()
+    advisor = Advisor(client)
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    opinions = [
+        TheoristOpinion(
+            persona_id=f"p{i}",
+            persona_name=f"MOCK persona {i}",
+            question_id="q0",
+            position=f"MOCK: position {i}",
+            reasoning=f"MOCK: reasoning {i}",
+        )
+        for i in range(4)
+    ]
+    full = advisor.synthesise(query, opinions, "full_range")
+    consensus = advisor.synthesise(query, opinions, "consensus_only")
+    assert full.minority_positions
+    assert consensus.minority_positions == []
+    assert full.synthesis_mode == "full_range"
+    assert consensus.synthesis_mode == "consensus_only"
+    assert full.n_opinions == consensus.n_opinions == 4
+    with pytest.raises(ValueError):
+        advisor.synthesise(query, opinions, "nonsense")
+
+
+def test_a_theorist_with_no_record_declines_rather_than_confabulating() -> None:
+    """Without the hatch, 'X held this' and 'a model generated this' become the same thing."""
+    persona = load_registry()[0]
+    theorist = Theorist(_loop_client(), persona, "m2", retriever=None)
+    question = AnalyticalQuestion(question_id="q0", text="MOCK: question", tags=["deterrence"])
+    opinion, block = theorist.opine(question)
+    assert block == ""
+    assert opinion.out_of_record is True
+
+
+def test_a_theorist_with_a_record_can_cite_it_and_the_citations_verify() -> None:
+    """The full citation path must be exercised, or citation integrity measures nothing."""
+    personas = load_registry()
+    client = _loop_client()
+    retriever = StubRetriever()
+    question = AnalyticalQuestion(question_id="q0", text="MOCK: question", tags=["deterrence"])
+    cited = 0
+    for persona in personas:
+        theorist = Theorist(client, persona, "m2", retriever)
+        opinion, block = theorist.opine(question)
+        assert theorist.unsupported_citations(opinion, block) == []
+        cited += bool(opinion.citations)
+    assert cited > 0, "no persona ever cited its record; the citation path is inert"
+
+
+def test_the_presidential_decision_is_typed_and_scored_deterministically() -> None:
+    """The action is the metric; the justification is qualitative data that never feeds it."""
+    client = _loop_client()
+    president = President(client, _doctrine())
+    intel = IntelBrief(
+        summary="MOCK: brief", assessed_activity="MOCK: activity", confidence="moderate"
+    )
+    brief = AdvisorBrief(summary="MOCK: advisory brief")
+    action = president.decide(intel, brief)
+    assert isinstance(action.action, ActionType)
+    assert action.rung == rung_for(action.action)
+
+
+def test_a_malformed_backend_response_raises_rather_than_being_salvaged() -> None:
+    """A half-parsed record in out/ would look exactly like a complete one."""
+
+    class BrokenBackend:
+        name = "broken"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            return "not json at all"
+
+    client = LLMClient(backend=BrokenBackend(), run_seed=0)
+    with pytest.raises(ValueError):
+        Advisor(client).formulate(PresidentialQuery(text="MOCK:", concerns=[]), 2)
 
 
 def test_persona_construction_makes_no_model_call() -> None:
