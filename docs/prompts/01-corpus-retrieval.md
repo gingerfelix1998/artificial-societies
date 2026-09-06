@@ -7,6 +7,13 @@ single presidential decision under crisis. Phase 1 is one nation, one injected e
 closed loop, replicated under Monte Carlo. The output is a distribution over escalation
 rungs plus ablation contrasts — never a single transcript.
 
+> **This brief describes a future state and is not yet actionable.** As of 2026-09-06 the
+> scaffolding it assumes does not exist: `retrieval.py`, `personas.py`, `agents.py`,
+> `sim.py`, `config.py` and `cli.py` are unwritten, `registry.yaml` is empty, and there is
+> no `tests/test_access_matrix.py`. Only `schema.py`, `world.py` and `llm.py` are built.
+> Do not start this task until those are in place; see the Status section of
+> `docs/approach/phase-01-approach.md`.
+
 The scaffolding is complete and 23 invariant tests pass under `make test` with no API key
 (the `mock` LLM backend exercises the whole loop). What is missing is the piece every
 claim about grounding rests on: real per-theorist corpus retrieval. Right now

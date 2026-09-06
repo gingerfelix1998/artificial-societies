@@ -1,6 +1,9 @@
 # Phase 1 Approach:
 LLM persona panels for simulating nuclear escalation dynamics. Phase 1: one nation, one event, one closed decision loop, replicated under Monte Carlo.
 
+> The commands below are the intended interface. Only `make install` and `make test` work
+> today — `cli.py` is not written. See **Status** at the end of this document.
+
 ```bash
 make install
 make test          # full loop, mock backend, no API key needed
@@ -95,10 +98,31 @@ out/                   run outputs, gitignored
 ```
 
 ## Status
-Working: the full loop, all four roles with enforced boundaries, M1/M2/M3 persona
-construction, config-driven arms, deterministic rung scoring, Monte Carlo runner,
-outcome analysis, 23 invariant tests.
 
-Not done, and not to be described as done: real corpus retrieval (`StubRetriever` is in use), rung validation against a published ladder, `prominence` weights from real citation counts, hand-coded agreement sample for reasoning themes.
+The **Layout** section above is the target architecture, not an inventory. Most of it does
+not exist yet. Status as of 2026-09-06:
+
+Built and passing (`make test`: 23 tests, `make lint`: clean):
+
+- `schema.py` — the closed action space, the deterministic rung ladder, every message type
+- `world.py` — append-only world log, President-only write access, perception filter
+- `llm.py` — the single model choke point, offline mock backend, disk cache
+- `data/scenarios/phase1_tel_dispersal_v1.json` — the ambiguous injected event
+
+Not written yet: `personas.py`, `retrieval.py`, `agents.py`, `config.py`, `sim.py`,
+`coder.py`, `metrics.py`, `cli.py`. `configs/base.yaml`, `configs/arms/*` and
+`data/theorists/registry.yaml` are empty; so are `docs/design.md`, `docs/access-matrix.md`
+and `docs/measurement.md`. There is no `tests/test_access_matrix.py`, so **no role context
+boundary is currently enforced by a test** — the invariant is stated in `CLAUDE.md` and
+nothing yet checks it. `pyproject.toml` declares the `artsoc` console script, but `cli.py`
+does not exist, so the command does not run.
+
+So the foundation layer is done and the four roles, persona construction, routing,
+orchestration and metrics are untouched.
+
+Beyond that scaffold, and not to be described as done: real corpus retrieval
+(`StubRetriever` is not written; nothing is grounded), rung validation against a published
+ladder, `prominence` weights from real citation counts, hand-coded agreement sample for
+reasoning themes.
 
 See `CLAUDE.md` for the invariants and `docs/measurement.md` for what may and may not be claimed from a run.
