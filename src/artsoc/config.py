@@ -72,6 +72,17 @@ class RunConfig(BaseModel):
     #: defaults, so an arm can move one role without restating the rest.
     models: dict[str, str] = Field(default_factory=dict)
 
+    #: Theorist calls fanned out at once. Operational, not experimental: a run must
+    #: produce the same record at any setting, which a test pins. Theorist calls are
+    #: independent by construction — they cannot see each other — so this is safe in a way
+    #: most parallelisation is not.
+    max_concurrency: int = Field(default=4, ge=1)
+
+    #: Re-asks when a model returns something unparseable, and SDK retries on 429/5xx.
+    #: At roughly 40,000 calls in a full sweep, both will happen.
+    max_parse_retries: int = Field(default=2, ge=0)
+    max_api_retries: int = Field(default=3, ge=0)
+
     #: Thinking depth for models that take adaptive thinking. Thinking tokens bill as
     #: output, and output already dominates this workload, so this is the main cost dial.
     effort: str = "medium"

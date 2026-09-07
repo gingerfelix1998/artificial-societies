@@ -25,6 +25,7 @@ import json
 import random
 import time
 from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,10 +141,11 @@ def _consult(
     retriever = _retriever_for(config)
 
     routing: list[RoutingRecord] = []
-    opinions: list[TheoristOpinion] = []
-    unsupported: list[str] = []
     by_id = {p.persona_id: p for p in panel}
 
+    # Routing stays sequential: each selection consumes the run rng, and reordering those
+    # draws would change which personas are chosen.
+    jobs: list[tuple[int, AnalyticalQuestion, str]] = []
     for question in questions:
         # The only branch on arm behaviour in the consultation path. `advisor` models the
         # social act of choosing whom to ask and records the reason; `tag` is the
@@ -154,10 +156,27 @@ def _consult(
             record = route(question, panel, k=config.k_per_question, rng=rng)
         routing.append(record)
         for persona_id in record.selected:
-            theorist = Theorist(client, by_id[persona_id], config.persona_method, retriever)
-            opinion, block = theorist.opine(question)
-            opinions.append(opinion)
-            unsupported.extend(theorist.unsupported_citations(opinion, block))
+            jobs.append((len(jobs), question, persona_id))
+
+    def ask(job: tuple[int, AnalyticalQuestion, str]):
+        index, question, persona_id = job
+        theorist = Theorist(client, by_id[persona_id], config.persona_method, retriever)
+        opinion, block = theorist.opine(question)
+        return index, opinion, theorist.unsupported_citations(opinion, block)
+
+    # The one place fanning out is safe: theorist calls cannot see each other by design, so
+    # nothing about one depends on another having finished. Results are keyed by index and
+    # re-sorted, so the record is ordered by (question, persona) whatever order they return
+    # in — a run must produce the same record at any concurrency, which a test pins.
+    if config.max_concurrency > 1 and len(jobs) > 1:
+        with ThreadPoolExecutor(max_workers=config.max_concurrency) as pool:
+            results = list(pool.map(ask, jobs))
+    else:
+        results = [ask(job) for job in jobs]
+    results.sort(key=lambda r: r[0])
+
+    opinions = [opinion for _, opinion, _ in results]
+    unsupported = [cite for _, _, cites in results for cite in cites]
 
     brief = advisor.synthesise(query, opinions, config.synthesis_mode)
     return query, questions, routing, opinions, brief, unsupported
@@ -187,7 +206,13 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
 
     cache = DiskCache(CACHE_DIR) if use_disk_cache else None
     client = LLMClient(
-        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
+        backend=get_backend(
+            config.backend,
+            config.resolved_models(),
+            effort=config.effort,
+            max_parse_retries=config.max_parse_retries,
+            max_api_retries=config.max_api_retries,
+        ),
         run_seed=seed,
         cache=cache,
         cache_enabled=config.cache_enabled,
@@ -245,22 +270,42 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         personas_consulted=sorted(panel_coverage(routing)),
         llm_calls=client.calls,
         cache_hits=client.cache_hits,
+        retries=client.retries,
         token_usage={m: list(v) for m, v in getattr(client.backend, "usage", {}).items()},
         est_cost_usd=estimate_cost(getattr(client.backend, "usage", {})),
     )
 
 
-def run_many(config: RunConfig, n: int, seed0: int = 1) -> Iterator[RunRecord]:
-    """`n` replications with consecutive seeds.
+def run_many(
+    config: RunConfig,
+    n: int,
+    seed0: int = 1,
+    failures: list[tuple[int, str]] | None = None,
+) -> Iterator[RunRecord]:
+    """`n` replications with consecutive seeds. Failures are recorded, never swallowed.
 
     Seeds are consecutive from `seed0` rather than random so that a sweep is reproducible
-    from two integers, and so a single replication can be re-run in isolation for
-    inspection.
+    from two integers, and so a single replication can be re-run in isolation.
+
+    **A failed replication is recorded and skipped.** Pass a list as `failures` to collect
+    `(seed, reason)`; the caller reports them and `metrics` states how many were attempted.
+
+    Neither alternative is acceptable. Aborting loses a sweep at replication 1,847, which
+    is how people start disabling checks. Dropping silently is worse: a replication may
+    fail for reasons correlated with its outcome — a long theorist answer that exceeded a
+    token limit is not a random sample — so a distribution over the survivors would be
+    quietly biased with nothing in the record to show it.
     """
     if n < 1:
         raise ValueError("n must be at least 1")
     for i in range(n):
-        yield run_once(config, seed0 + i)
+        seed = seed0 + i
+        try:
+            yield run_once(config, seed)
+        except Exception as exc:  # noqa: BLE001 - any failure is data, not a crash
+            if failures is None:
+                raise
+            failures.append((seed, f"{type(exc).__name__}: {exc}"))
 
 
 def write_jsonl(records: Iterable[RunRecord], path: Path, *, append: bool = False) -> int:

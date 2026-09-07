@@ -516,6 +516,10 @@ class RunRecord(_Model):
 
     llm_calls: int = 0
     cache_hits: int = 0
+    #: Calls that succeeded only after a retry. A replication that needed three attempts is
+    #: different data from one that worked first time, and averaging them without knowing
+    #: which was which hides a systematic problem behind a clean-looking distribution.
+    retries: int = 0
 
     #: Tokens that actually reached the provider, per model. Cached calls are absent
     #: because they were never billed, so this is spend rather than volume.

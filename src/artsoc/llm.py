@@ -28,6 +28,7 @@ import json
 import os
 import random
 import re
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -148,6 +149,8 @@ class Backend(Protocol):
 
     def model_for(self, role: Role) -> str: ...
 
+    def generation_signature(self) -> str: ...
+
     def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str: ...
 
 
@@ -167,6 +170,11 @@ class MockBackend:
         # Every role is served by the same nonsense generator. Recording "mock" for all of
         # them is what stops a mock sweep being read later as a cheap live run.
         return "mock"
+
+    def generation_signature(self) -> str:
+        # The mock takes no generation parameters, so there is nothing that could change
+        # its output without changing the prompt.
+        return ""
 
     def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str:
         digest = hashlib.sha256(
@@ -471,6 +479,8 @@ class AnthropicBackend:
         *,
         effort: str = "medium",
         max_tokens: int = 16000,
+        max_parse_retries: int = 2,
+        max_api_retries: int = 3,
     ) -> None:
         try:
             import anthropic
@@ -484,6 +494,9 @@ class AnthropicBackend:
         self._models = {**DEFAULT_MODELS, **(models or {})}
         self.effort = effort
         self.max_tokens = max_tokens
+        self.max_parse_retries = max_parse_retries
+        #: Retries on the most recent call, read by LLMClient after it returns.
+        self.last_retries = 0
 
         # Loaded here rather than at import, so nothing reads .env unless a live backend is
         # actually being constructed — the mock path, and therefore the whole test suite,
@@ -498,10 +511,23 @@ class AnthropicBackend:
         # a profile from `ant auth login`. An unset variable does not mean no credentials,
         # so this does not pre-check one. An auth failure surfaces at call time as an SDK
         # error and is never swallowed.
-        self._client = anthropic.Anthropic()
+        # The SDK retries 429 and 5xx with exponential backoff. Stated explicitly rather
+        # than left to the default, because at ~40,000 calls a sweep will meet both.
+        self._client = anthropic.Anthropic(max_retries=max_api_retries)
 
     def model_for(self, role: Role) -> str:
         return self._models[role.value]
+
+    def generation_signature(self) -> str:
+        """Generation parameters that change output, for the cache key.
+
+        `effort` is described in `configs/base.yaml` as the main cost dial and it changes
+        what the model produces. Without it in the key, a sweep at `effort: medium` would
+        be served entries written at `low`: the record would name one setting while the
+        numbers came from another. That is the provenance failure ADR 0002 fixed for
+        models, and it was still open for generation parameters.
+        """
+        return f"effort={self.effort};max_tokens={self.max_tokens}"
 
     def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str:
         # seed_hint is accepted and unused: there is no sampling seed on these models. It
@@ -518,7 +544,8 @@ class AnthropicBackend:
             kwargs["thinking"] = {"type": "adaptive"}
             kwargs["output_config"] = {"effort": self.effort}
 
-        for attempt in range(2):
+        self.last_retries = 0
+        for attempt in range(self.max_parse_retries + 1):
             response = self._client.messages.create(**kwargs)
             if response.stop_reason == "refusal":
                 raise RuntimeError(
@@ -538,10 +565,12 @@ class AnthropicBackend:
                 # Every role is asked for JSON, so unparseable output is a transport
                 # problem, not a result. Retried once, then raised — never patched up,
                 # because a salvaged half-response would enter the record looking whole.
-                if attempt == 0:
+                if attempt < self.max_parse_retries:
+                    self.last_retries += 1
                     continue
                 raise ValueError(
-                    f"{role.value} on {model} returned non-JSON twice: {text[:200]!r}"
+                    f"{role.value} on {model} returned non-JSON after "
+                    f"{self.max_parse_retries + 1} attempts: {text[:200]!r}"
                 ) from None
             return text
         raise AssertionError("unreachable")  # pragma: no cover
@@ -583,9 +612,14 @@ class DiskCache:
             return None
 
     def put(self, key: str, response: str) -> None:
+        # Written to a temporary file and renamed. Rename is atomic on POSIX, so a reader
+        # sees either the old entry or the complete new one — never a truncated JSON
+        # document, which a concurrent fan-out would otherwise make reachable.
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"response": response}), encoding="utf-8")
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"response": response}), encoding="utf-8")
+        tmp.replace(path)
 
 
 @dataclass
@@ -623,7 +657,14 @@ class LLMClient:
     cache_enabled: bool = True
     calls: int = 0
     cache_hits: int = 0
+    #: Calls that succeeded only after a retry. A replication needing three attempts is
+    #: different data from one that worked first time, so it is recorded rather than lost.
+    retries: int = 0
     call_log: list[CallRecord] = field(default_factory=list)
+    #: The theorist fan-out is concurrent, so every mutation below is guarded. Without
+    #: this, `calls` and `cache_hits` would undercount under load and the record would
+    #: understate what a run actually cost.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def complete(self, *, role: Role, system: str, prompt: str, cacheable: bool = True) -> str:
         # The declared role and the marker in the system prompt must agree. Role
@@ -636,31 +677,36 @@ class LLMClient:
             )
 
         model = self.backend.model_for(role)
+        # The model and its generation parameters are both part of the cache key. Two
+        # models given the same prompt are two different calls, and so are two efforts:
+        # serving one's cached answer as the other's would put a response in the record
+        # under settings that never produced it.
+        generation = getattr(self.backend, "generation_signature", lambda: "")()
         salt = self._salt(cacheable)
-        # The model is part of the cache key. Two models given the same prompt are two
-        # different calls, and serving one's cached answer as the other's would put a
-        # response in the record under a model that never produced it.
-        key = self._key(role, system, prompt, salt, model)
+        key = self._key(role, system, prompt, salt, model, generation)
         use_cache = self.cache is not None and self.cache_enabled and cacheable
 
         if use_cache:
             hit = self.cache.get(key)  # type: ignore[union-attr]
             if hit is not None:
-                self.calls += 1
-                self.cache_hits += 1
-                self.call_log.append(
-                    CallRecord(role, system, prompt, hit, cached=True, model=model)
-                )
+                with self._lock:
+                    self.calls += 1
+                    self.cache_hits += 1
+                    self.call_log.append(
+                        CallRecord(role, system, prompt, hit, cached=True, model=model)
+                    )
                 return hit
 
         response = self.backend.complete(role, system, prompt, salt)
         if use_cache:
             self.cache.put(key, response)  # type: ignore[union-attr]
 
-        self.calls += 1
-        self.call_log.append(
-            CallRecord(role, system, prompt, response, cached=False, model=model)
-        )
+        with self._lock:
+            self.calls += 1
+            self.retries += getattr(self.backend, "last_retries", 0)
+            self.call_log.append(
+                CallRecord(role, system, prompt, response, cached=False, model=model)
+            )
         return response
 
     def _salt(self, cacheable: bool) -> str:
@@ -668,10 +714,21 @@ class LLMClient:
             return f"seed={self.run_seed}"
         return "" if cacheable else f"seed={self.run_seed}"
 
-    def _key(self, role: Role, system: str, prompt: str, salt: str, model: str) -> str:
+    def _key(
+        self, role: Role, system: str, prompt: str, salt: str, model: str, generation: str
+    ) -> str:
         return hashlib.sha256(
             "\x00".join(
-                [self.backend.name, model, MOCK_VERSION, role.value, system, prompt, salt]
+                [
+                    self.backend.name,
+                    model,
+                    generation,
+                    MOCK_VERSION,
+                    role.value,
+                    system,
+                    prompt,
+                    salt,
+                ]
             ).encode("utf-8")
         ).hexdigest()
 

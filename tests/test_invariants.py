@@ -1365,3 +1365,136 @@ def test_the_advisor_may_answer_with_the_marker_it_was_shown() -> None:
     assert len(record.chosen_by_advisor) == 4
     assert record.topped_up == [], "a fully-honoured selection needs no top-up"
     assert set(record.chosen_by_advisor) <= {p.persona_id for p in personas}
+
+
+# ---------------------------------------------------------------------------
+# Sweep readiness: provenance in the cache key, retries, failure policy, concurrency.
+# ---------------------------------------------------------------------------
+
+
+def test_two_efforts_do_not_share_cache_entries(tmp_path) -> None:
+    """`effort` changes output, so it must change the key.
+
+    Without it a sweep at effort=medium is served entries written at low: the record names
+    one setting while the numbers came from another. That is the provenance failure ADR
+    0002 fixed for models, and it was still open for generation parameters.
+    """
+
+    class Tunable:
+        name = "tunable"
+
+        def __init__(self, effort: str) -> None:
+            self.effort = effort
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "same-model"
+
+        def generation_signature(self) -> str:
+            return f"effort={self.effort}"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            return json.dumps({"effort": self.effort})
+
+    system = f"{role_marker(Role.THEORIST)} identity"
+    low = LLMClient(backend=Tunable("low"), run_seed=1, cache=DiskCache(tmp_path))
+    high = LLMClient(backend=Tunable("high"), run_seed=1, cache=DiskCache(tmp_path))
+    low.complete(role=Role.THEORIST, system=system, prompt="Q")
+    high.complete(role=Role.THEORIST, system=system, prompt="Q")
+    assert high.cache_hits == 0, "a different effort must miss the cache"
+
+    again = LLMClient(backend=Tunable("low"), run_seed=2, cache=DiskCache(tmp_path))
+    again.complete(role=Role.THEORIST, system=system, prompt="Q")
+    assert again.cache_hits == 1, "the same effort must still reuse its own entry"
+
+
+def test_a_failed_replication_is_recorded_not_silently_dropped() -> None:
+    """A distribution over the survivors is biased unless the losses are visible.
+
+    A replication may fail for reasons correlated with its outcome — a long theorist answer
+    that exceeded a token limit is not a random sample — so the seeds must be reported.
+    """
+    config = _mock(load_arm("baseline"))
+    failures: list[tuple[int, str]] = []
+
+    calls = {"n": 0}
+    real = run_once
+
+    def flaky(cfg, seed, **kw):
+        calls["n"] += 1
+        if seed == 3:
+            raise RuntimeError("simulated transient failure")
+        return real(cfg, seed, **kw)
+
+    import artsoc.sim as sim_module
+
+    original = sim_module.run_once
+    sim_module.run_once = flaky
+    try:
+        records = list(sim_module.run_many(config, 4, 1, failures))
+    finally:
+        sim_module.run_once = original
+
+    assert len(records) == 3, "the sweep must continue past a failure"
+    assert [f[0] for f in failures] == [3], "the failing seed must be named"
+    assert "simulated transient failure" in failures[0][1]
+
+
+def test_without_a_failure_list_a_failure_still_raises() -> None:
+    """Collecting failures is opt-in; nothing swallows an error by default."""
+    import artsoc.sim as sim_module
+
+    original = sim_module.run_once
+    sim_module.run_once = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            list(sim_module.run_many(_mock(load_arm("baseline")), 2, 1))
+    finally:
+        sim_module.run_once = original
+
+
+def test_the_record_is_identical_at_any_concurrency() -> None:
+    """The invariant concurrency must not break.
+
+    Theorist calls are fanned out because they cannot see each other, but the record has to
+    stay reproducible from a config and a seed. Results are keyed by index and re-sorted,
+    so completion order cannot reach the output.
+    """
+    base = _mock(load_arm("baseline"))
+    dumps = []
+    for concurrency in (1, 4, 8):
+        record = run_once(
+            base.model_copy(update={"max_concurrency": concurrency}), 7, use_disk_cache=False
+        )
+        payload = record.model_dump(mode="json")
+        for volatile in ("wall_time_s", "started_at"):
+            payload.pop(volatile)
+        payload["config"].pop("max_concurrency")
+        dumps.append(json.dumps(payload, sort_keys=True))
+
+    assert dumps[0] == dumps[1] == dumps[2], "concurrency changed the record"
+    assert json.loads(dumps[0])["opinions"], "no opinions; the comparison would be vacuous"
+
+
+def test_the_access_matrix_scan_does_not_depend_on_call_order() -> None:
+    """`prompts_for` is completion-ordered once the fan-out is concurrent.
+
+    The canary tests scan content rather than sequence, which was incidental until now.
+    Asserted so it stays true deliberately rather than by luck.
+    """
+    source = pathlib.Path(llm_module.__file__).read_text(encoding="utf-8")
+    assert "def prompts_for" in source
+    client = LLMClient(backend=MockBackend(), run_seed=1)
+    system = f"{role_marker(Role.THEORIST)} identity"
+    for i in range(3):
+        client.complete(role=Role.THEORIST, system=system, prompt=f"Q{i}")
+    assert len(client.prompts_for(Role.THEORIST)) == 3
+    assert set(client.prompts_for(Role.THEORIST)) == {
+        (system, f"Q{i}") for i in range(3)
+    }
+
+
+def test_the_record_counts_retries() -> None:
+    """A replication that needed three attempts is different data from one that did not."""
+    assert "retries" in RunRecord.model_fields
+    record = _run("baseline", 1)
+    assert record.retries == 0, "the mock never returns unparseable output"

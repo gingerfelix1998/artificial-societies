@@ -102,9 +102,21 @@ def cmd_run(arm: str, n: int, seed0: int, out_dir: Path | None, append: bool) ->
             "  Remove models_override from configs/base.yaml before collecting results."
         )
     target = (out_dir or DEFAULT_OUT_DIR) / f"{arm}.jsonl"
-    records = list(run_many(config, n, seed0))
+    failures: list[tuple[int, str]] = []
+    records = list(run_many(config, n, seed0, failures))
     written = write_jsonl(records, target, append=append)
     print(f"{arm}: wrote {written} records to {target}")
+
+    if failures:
+        # Reported with their seeds, never silently dropped. A replication may fail for
+        # reasons correlated with its outcome, so a distribution over the survivors is
+        # biased unless the reader can see how many were lost and re-run them.
+        print(f"  {len(failures)} of {n} replications FAILED and are not in the output:")
+        for seed, reason in failures[:5]:
+            print(f"    seed {seed}: {reason[:110]}")
+        if len(failures) > 5:
+            print(f"    ... and {len(failures) - 5} more")
+        print("  Re-run individually with --seed0 <seed> --n 1 to reproduce.")
 
     spend = sum(r.est_cost_usd for r in records)
     if spend:
