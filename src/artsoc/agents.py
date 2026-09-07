@@ -600,15 +600,15 @@ class Theorist:
         The block comes back so the caller can run `verify_citations` against exactly what
         this persona saw, rather than against a corpus it may not have been given.
         """
-        record_block = ""
+        record_block, basis = "", "none"
         if self.method != "m1" and self.retriever is not None:
-            record_block = self.retriever.retrieve(self.persona, question.text)
+            record_block, basis = self.retriever.retrieve(self.persona, question.text)
 
         system = build_identity_prompt(self.persona, self.method)
         # The identity prompt is built by personas.py, which cannot import llm.py, so the
         # role marker is applied here at the boundary instead.
         system = _system(Role.THEORIST, system)
-        prompt = build_question_prompt(question, record_block, self.method)
+        prompt = build_question_prompt(question, record_block, self.method, basis)
         prompt = (
             f"{prompt}\n\nProduce JSON with keys: position, reasoning, citations, "
             "out_of_record, confidence. `citations` is a list of the bracketed passage "
@@ -638,6 +638,9 @@ class Theorist:
             out_of_record=bool(payload.get("out_of_record", False)),
             confidence=float(payload.get("confidence", 0.5)),
             method=self.method,
+            # From the retriever, not from the model: only the thing that did the
+            # retrieving knows which store the text came from.
+            basis=basis,
         )
         return opinion, record_block
 

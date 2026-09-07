@@ -67,6 +67,13 @@ class Persona(BaseModel):
     #: Wikipedia page title for `artsoc ingest`. None means this persona has no corpus and
     #: will decline every question — correct behaviour, not a failure to work around.
     wikipedia: str | None = None
+    #: VERIFIED Semantic Scholar author id, or None. Verified against the author's actual
+    #: top papers: a name search alone resolved "Bernard Brodie" to a pharmacologist. A
+    #: wrong id fills a persona's store with another person's work, so None is preferred.
+    semantic_scholar: str | None = None
+    #: Titles whose abstracts are looked up directly, which sidesteps author
+    #: disambiguation. Patchy by nature — most of this literature predates abstracts.
+    key_works: list[str] = Field(default_factory=list)
     prominence: float = Field(
         default=0.5,
         description="INVENTED placeholder, not a citation count. Not used for weighting.",
@@ -191,8 +198,27 @@ def build_identity_prompt(persona: Persona, method: str) -> str:
     )
 
 
+#: How a belief block is framed. Distinct from the source framing on purpose.
+#:
+#: A persona shown its own stated positions and told to "answer from your written record
+#: and cite the passage ids" declines, because a position is not a record and has no
+#: source to cite. That is what happened: retrieval supplied beliefs to three of
+#: twenty-four theorists and every one of them still declined. Beliefs are reasoned from
+#: directly; they need no source behind them, which is the whole point of the fallback
+#: (ADR 0004).
+_BELIEF_FRAMING = (
+    "The corpus does not cover this question, but these are positions you argued for. "
+    "Reason from them directly: they are your own views and need no source to support "
+    "them. Cite their ids as the basis of your answer. Decline only if the question is "
+    "genuinely unrelated to the positions below."
+)
+
+
 def build_question_prompt(
-    question: AnalyticalQuestion, record_block: str = "", method: str = "m2"
+    question: AnalyticalQuestion,
+    record_block: str = "",
+    method: str = "m2",
+    basis: str = "sources",
 ) -> str:
     """The user prompt: one decontextualised question, plus this persona's own record.
 
@@ -211,6 +237,11 @@ def build_question_prompt(
         return f"QUESTION:\n{question.text}"
 
     block = record_block.strip() or NO_RECORD_MARKER
+    if basis == "beliefs" and record_block.strip():
+        return (
+            f"QUESTION:\n{question.text}\n\n"
+            f"YOUR STATED POSITIONS:\n{block}\n\n{_BELIEF_FRAMING}"
+        )
     return f"QUESTION:\n{question.text}\n\nRECORD:\n{block}"
 
 

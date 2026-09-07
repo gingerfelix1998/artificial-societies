@@ -29,6 +29,17 @@
 # population's advantage, and the baseline-vs-m1_ungrounded contrast may measure little,
 # because a model has already read Wikipedia.
 #
+# `semantic_scholar` is a VERIFIED author id, or null. Each was checked against that
+# author's actual top-cited papers, not taken from a name search. Two are deliberately
+# null: "Bernard Brodie" resolves to the pharmacologist (acetaminophen hepatic necrosis,
+# h=84) and "Lawrence Freedman" to a merged author whose top works are by P.W. Singer and
+# James Mann. A wrong id fills a persona's store with another person's writing, which is
+# worse than an empty store. Those two rely on `key_works` title lookup alone.
+#
+# `key_works` are the titles abstracts are looked up by, which sidesteps author
+# disambiguation entirely. Coverage is patchy — most of this literature predates abstracts
+# — and a work with no abstract anywhere is recorded as a miss rather than invented.
+#
 # Three personas were removed when the pages were checked: Caitlin Talmadge and
 # Keir Lieber / Daryl Press have no article, and Vipin Narang's is about 150 words. They
 # belong back in the registry the moment a primary-text corpus exists.
@@ -40,6 +51,11 @@ personas:
     name: Bernard Brodie
     era: early_deterrence
     wikipedia: 'Bernard Brodie (military strategist)'
+    semantic_scholar: null
+    key_works:
+      - 'The Absolute Weapon: Atomic Power and World Order'
+      - 'Strategy in the Missile Age'
+      - 'War and Politics'
     prominence: 0.85 # INVENTED
     tags: [deterrence, doctrine, credibility, escalation]
     corpus_notes: >-
@@ -50,6 +66,11 @@ personas:
     name: Thomas Schelling
     era: early_deterrence
     wikipedia: 'Thomas Schelling'
+    semantic_scholar: '5068532'
+    key_works:
+      - 'The Strategy of Conflict'
+      - 'Arms and Influence'
+      - 'The Reciprocal Fear of Surprise Attack'
     prominence: 0.95 # INVENTED
     tags: [signalling, coercion, credibility, escalation, deterrence]
     corpus_notes: >-
@@ -60,6 +81,11 @@ personas:
     name: Herman Kahn
     era: early_deterrence
     wikipedia: 'Herman Kahn'
+    semantic_scholar: '143603002'
+    key_works:
+      - 'On Thermonuclear War'
+      - 'On Escalation: Metaphors and Scenarios'
+      - 'Thinking About the Unthinkable'
     prominence: 0.75 # INVENTED
     tags: [escalation, escalation_control, doctrine, posture]
     corpus_notes: >-
@@ -70,6 +96,10 @@ personas:
     name: Albert Wohlstetter
     era: early_deterrence
     wikipedia: 'Albert Wohlstetter'
+    semantic_scholar: '98481021'
+    key_works:
+      - 'The Delicate Balance of Terror'
+      - 'Is There a Strategic Arms Race?'
     prominence: 0.70 # INVENTED
     tags: [survivability, first_strike, posture, deterrence]
     corpus_notes: >-
@@ -80,6 +110,11 @@ personas:
     name: Robert Jervis
     era: cold_war_theory
     wikipedia: 'Robert Jervis'
+    semantic_scholar: '38456725'
+    key_works:
+      - 'Perception and Misperception in International Politics'
+      - 'Cooperation Under the Security Dilemma'
+      - 'The Illogic of American Nuclear Strategy'
     prominence: 0.90 # INVENTED
     tags: [misperception, signalling, escalation, credibility, inadvertent_escalation]
     corpus_notes: >-
@@ -90,6 +125,11 @@ personas:
     name: Kenneth Waltz
     era: cold_war_theory
     wikipedia: 'Kenneth Waltz'
+    semantic_scholar: '39402289'
+    key_works:
+      - 'Theory of International Politics'
+      - 'The Spread of Nuclear Weapons: More May Be Better'
+      - 'Nuclear Myths and Political Realities'
     prominence: 0.88 # INVENTED
     tags: [proliferation, deterrence, posture, norms]
     corpus_notes: >-
@@ -100,6 +140,11 @@ personas:
     name: Scott Sagan
     era: post_cold_war
     wikipedia: 'Scott Sagan'
+    semantic_scholar: '4427745'
+    key_works:
+      - 'The Limits of Safety: Organizations, Accidents, and Nuclear Weapons'
+      - 'Why Do States Build Nuclear Weapons?'
+      - 'The Causes of Nuclear Weapons Proliferation'
     prominence: 0.87 # INVENTED
     tags: [organisational, c2, inadvertent_escalation, proliferation, taboo]
     corpus_notes: >-
@@ -110,6 +155,11 @@ personas:
     name: Barry Posen
     era: cold_war_theory
     wikipedia: 'Barry Posen'
+    semantic_scholar: '66949810'
+    key_works:
+      - 'Inadvertent Escalation: Conventional War and Nuclear Risks'
+      - 'The Sources of Military Doctrine'
+      - 'Command of the Commons'
     prominence: 0.65 # INVENTED
     tags: [inadvertent_escalation, organisational, doctrine, escalation_control]
     corpus_notes: >-
@@ -120,6 +170,10 @@ personas:
     name: Nina Tannenwald
     era: post_cold_war
     wikipedia: 'Nina Tannenwald'
+    semantic_scholar: '66185977'
+    key_works:
+      - 'The Nuclear Taboo: The United States and the Non-Use of Nuclear Weapons Since 1945'
+      - 'Stigmatizing the Bomb: Origins of the Nuclear Taboo'
     prominence: 0.72 # INVENTED
     tags: [taboo, norms, deterrence]
     corpus_notes: >-
@@ -130,6 +184,11 @@ personas:
     name: Alexander George
     era: cold_war_theory
     wikipedia: 'Alexander L. George'
+    semantic_scholar: '97762784'
+    key_works:
+      - 'Deterrence in American Foreign Policy: Theory and Practice'
+      - 'The Operational Code: A Neglected Approach to the Study of Political Leaders'
+      - 'Case Studies and Theory Development in the Social Sciences'
     prominence: 0.68 # INVENTED
     tags: [coercion, signalling, credibility, escalation_control]
     corpus_notes: >-
@@ -140,6 +199,11 @@ personas:
     name: Lawrence Freedman
     era: post_cold_war
     wikipedia: 'Lawrence Freedman'
+    semantic_scholar: null
+    key_works:
+      - 'The Evolution of Nuclear Strategy'
+      - 'Strategy: A History'
+      - 'Deterrence'
     prominence: 0.80 # INVENTED
     tags: [doctrine, deterrence, escalation, regional]
     corpus_notes: >-
@@ -150,6 +214,11 @@ personas:
     name: Bruce Blair
     era: post_cold_war
     wikipedia: 'Bruce G. Blair'
+    semantic_scholar: '69353658'
+    key_works:
+      - 'The Logic of Accidental Nuclear War'
+      - 'Strategic Command and Control: Redefining the Nuclear Threat'
+      - 'Atomic Audit: The Costs and Consequences of U.S. Nuclear Weapons'
     prominence: 0.62 # INVENTED
     tags: [c2, survivability, organisational, inadvertent_escalation]
     corpus_notes: >-

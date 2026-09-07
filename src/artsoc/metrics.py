@@ -102,6 +102,12 @@ class ArmSummary:
     #: zero rate there is correct rather than a warning.
     persona_method: str
 
+    #: Share of stated positions resting on the belief store rather than on retrieved
+    #: sources. Read with the decline rate: together they say whether a panel that answers
+    #: freely is doing so from evidence or from ideology (ADR 0004).
+    basis_counts: dict[str, int] = field(default_factory=dict)
+    beliefs_share: float = 0.0
+
     #: Which model served each role. One distinct value across every role means a smoke
     #: test: the presidential decision is the primary metric, and serving it from the same
     #: cheap model as everything else changes what was measured, not just what it cost.
@@ -147,6 +153,12 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
         mean_run_coverage=round(statistics.fmean(per_run), 3) if per_run else 0.0,
         n_opinions=len(opinions),
         out_of_record_rate=round(declined / len(opinions), 4) if opinions else 0.0,
+        basis_counts=dict(Counter(o.basis for o in opinions)),
+        beliefs_share=round(
+            sum(1 for o in opinions if o.basis == "beliefs" and not o.out_of_record)
+            / max(1, sum(1 for o in opinions if not o.out_of_record)),
+            4,
+        ),
         n_citations=citations,
         n_unsupported=unsupported,
         citation_integrity=round(1 - unsupported / citations, 4) if citations else 1.0,
@@ -195,6 +207,17 @@ def _warnings(s: ArmSummary) -> list[str]:
             f"{s.mean_run_coverage:.0%} of its {s.declared_panel_size}-persona panel. The "
             "panel-size claim must be restated at the number actually consulted, not the "
             "number available."
+        )
+    # ADR 0004 replaced "a near-zero out-of-record rate is a warning" with the combination
+    # that actually matters: personas answering freely while resting on ideology rather than
+    # on retrieved sources. A low decline rate over well-sourced positions is a grounded
+    # panel and is not warned about.
+    if s.n_opinions and s.beliefs_share > 0.5 and s.out_of_record_rate < 0.2:
+        out.append(
+            f"POSITIONS REST ON BELIEF, NOT SOURCES ({s.arm}): {s.beliefs_share:.0%} of "
+            f"stated positions came from the belief store while only "
+            f"{s.out_of_record_rate:.0%} declined. The panel is asserting what these "
+            "theorists held rather than citing where they held it."
         )
     # M1 personas are given no record, so there is nothing for them to be outside of and a
     # zero rate is correct. Warning there would train the reader to ignore the warning.

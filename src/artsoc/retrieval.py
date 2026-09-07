@@ -49,7 +49,7 @@ class Retriever(Protocol):
     mode: str
     grounded: bool
 
-    def retrieve(self, persona: Persona, question_text: str) -> str: ...
+    def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]: ...
 
 
 def format_passage(persona_id: str, source: str, index: int, text: str) -> str:
@@ -73,15 +73,16 @@ class StubRetriever:
     mode = "stub"
     grounded = False
 
-    def retrieve(self, persona: Persona, question_text: str) -> str:
+    def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
         # question_text is accepted and deliberately unused: the stub does no relevance
         # selection at all. A stub that appeared to select would invite the reader to
         # interpret which passages came back, and there is nothing there to interpret.
         if not persona.corpus_notes.strip():
             # No note for this persona, so nothing was "retrieved". Returning empty is the
             # mechanism that makes out_of_record fire, which is the honest outcome here.
-            return ""
-        return format_passage(persona.persona_id, "notes", 0, persona.corpus_notes.strip())
+            return "", "none"
+        block = format_passage(persona.persona_id, "notes", 0, persona.corpus_notes.strip())
+        return block, "sources"
 
 
 #: Words carrying no topical signal. Kept deliberately short: an aggressive stoplist would
@@ -184,6 +185,7 @@ class CorpusRetriever:
         *,
         top_k: int = 3,
         min_terms: int = 1,
+        belief_min_terms: int | None = None,
     ) -> None:
         self.root = corpus_root or CORPUS_ROOT
         if not self.root.is_dir():
@@ -194,20 +196,53 @@ class CorpusRetriever:
             )
         self.top_k = top_k
         self.min_terms = min_terms
+        # Beliefs need their own, lower bar. The same absolute count applied to a 150-word
+        # source chunk and a one-sentence belief is not the same test: a short statement
+        # cannot contain that many distinct query terms, so beliefs failed whenever sources
+        # did and the fallback never fired once across 84 persona-question pairs.
+        self.belief_min_terms = (
+            belief_min_terms if belief_min_terms is not None else max(1, min_terms - 1)
+        )
         self._cache: dict[str, list[dict[str, Any]]] = {}
 
-    def _load(self, persona_id: str) -> list[dict[str, Any]]:
-        """This persona's chunks, or an empty list if it has no store."""
-        if persona_id not in self._cache:
-            path = self.root / persona_id / "chunks.jsonl"
+    def _load(self, persona_id: str, filename: str = "chunks.jsonl") -> list[dict[str, Any]]:
+        """One of this persona's stores, or an empty list if it has none."""
+        key = f"{persona_id}/{filename}"
+        if key not in self._cache:
+            path = self.root / persona_id / filename
             if not path.exists():
-                self._cache[persona_id] = []
+                self._cache[key] = []
             else:
-                self._cache[persona_id] = [
+                self._cache[key] = [
                     json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
                     if line.strip()
                 ]
-        return self._cache[persona_id]
+        return self._cache[key]
+
+    def _select(
+        self, chunks: list[dict[str, Any]], query: list[str], min_terms: int | None = None
+    ) -> str:
+        """Filter for relevance, then rank, then render. Empty when nothing is relevant.
+
+        Filtering before ranking matters: for a question about deterrent credibility,
+        Schelling's top-scoring chunk was his global-warming work, matching only "threat",
+        while the chunk that mentioned credibility ranked third. A passage has to be about
+        what was asked before its score means anything.
+        """
+        if not chunks:
+            return ""
+        wanted = set(query)
+        floor = self.min_terms if min_terms is None else min_terms
+        eligible = [
+            c for c in chunks if len(wanted & set(tokenise(c["text"]))) >= floor
+        ]
+        if not eligible:
+            return ""
+        ranked = self._rank(eligible, query)
+        selected = [eligible[i] for score, i in ranked[: self.top_k] if score > 0]
+        if not selected:
+            return ""
+        return "\n\n".join(f"[{c['passage_id']}] {c['text']}" for c in selected)
 
     def _rank(self, chunks: list[dict[str, Any]], query: list[str]) -> list[tuple[float, int]]:
         """BM25 scores over one persona's store, highest first."""
@@ -234,35 +269,30 @@ class CorpusRetriever:
         scored.sort(key=lambda pair: (-pair[0], pair[1]))
         return scored
 
-    def retrieve(self, persona: Persona, question_text: str) -> str:
-        chunks = self._load(persona.persona_id)
-        if not chunks:
-            # No documents for this persona. Returning empty is what makes out_of_record
-            # fire, which is the honest answer rather than an error path.
-            return ""
+    def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
+        """Return `(block, basis)` — sources first, beliefs only as a fallback.
 
+        The order is the whole design (ADR 0004). A persona whose corpus covers the
+        question reasons from the corpus; beliefs are what it falls back on when the corpus
+        does not. And beliefs are filtered by the *same* relevance test, so a question that
+        overlaps none of them retrieves nothing and the persona declines — which is what
+        stops the out-of-record rate collapsing to zero.
+        """
         query = tokenise(question_text)
         if not query:
-            return ""
+            return "", "none"
 
-        # Filter for relevance, THEN rank. Ranking everything and inspecting the winner
-        # was wrong: for a question about deterrent credibility, Schelling's top-scoring
-        # chunk was his global-warming work, matching only "threat", while the chunk that
-        # actually mentioned credibility ranked third. A passage has to be about what was
-        # asked before its score means anything.
-        wanted = set(query)
-        eligible = [
-            (i, c) for i, c in enumerate(chunks)
-            if len(wanted & set(tokenise(c["text"]))) >= self.min_terms
-        ]
-        if not eligible:
-            return ""
+        block = self._select(self._load(persona.persona_id), query)
+        if block:
+            return block, "sources"
 
-        ranked = self._rank([c for _, c in eligible], query)
-        selected = [eligible[i][1] for score, i in ranked[: self.top_k] if score > 0]
-        if not selected:
-            return ""
-        return "\n\n".join(f"[{c['passage_id']}] {c['text']}" for c in selected)
+        block = self._select(
+            self._load(persona.persona_id, "beliefs.jsonl"), query, self.belief_min_terms
+        )
+        if block:
+            return block, "beliefs"
+
+        return "", "none"
 
 
 def get_retriever(mode: str, **kwargs: Any) -> Retriever:

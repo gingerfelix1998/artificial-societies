@@ -79,8 +79,18 @@ retrieval_mode: corpus
 # stemmer. Retrieval surfaces candidates; the persona still judges whether what it was
 # shown supports a position, and declines if not. Tightening this is a job for the ranker
 # that replaces BM25, not for the threshold.
+# Calibrated against the real corpora over the questions a live advisor actually asked:
+#   3 / 2  ->  77% sources,  6% beliefs, 17% decline   (sources swamp the fallback)
+#   4 / 2  ->  42% sources, 24% beliefs, 35% decline   <- a real three-way split
+#   4 / 1  ->  42% sources, 52% beliefs,  6% decline   (the warning condition: a panel
+#                                                       answering freely from ideology)
+#
+# The belief bar is lower because beliefs are single sentences and source chunks are ~150
+# words. One absolute term count is a much harder test for the short one — applied to both,
+# the fallback never fired once across 84 persona-question pairs.
 retrieval_top_k: 3
-retrieval_min_terms: 1
+retrieval_min_terms: 4
+retrieval_belief_min_terms: 2
 
 # The full loop: intelligence brief, presidential query, panel, advisory brief, decision.
 consult_panel: true

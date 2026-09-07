@@ -103,6 +103,12 @@ class RunConfig(BaseModel):
     #: experimental rather than operational: raise it and personas decline more.
     retrieval_min_terms: int = Field(default=1, ge=0)
 
+    #: The same bar for the belief store. Lower by default because beliefs are single
+    #: sentences and source chunks are ~150 words: an absolute term count is a much harder
+    #: test for the short one, and applying one number to both meant the fallback never
+    #: fired. None derives it as `retrieval_min_terms - 1`.
+    retrieval_belief_min_terms: int | None = Field(default=None, ge=0)
+
     #: False for the control arm: President and intelligence brief, no advisor, no panel.
     consult_panel: bool = True
 

@@ -74,7 +74,10 @@ def _retriever_for(config: RunConfig):
     """
     if config.retrieval_mode == "corpus":
         return get_retriever(
-            "corpus", top_k=config.retrieval_top_k, min_terms=config.retrieval_min_terms
+            "corpus",
+            top_k=config.retrieval_top_k,
+            min_terms=config.retrieval_min_terms,
+            belief_min_terms=config.retrieval_belief_min_terms,
         )
     return get_retriever(config.retrieval_mode)
 

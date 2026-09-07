@@ -17,12 +17,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from artsoc.config import list_arms, load_arm, varied_fields
+from artsoc.config import base_defaults, list_arms, load_arm, varied_fields
 from artsoc.ingest import ingest_all
+from artsoc.llm import DiskCache, LLMClient, get_backend
 from artsoc.metrics import report_for_files
 from artsoc.personas import load_registry
 from artsoc.retrieval import CORPUS_ROOT
-from artsoc.sim import DEFAULT_OUT_DIR, run_many, write_jsonl
+from artsoc.sim import CACHE_DIR, DEFAULT_OUT_DIR, run_many, write_jsonl
 
 #: The only options that may exist outside a config file. Asserted by a test.
 PERMITTED_RUN_FLAGS: frozenset[str] = frozenset({"--n", "--seed0", "--out-dir", "--append"})
@@ -125,13 +126,28 @@ def cmd_run(arm: str, n: int, seed0: int, out_dir: Path | None, append: bool) ->
 
 def cmd_ingest() -> int:
     personas = load_registry()
-    print(f"ingesting {len(personas)} personas from Wikipedia (tertiary source)\n")
-    manifests, failures = ingest_all(personas)
+    config = base_defaults()
+
+    # Beliefs are generated from each persona's own fetched sources, so ingestion needs a
+    # backend. It uses the same path a run does: a mock ingest produces obviously-fake
+    # beliefs and cannot be mistaken for a real corpus.
+    client = LLMClient(
+        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
+        run_seed=0,
+        cache=DiskCache(CACHE_DIR),
+        cache_enabled=True,
+    )
+    print(
+        f"ingesting {len(personas)} personas: Wikipedia + publication abstracts "
+        f"(both tertiary), then beliefs via {config.backend}\n"
+    )
+    manifests, failures = ingest_all(personas, client=client)
 
     for m in sorted(manifests, key=lambda x: x["persona_id"]):
         print(
-            f"  {m['persona_id']:<14} {m['n_chunks']:>3} chunks  rev {m['revision_id']}  "
-            f"{m['title']}"
+            f"  {m['persona_id']:<14} {m['n_chunks']:>3} chunks  "
+            f"{len(m['abstracts']):>2} abstracts  {m['n_beliefs']:>2} beliefs  "
+            f"({len(m['abstract_misses'])} works with no abstract found)"
         )
     for persona_id, reason in failures:
         # Reported, never swallowed: a persona with no corpus declines every question, and

@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -61,12 +62,8 @@ SKIP_SECTIONS = frozenset(
         "external links",
         "see also",
         "notes",
-        "bibliography",
         "sources",
         "works cited",
-        "selected bibliography",
-        "publications",
-        "selected publications",
     }
 )
 
@@ -184,15 +181,211 @@ def fetch_wikipedia(title: str) -> dict[str, Any]:
     }
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# Publication abstracts. Patchy by nature: most of this literature predates the
+# convention of publishing one, and a work with no abstract anywhere is recorded as a
+# miss rather than filled in with something invented.
+# ---------------------------------------------------------------------------
+
+SEMANTIC_SCHOLAR = "https://api.semanticscholar.org/graph/v1"
+OPENALEX = "https://api.openalex.org/works"
+
+#: Semantic Scholar rate-limits unauthenticated clients aggressively — several calls in a
+#: row return 429 — so requests are spaced and retried rather than hammered.
+API_DELAY_S = 4.0
+API_RETRIES = 3
+
+ABSTRACT_SLUG = "abstract"
+BELIEF_SLUG = "belief"
+
+
+def _get_json(url: str) -> dict[str, Any]:
+    """One GET with retries, for APIs that rate-limit rather than fail outright."""
+    last: Exception | None = None
+    for attempt in range(API_RETRIES):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                return json.load(response)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            last = exc
+            time.sleep(API_DELAY_S * (attempt + 2))
+    raise ValueError(f"request failed after {API_RETRIES} attempts: {last}")
+
+
+def _openalex_abstract(entry: dict[str, Any]) -> str:
+    """OpenAlex stores abstracts as an inverted index; rebuild the text."""
+    index = entry.get("abstract_inverted_index") or {}
+    if not index:
+        return ""
+    positions: list[tuple[int, str]] = [
+        (pos, word) for word, spots in index.items() for pos in spots
+    ]
+    positions.sort()
+    return " ".join(word for _, word in positions)
+
+
+def fetch_work_abstract(title: str) -> dict[str, Any]:
+    """An abstract for one titled work, from whichever source has one.
+
+    Title lookup rather than author lookup on purpose: it sidesteps author disambiguation
+    entirely, which is what produced a pharmacologist when searching for Bernard Brodie.
+
+    Returns an empty abstract rather than raising when nothing has one. A missing abstract
+    is a fact about the literature, not an error, and it is recorded as a miss.
+    """
+    query = urllib.parse.urlencode(
+        {"query": title, "fields": "title,year,abstract,citationCount", "limit": 3}
+    )
+    try:
+        results = _get_json(f"{SEMANTIC_SCHOLAR}/paper/search?{query}").get("data", [])
+        for paper in results:
+            if paper.get("abstract"):
+                return {
+                    "title": paper.get("title") or title,
+                    "year": paper.get("year"),
+                    "abstract": paper["abstract"],
+                    "source": "semantic_scholar",
+                }
+    except ValueError:
+        pass
+
+    time.sleep(API_DELAY_S)
+    try:
+        query = urllib.parse.urlencode({"search": title, "per-page": 3})
+        for entry in _get_json(f"{OPENALEX}?{query}").get("results", []):
+            abstract = _openalex_abstract(entry)
+            if abstract:
+                return {
+                    "title": entry.get("display_name") or title,
+                    "year": entry.get("publication_year"),
+                    "abstract": abstract,
+                    "source": "openalex",
+                }
+    except ValueError:
+        pass
+
+    return {"title": title, "year": None, "abstract": "", "source": "none"}
+
+
+def fetch_author_papers(author_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    """Top-cited papers with abstracts for a VERIFIED author id.
+
+    Only ever called with an id checked against that author's real papers. The registry
+    stores None where verification failed, and this is not called at all in that case.
+    """
+    query = urllib.parse.urlencode(
+        {"fields": "title,year,abstract,citationCount", "limit": 100}
+    )
+    papers = _get_json(f"{SEMANTIC_SCHOLAR}/author/{author_id}/papers?{query}").get("data", [])
+    with_abstracts = [p for p in papers if p.get("abstract")]
+    with_abstracts.sort(key=lambda p: -(p.get("citationCount") or 0))
+    return [
+        {
+            "title": p.get("title") or "untitled",
+            "year": p.get("year"),
+            "abstract": p["abstract"],
+            "source": "semantic_scholar",
+        }
+        for p in with_abstracts[:limit]
+    ]
+
+
+def build_abstract_chunks(persona_id: str, works: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One chunk per abstract. Abstracts are already the right size; splitting one would
+    cut an argument in half, which is exactly what ADR 0003 avoids for paragraphs."""
+    records = []
+    for work in works:
+        if not work.get("abstract"):
+            continue
+        label = f"{work['title']}" + (f" ({work['year']})" if work.get("year") else "")
+        passage = f"[{label}] {work['abstract']}"
+        records.append(
+            {
+                "passage_id": f"{persona_id}:{ABSTRACT_SLUG}:{content_key(passage)}",
+                "section": label,
+                "text": passage,
+            }
+        )
+    return records
+
+
+BELIEF_SYSTEM = (
+    "You summarise what one scholar actually argued, from material about their work. "
+    "You state only positions the material supports."
+)
+
+BELIEF_INSTRUCTION = """From the material below, list the specific positions {name} argued for.
+
+Rules, and the third is the one that matters most:
+
+1. Each belief is a distinct claim this person advanced, phrased as they would state it.
+2. Ground every belief in the material. If it does not support one, list fewer. Never
+   supply a position from general knowledge of the field.
+3. KEEP EACH BELIEF NARROW. A belief about "nuclear strategy" or "the importance of
+   deterrence" is useless: it matches every question, so this persona would answer
+   everything and never decline. Name the specific mechanism, condition or claim.
+
+Between three and eight beliefs. Produce JSON with key `beliefs`, a list of strings."""
+
+
+def generate_beliefs(persona: Persona, sources: list[str], client: Any) -> list[str]:
+    """Ask a model for the positions this persona actually argued, from its own sources.
+
+    Generated rather than hand-authored so the beliefs trace to fetched text with recorded
+    revision ids, and regenerate when the corpus changes. Hand-writing them would be one
+    person's recollection of what a theorist thought, which is the placeholder problem
+    `CLAUDE.md` warns about.
+
+    Narrowness is the load-bearing property and is why the instruction labours it. A broad
+    belief matches every question, which would drive the decline rate to zero and defeat
+    the escape hatch entirely (ADR 0004).
+    """
+    from artsoc.llm import Role, role_marker
+
+    material = "\n\n".join(sources)[:40000]
+    system = f"{role_marker(Role.THEORIST)} {BELIEF_SYSTEM}"
+    prompt = (
+        BELIEF_INSTRUCTION.format(name=persona.name)
+        + "\n\nMATERIAL:\n"
+        + material
+        + "\n\nRespond with a single JSON object and nothing else."
+    )
+    raw = client.complete(role=Role.THEORIST, system=system, prompt=prompt, cacheable=True)
+    payload = json.loads(raw)
+    beliefs = payload.get("beliefs", [])
+    return [str(b).strip() for b in beliefs if str(b).strip()]
+
+
+def build_belief_chunks(persona_id: str, beliefs: list[str]) -> list[dict[str, Any]]:
+    """One chunk per belief, content-addressed like any other passage (ADR 0003)."""
+    return [
+        {
+            "passage_id": f"{persona_id}:{BELIEF_SLUG}:{content_key(text)}",
+            "section": "belief",
+            "text": text,
+        }
+        for text in beliefs
+    ]
+
+
 def ingest_persona(
     persona: Persona,
     corpus_root: Path | None = None,
     fetcher: Callable[[str], dict[str, Any]] = fetch_wikipedia,
+    *,
+    client: Any = None,
+    abstract_fetcher: Callable[[str], dict[str, Any]] = fetch_work_abstract,
+    author_fetcher: Callable[[str, int], list[dict[str, Any]]] = fetch_author_papers,
+    delay_s: float = API_DELAY_S,
 ) -> dict[str, Any]:
     """Fetch, chunk and write one persona's store. Returns its manifest.
 
-    `fetcher` is injected so the tests exercise chunking, ids and the manifest without
-    touching the network — `make test` must keep running on a disconnected machine.
+    Every fetcher is injected so the tests exercise chunking, ids, beliefs and the manifest
+    without touching the network — `make test` must keep running on a disconnected machine.
     """
     if not persona.wikipedia:
         raise ValueError(
@@ -202,14 +395,54 @@ def ingest_persona(
 
     fetched = fetcher(persona.wikipedia)
     chunks = build_chunks(persona.persona_id, fetched["text"])
+
+    # Abstracts, by title. Title lookup rather than author lookup sidesteps the
+    # disambiguation that resolved "Bernard Brodie" to a pharmacologist.
+    works: list[dict[str, Any]] = []
+    misses: list[str] = []
+    for title in persona.key_works:
+        try:
+            work = abstract_fetcher(title)
+        except (ValueError, OSError):
+            work = {"title": title, "abstract": "", "source": "none"}
+        if work.get("abstract"):
+            works.append(work)
+        else:
+            # Recorded, never invented. A work with no abstract anywhere is a fact about
+            # the literature and an analyst reading a thin store should see why it is thin.
+            misses.append(title)
+        if delay_s:
+            time.sleep(delay_s)
+
+    if persona.semantic_scholar:
+        try:
+            works.extend(author_fetcher(persona.semantic_scholar, 8))
+        except (ValueError, OSError):
+            misses.append(f"author:{persona.semantic_scholar}")
+
+    # Deduplicate on title: a key work is often also a top-cited paper.
+    seen: set[str] = set()
+    unique = [w for w in works if not (w["title"].lower() in seen or seen.add(w["title"].lower()))]
+    chunks += build_abstract_chunks(persona.persona_id, unique)
+
     if not chunks:
         raise ValueError(f"{persona.persona_id}: {fetched['title']!r} produced no chunks")
+
+    beliefs: list[str] = []
+    if client is not None:
+        beliefs = generate_beliefs(
+            persona, [c["text"] for c in chunks], client
+        )
 
     store = (corpus_root or CORPUS_ROOT) / persona.persona_id
     store.mkdir(parents=True, exist_ok=True)
     (store / f"{SOURCE_SLUG}.txt").write_text(fetched["text"], encoding="utf-8")
     (store / "chunks.jsonl").write_text(
         "".join(json.dumps(c) + "\n" for c in chunks), encoding="utf-8"
+    )
+    (store / "beliefs.jsonl").write_text(
+        "".join(json.dumps(c) + "\n" for c in build_belief_chunks(persona.persona_id, beliefs)),
+        encoding="utf-8",
     )
 
     manifest = {
@@ -223,11 +456,17 @@ def ingest_persona(
         "licence": "CC BY-SA 4.0",
         "n_chunks": len(chunks),
         "n_chars": len(fetched["text"]),
+        "abstracts": [
+            {"title": w["title"], "year": w.get("year"), "source": w["source"]} for w in unique
+        ],
+        "abstract_misses": misses,
+        "n_beliefs": len(beliefs),
+        "beliefs_from": "model over the fetched sources above",
         # Recorded in the store itself so nobody reading a corpus can mistake it for the
         # theorist's own writing.
         "note": (
-            "TERTIARY SOURCE. An encyclopedia article about this theorist, not their "
-            "writing. Cannot support the held-out-writings check."
+            "TERTIARY SOURCE. An encyclopedia article about this theorist plus abstracts "
+            "of their work, not their writing. Cannot support the held-out-writings check."
         ),
     }
     (store / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -239,6 +478,7 @@ def ingest_all(
     corpus_root: Path | None = None,
     fetcher: Callable[[str], dict[str, Any]] = fetch_wikipedia,
     delay_s: float = FETCH_DELAY_S,
+    **kwargs: Any,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """Ingest every persona that declares a source. Returns (manifests, failures).
 
@@ -252,7 +492,7 @@ def ingest_all(
             failures.append((persona.persona_id, "no `wikipedia` title in the registry"))
             continue
         try:
-            manifests.append(ingest_persona(persona, corpus_root, fetcher))
+            manifests.append(ingest_persona(persona, corpus_root, fetcher, **kwargs))
         except (ValueError, OSError) as exc:
             failures.append((persona.persona_id, str(exc)))
         if delay_s and i < len(personas) - 1:
@@ -260,13 +500,22 @@ def ingest_all(
     return manifests, failures
 
 
+
+
 __all__ = [
+    "ABSTRACT_SLUG",
+    "BELIEF_SLUG",
     "SOURCE_SLUG",
+    "build_abstract_chunks",
+    "build_belief_chunks",
     "build_chunks",
     "chunk_text",
     "content_key",
+    "fetch_author_papers",
     "fetch_wikipedia",
+    "fetch_work_abstract",
     "format_passage",
+    "generate_beliefs",
     "ingest_all",
     "ingest_persona",
     "split_sections",

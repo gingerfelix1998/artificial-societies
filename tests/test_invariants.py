@@ -586,8 +586,9 @@ def test_the_corpus_retriever_raises_rather_than_degrading(tmp_path) -> None:
 def test_stub_passages_are_citable_by_the_backend() -> None:
     """An id the backend cannot parse can never be cited, and the metric would read zero."""
     persona = load_registry()[0]
-    block = StubRetriever().retrieve(persona, "MOCK: question")
+    block, basis = StubRetriever().retrieve(persona, "MOCK: question")
     assert PASSAGE_ID.findall(block) == [f"{persona.persona_id}:notes:0"]
+    assert basis == "sources"
 
 
 def test_one_store_per_persona() -> None:
@@ -603,7 +604,7 @@ def test_one_store_per_persona() -> None:
 def test_empty_retrieval_returns_empty_rather_than_inventing() -> None:
     """Returning "" is what makes the out-of-record hatch fire; it is a feature, not an error."""
     bare = Persona(persona_id="bare", name="MOCK", tags=["deterrence"], corpus_notes="")
-    assert StubRetriever().retrieve(bare, "MOCK: question") == ""
+    assert StubRetriever().retrieve(bare, "MOCK: question") == ("", "none")
 
 
 def test_verify_citations_flags_an_id_that_was_never_shown() -> None:

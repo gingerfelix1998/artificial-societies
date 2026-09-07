@@ -394,6 +394,14 @@ class TheoristOpinion(_Model):
     #: and for the same reason, but numeric here because this field is averaged.
     confidence: float = 0.5
     method: str = "m2"
+    #: What the position rested on: "sources", "beliefs", or "none" (ADR 0004).
+    #:
+    #: `out_of_record` still means the persona stated no position. This says whether a
+    #: position that WAS stated came from retrieved source passages or from the persona's
+    #: belief store. The pair is the diagnostic: a low decline rate with most positions
+    #: resting on beliefs is a panel asserting ideology where it has no evidence, which is
+    #: what replaced "a near-zero out-of-record rate is a warning".
+    basis: str = "none"
 
     _coerce_citations = field_validator("citations", mode="before")(as_text_list)
 

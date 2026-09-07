@@ -14,7 +14,11 @@ import json
 import pytest
 
 from artsoc.ingest import (
+    ABSTRACT_SLUG,
+    BELIEF_SLUG,
     SOURCE_SLUG,
+    build_abstract_chunks,
+    build_belief_chunks,
     build_chunks,
     chunk_text,
     content_key,
@@ -23,7 +27,7 @@ from artsoc.ingest import (
     split_sections,
 )
 from artsoc.llm import PASSAGE_ID
-from artsoc.personas import Persona
+from artsoc.personas import NO_RECORD_MARKER, Persona, build_question_prompt
 from artsoc.retrieval import (
     CorpusRetriever,
     get_retriever,
@@ -31,6 +35,7 @@ from artsoc.retrieval import (
     tokenise,
     verify_citations,
 )
+from artsoc.schema import AnalyticalQuestion
 
 PAGE = """Bernard Brodie was an American military strategist.
 He is often called the first nuclear strategist.
@@ -196,21 +201,22 @@ def test_corpus_retrieval_reports_itself_as_grounded(tmp_path) -> None:
 def test_a_persona_with_no_store_declines_rather_than_erroring(tmp_path) -> None:
     """No documents is a fact about the world; the escape hatch firing is the right answer."""
     retriever = _corpus(tmp_path)
-    assert retriever.retrieve(_persona("has_no_store"), "what makes a threat credible") == ""
+    question = "what makes a threat credible"
+    assert retriever.retrieve(_persona("has_no_store"), question) == ("", "none")
 
 
 def test_one_store_per_persona(tmp_path) -> None:
     """Persona A citing persona B's text as its own would destroy the design."""
     retriever = _corpus(tmp_path)
-    block = retriever.retrieve(_persona("brodie"), "deterrence and the atomic bomb")
-    assert block
+    block, basis = retriever.retrieve(_persona("brodie"), "deterrence and the atomic bomb")
+    assert block and basis == "sources"
     assert "Schelling" not in block
     assert all(pid.startswith("brodie:") for pid in PASSAGE_ID.findall(block))
 
 
 def test_retrieval_ranks_the_on_topic_passage_first(tmp_path) -> None:
     """Otherwise the threshold is judging a passage that was never the best match."""
-    block = _corpus(tmp_path).retrieve(_persona("brodie"), "counterforce targeting credibility")
+    block, _ = _corpus(tmp_path).retrieve(_persona("brodie"), "counterforce targeting credibility")
     assert "counterforce" in block.lower()
 
 
@@ -218,23 +224,26 @@ def test_an_unrelated_question_retrieves_nothing(tmp_path) -> None:
     """The threshold is what makes out_of_record fire; a retriever that always answers
     means personas extrapolate past their record on every question."""
     retriever = _corpus(tmp_path)
-    assert retriever.retrieve(_persona("brodie"), "monetary policy and inflation targets") == ""
+    unrelated = "monetary policy and inflation targets"
+    assert retriever.retrieve(_persona("brodie"), unrelated) == ("", "none")
 
 
 def test_the_threshold_is_the_dial_on_the_decline_rate(tmp_path) -> None:
     """Raising min_terms must actually make personas decline more, or it is not a control."""
     ingest_persona(_persona("brodie"), tmp_path, _fetcher(PAGE))
     question = "deterrence"
-    lenient = CorpusRetriever(tmp_path, min_terms=1).retrieve(_persona("brodie"), question)
-    strict = CorpusRetriever(tmp_path, min_terms=8).retrieve(_persona("brodie"), question)
+    lenient, _ = CorpusRetriever(tmp_path, min_terms=1).retrieve(_persona("brodie"), question)
+    strict, strict_basis = CorpusRetriever(tmp_path, min_terms=8).retrieve(
+        _persona("brodie"), question
+    )
     assert lenient != ""
-    assert strict == ""
+    assert (strict, strict_basis) == ("", "none")
 
 
 def test_citations_verify_against_what_was_actually_shown(tmp_path) -> None:
     """The whole citation-integrity metric rests on this closing the loop."""
     retriever = _corpus(tmp_path)
-    block = retriever.retrieve(_persona("brodie"), "deterrence and the atomic bomb")
+    block, _ = retriever.retrieve(_persona("brodie"), "deterrence and the atomic bomb")
     shown = PASSAGE_ID.findall(block)
     assert verify_citations(shown, block) == []
     assert verify_citations(["brodie:wikipedia:999999999999"], block) == [
@@ -246,7 +255,7 @@ def test_top_k_bounds_how_much_a_theorist_is_shown(tmp_path) -> None:
     """Context costs tokens, and an unbounded block would grow with the corpus."""
     ingest_persona(_persona("brodie"), tmp_path, _fetcher(PAGE))
     retriever = CorpusRetriever(tmp_path, top_k=1, min_terms=1)
-    block = retriever.retrieve(_persona("brodie"), "deterrence")
+    block, _ = retriever.retrieve(_persona("brodie"), "deterrence")
     assert len(PASSAGE_ID.findall(block)) == 1
 
 
@@ -282,3 +291,139 @@ def test_stemming_unifies_the_vocabulary_of_this_literature() -> None:
     # And it must not collapse distinct terms of art into one another.
     assert stem("first") != stem("force")
     assert stem("control") != stem("counterforce")
+
+
+# ---------------------------------------------------------------------------
+# The belief fallback. ADR 0004.
+# ---------------------------------------------------------------------------
+
+BELIEFS = [
+    "Deterrence rests on the survivability of second-strike forces, not on their size.",
+    "The chief purpose of a military establishment after the atomic bomb is to avert war.",
+]
+
+
+def _with_beliefs(tmp_path, beliefs=BELIEFS):
+    ingest_persona(_persona("brodie"), tmp_path, _fetcher(PAGE))
+    (tmp_path / "brodie" / "beliefs.jsonl").write_text(
+        "".join(json.dumps(c) + "\n" for c in build_belief_chunks("brodie", beliefs)),
+        encoding="utf-8",
+    )
+    return CorpusRetriever(tmp_path, min_terms=2)
+
+
+def test_sources_are_preferred_over_beliefs(tmp_path) -> None:
+    """A persona whose corpus covers the question must reason from the corpus.
+
+    Beliefs are a fallback, not an overlay. If they took precedence the panel would assert
+    positions even where it had citable evidence, which is the opposite of grounding.
+    """
+    block, basis = _with_beliefs(tmp_path).retrieve(
+        _persona("brodie"), "the atomic bomb changed the purpose of armed force"
+    )
+    assert basis == "sources"
+    assert ":wikipedia:" in block and ":belief:" not in block
+
+
+def test_beliefs_answer_only_where_the_corpus_does_not(tmp_path) -> None:
+    """The point of the fallback: a position the sources do not cover but the theorist held."""
+    # Deliberately worded from the belief and not from the page: the fixture never
+    # mentions survivability or second-strike forces, so sources cannot match it.
+    block, basis = _with_beliefs(tmp_path).retrieve(
+        _persona("brodie"), "what does survivability require of second-strike forces"
+    )
+    assert basis == "beliefs"
+    assert ":belief:" in block
+
+
+def test_a_question_overlapping_no_belief_still_declines(tmp_path) -> None:
+    """The scoping requirement, asserted.
+
+    Beliefs must be narrow enough that a question outside them retrieves nothing. A broad
+    creed would match everything, drive the decline rate to zero, and defeat the escape
+    hatch entirely — which is exactly what ADR 0004 refuses.
+    """
+    assert _with_beliefs(tmp_path).retrieve(
+        _persona("brodie"), "monetary policy and inflation targeting in emerging markets"
+    ) == ("", "none")
+
+
+def test_a_broad_belief_would_defeat_the_hatch(tmp_path) -> None:
+    """Documents why narrowness is enforced in the generation prompt rather than assumed.
+
+    A belief mentioning everything matches everything. This is the failure mode the
+    instruction guards against, demonstrated so the reason is not lost.
+    """
+    broad = ["This theorist thought about nuclear strategy, deterrence, escalation, "
+             "policy, war, peace, weapons, states, threats and risk."]
+    block, basis = _with_beliefs(tmp_path, broad).retrieve(
+        _persona("brodie"), "what does escalation risk imply for policy"
+    )
+    assert basis == "beliefs", "a broad belief answers a question it has no business on"
+
+
+def test_belief_ids_are_content_addressed_and_verifiable(tmp_path) -> None:
+    """A persona must not be able to cite a belief it was never shown, as with any passage."""
+    first = build_belief_chunks("brodie", BELIEFS)
+    assert [c["passage_id"] for c in first] == [
+        c["passage_id"] for c in build_belief_chunks("brodie", BELIEFS)
+    ]
+    for chunk in first:
+        assert chunk["passage_id"].split(":")[1] == BELIEF_SLUG
+        rendered = f"[{chunk['passage_id']}] {chunk['text']}"
+        assert PASSAGE_ID.findall(rendered)[0] == chunk["passage_id"]
+
+    block, _ = _with_beliefs(tmp_path).retrieve(
+        _persona("brodie"), "survivability of second-strike forces"
+    )
+    assert verify_citations(PASSAGE_ID.findall(block), block) == []
+    assert verify_citations(["brodie:belief:111111111111"], block) == ["brodie:belief:111111111111"]
+
+
+def test_abstracts_are_distinguishable_from_encyclopedia_text(tmp_path) -> None:
+    """A citation should say which store it came from; the two are not equal evidence."""
+    works = [{"title": "The Absolute Weapon", "year": 1946,
+              "abstract": "Argues that the atomic bomb makes averting war the purpose of force.",
+              "source": "semantic_scholar"}]
+    chunks = build_abstract_chunks("brodie", works)
+    assert chunks and chunks[0]["passage_id"].split(":")[1] == ABSTRACT_SLUG
+    assert "The Absolute Weapon (1946)" in chunks[0]["text"]
+
+
+def test_a_work_with_no_abstract_is_recorded_as_a_miss(tmp_path) -> None:
+    """Coverage is patchy by nature; a thin store must be traceable to missing abstracts."""
+    persona = Persona(
+        persona_id="brodie", name="Test", tags=["deterrence"],
+        wikipedia="Bernard Brodie", key_works=["A Work With No Abstract Anywhere"],
+    )
+    manifest = ingest_persona(
+        persona, tmp_path, _fetcher(PAGE),
+        abstract_fetcher=lambda t: {"title": t, "abstract": "", "source": "none"},
+        delay_s=0,
+    )
+    assert manifest["abstract_misses"] == ["A Work With No Abstract Anywhere"]
+    assert manifest["abstracts"] == []
+
+
+def test_a_belief_block_is_framed_as_a_position_not_a_record() -> None:
+    """A persona told to "answer from your written record and cite passage ids" declines
+    when handed a belief, because a position is not a record and has no source behind it.
+
+    That is not hypothetical: retrieval supplied beliefs to three of twenty-four theorists
+    and every one still declined until the framing was separated. With it, all three stated
+    a position and cited the belief id. Beliefs are reasoned from directly (ADR 0004).
+    """
+    question = AnalyticalQuestion(question_id="q0", text="MOCK: question", tags=["deterrence"])
+    block = "[brodie:belief:123] Deterrence rests on survivable second-strike forces."
+
+    as_belief = build_question_prompt(question, block, "m2", basis="beliefs")
+    assert "YOUR STATED POSITIONS" in as_belief
+    assert "need no source to support them" in as_belief
+    assert "RECORD:" not in as_belief
+
+    as_source = build_question_prompt(question, block, "m2", basis="sources")
+    assert "RECORD:" in as_source
+    assert "YOUR STATED POSITIONS" not in as_source
+
+    # An empty block still declares itself empty, whichever basis is claimed.
+    assert NO_RECORD_MARKER in build_question_prompt(question, "", "m2", basis="beliefs")
