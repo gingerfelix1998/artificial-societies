@@ -144,21 +144,27 @@ def cmd_ingest() -> int:
     manifests, failures = ingest_all(personas, client=client)
 
     for m in sorted(manifests, key=lambda x: x["persona_id"]):
+        state = "reused" if m.get("reused") else "FETCHED"
         print(
-            f"  {m['persona_id']:<14} {m['n_chunks']:>3} chunks  "
-            f"{len(m['abstracts']):>2} abstracts  {m['n_beliefs']:>2} beliefs  "
-            f"({len(m['abstract_misses'])} works with no abstract found)"
+            f"  {m['persona_id']:<14} {state:<8} {m['n_chunks']:>3} chunks  "
+            f"{len(m.get('abstracts', [])):>2} abstracts  {m.get('n_beliefs', 0):>2} beliefs"
         )
     for persona_id, reason in failures:
         # Reported, never swallowed: a persona with no corpus declines every question, and
         # an analyst reading a 0% contribution needs to know it was a missing page.
         print(f"  {persona_id:<14} FAILED — {reason}", file=sys.stderr)
 
-    print(f"\n{len(manifests)} ingested, {len(failures)} failed -> {CORPUS_ROOT}")
+    reused = sum(1 for m in manifests if m.get("reused"))
+    print(
+        f"\n{len(manifests) - reused} fetched, {reused} reused from disk, "
+        f"{len(failures)} failed -> {CORPUS_ROOT}"
+    )
     if manifests:
         print(
-            "  Wikipedia text is CC BY-SA and is not committed; re-run this to rebuild.\n"
-            "  A persona with no corpus declines every question, which is correct."
+            "  A complete store is reused rather than refetched. To rebuild one persona, "
+            "delete\n  its directory; to rebuild everything, delete data/corpora/. "
+            "Re-ingesting rewrites\n  passage ids if any source text changed, which "
+            "invalidates stored citations (ADR 0003)."
         )
     return 1 if failures and not manifests else 0
 

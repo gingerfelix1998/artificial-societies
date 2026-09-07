@@ -380,7 +380,7 @@ def ingest_persona(
     client: Any = None,
     abstract_fetcher: Callable[[str], dict[str, Any]] = fetch_work_abstract,
     author_fetcher: Callable[[str, int], list[dict[str, Any]]] = fetch_author_papers,
-    delay_s: float = API_DELAY_S,
+    abstract_delay_s: float = API_DELAY_S,
 ) -> dict[str, Any]:
     """Fetch, chunk and write one persona's store. Returns its manifest.
 
@@ -411,8 +411,8 @@ def ingest_persona(
             # Recorded, never invented. A work with no abstract anywhere is a fact about
             # the literature and an analyst reading a thin store should see why it is thin.
             misses.append(title)
-        if delay_s:
-            time.sleep(delay_s)
+        if abstract_delay_s:
+            time.sleep(abstract_delay_s)
 
     if persona.semantic_scholar:
         try:
@@ -473,30 +473,77 @@ def ingest_persona(
     return manifest
 
 
+#: Files a complete store must have. A store missing any of them was interrupted
+#: part-way and is refetched rather than half-used.
+STORE_FILES = ("manifest.json", "chunks.jsonl", "beliefs.jsonl")
+
+
+def load_manifest(persona_id: str, corpus_root: Path | None = None) -> dict[str, Any] | None:
+    """A persona's manifest if its store is complete and readable, else None.
+
+    Completeness is checked against the files and the manifest's own chunk count, not
+    against the directory merely existing: an ingest killed part-way leaves a directory
+    behind, and treating that as done would silently give a persona a truncated corpus.
+    """
+    store = (corpus_root or CORPUS_ROOT) / persona_id
+    if not all((store / name).exists() for name in STORE_FILES):
+        return None
+    try:
+        manifest = json.loads((store / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return manifest if manifest.get("n_chunks") else None
+
+
 def ingest_all(
     personas: list[Persona],
     corpus_root: Path | None = None,
     fetcher: Callable[[str], dict[str, Any]] = fetch_wikipedia,
     delay_s: float = FETCH_DELAY_S,
+    *,
+    refresh: bool = False,
     **kwargs: Any,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """Ingest every persona that declares a source. Returns (manifests, failures).
+
+    **A complete store is reused, not refetched.** The corpus is written to disk precisely
+    so it does not have to be fetched again: a full pass is around twenty-six minutes,
+    almost entirely Semantic Scholar rate-limiting, and repeating it hammers three public
+    APIs to rebuild bytes that are already there. Reused manifests are marked `reused` so
+    the caller can say which were fetched.
+
+    To refetch one persona, delete its directory; to refetch everything, delete
+    `data/corpora/`. That is deliberate rather than a `--force` flag: re-ingesting rewrites
+    passage ids if any source text has changed, which invalidates stored citations (ADR
+    0003), so it should take an explicit act rather than a keystroke.
 
     Failures are collected rather than raised, so one dead page does not abandon eleven
     good fetches — but they are returned, not swallowed, and the caller reports them.
     """
     manifests: list[dict[str, Any]] = []
     failures: list[tuple[str, str]] = []
-    for i, persona in enumerate(personas):
+    fetched = 0
+    for persona in personas:
         if not persona.wikipedia:
             failures.append((persona.persona_id, "no `wikipedia` title in the registry"))
             continue
+
+        if not refresh:
+            existing = load_manifest(persona.persona_id, corpus_root)
+            if existing is not None:
+                manifests.append({**existing, "reused": True})
+                continue
+
+        # Only pause between calls that actually happen. Sleeping before a reuse would
+        # make a no-op pass as slow as a real one.
+        if fetched and delay_s:
+            time.sleep(delay_s)
         try:
-            manifests.append(ingest_persona(persona, corpus_root, fetcher, **kwargs))
+            manifests.append({**ingest_persona(persona, corpus_root, fetcher, **kwargs),
+                              "reused": False})
+            fetched += 1
         except (ValueError, OSError) as exc:
             failures.append((persona.persona_id, str(exc)))
-        if delay_s and i < len(personas) - 1:
-            time.sleep(delay_s)
     return manifests, failures
 
 
@@ -518,5 +565,6 @@ __all__ = [
     "generate_beliefs",
     "ingest_all",
     "ingest_persona",
+    "load_manifest",
     "split_sections",
 ]

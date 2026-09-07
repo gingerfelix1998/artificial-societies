@@ -24,6 +24,7 @@ from artsoc.ingest import (
     content_key,
     ingest_all,
     ingest_persona,
+    load_manifest,
     split_sections,
 )
 from artsoc.llm import PASSAGE_ID
@@ -399,7 +400,7 @@ def test_a_work_with_no_abstract_is_recorded_as_a_miss(tmp_path) -> None:
     manifest = ingest_persona(
         persona, tmp_path, _fetcher(PAGE),
         abstract_fetcher=lambda t: {"title": t, "abstract": "", "source": "none"},
-        delay_s=0,
+        abstract_delay_s=0,
     )
     assert manifest["abstract_misses"] == ["A Work With No Abstract Anywhere"]
     assert manifest["abstracts"] == []
@@ -427,3 +428,94 @@ def test_a_belief_block_is_framed_as_a_position_not_a_record() -> None:
 
     # An empty block still declares itself empty, whichever basis is claimed.
     assert NO_RECORD_MARKER in build_question_prompt(question, "", "m2", basis="beliefs")
+
+
+# ---------------------------------------------------------------------------
+# Ingest is idempotent. The corpus is written to disk so it need not be fetched twice.
+# ---------------------------------------------------------------------------
+
+
+class _CountingFetcher:
+    """Records how often it was called, so a reuse can be proved rather than assumed."""
+
+    def __init__(self, text: str = PAGE) -> None:
+        self.calls = 0
+
+    def __call__(self, title: str) -> dict:
+        self.calls += 1
+        return _fetcher(PAGE)(title)
+
+
+def _one(pid: str = "brodie"):
+    return [_persona(pid)]
+
+
+def test_a_complete_store_is_reused_rather_than_refetched(tmp_path) -> None:
+    """A full pass is ~26 minutes, almost all of it rate-limiting three public APIs.
+
+    Refetching bytes already on disk is the cost this avoids; the assertion is on the
+    fetcher call count, so a regression cannot hide behind a fast local test.
+    """
+    fetcher = _CountingFetcher()
+    kw = {"abstract_fetcher": lambda t: {"title": t, "abstract": "", "source": "none"},
+          "abstract_delay_s": 0}
+
+    first, _ = ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+    assert fetcher.calls == 1
+    assert first[0]["reused"] is False
+
+    second, _ = ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+    assert fetcher.calls == 1, "a complete store must not be fetched again"
+    assert second[0]["reused"] is True
+    assert second[0]["n_chunks"] == first[0]["n_chunks"]
+
+
+def test_refresh_forces_a_refetch(tmp_path) -> None:
+    """Reuse must be the default, not the only behaviour."""
+    fetcher = _CountingFetcher()
+    kw = {"abstract_fetcher": lambda t: {"title": t, "abstract": "", "source": "none"},
+          "abstract_delay_s": 0}
+    ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+    manifests, _ = ingest_all(_one(), tmp_path, fetcher, delay_s=0, refresh=True, **kw)
+    assert fetcher.calls == 2
+    assert manifests[0]["reused"] is False
+
+
+def test_an_interrupted_store_is_refetched_not_half_used(tmp_path) -> None:
+    """A directory left behind by a killed ingest would otherwise pass as complete,
+    silently giving that persona a truncated corpus."""
+    fetcher = _CountingFetcher()
+    kw = {"abstract_fetcher": lambda t: {"title": t, "abstract": "", "source": "none"},
+          "abstract_delay_s": 0}
+    ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+
+    (tmp_path / "brodie" / "beliefs.jsonl").unlink()
+    assert load_manifest("brodie", tmp_path) is None
+    ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+    assert fetcher.calls == 2, "an incomplete store must be rebuilt"
+
+
+def test_an_unreadable_manifest_is_not_trusted(tmp_path) -> None:
+    """A manifest that cannot be parsed is not a manifest."""
+    fetcher = _CountingFetcher()
+    kw = {"abstract_fetcher": lambda t: {"title": t, "abstract": "", "source": "none"},
+          "abstract_delay_s": 0}
+    ingest_all(_one(), tmp_path, fetcher, delay_s=0, **kw)
+    (tmp_path / "brodie" / "manifest.json").write_text("{ truncated", encoding="utf-8")
+    assert load_manifest("brodie", tmp_path) is None
+
+
+def test_reuse_does_not_pause_between_personas(tmp_path) -> None:
+    """Sleeping before a reuse would make a no-op pass as slow as a real one."""
+    import time as _time
+
+    fetcher = _CountingFetcher()
+    kw = {"abstract_fetcher": lambda t: {"title": t, "abstract": "", "source": "none"},
+          "abstract_delay_s": 0}
+    personas = [_persona("a"), _persona("b"), _persona("c")]
+    ingest_all(personas, tmp_path, fetcher, delay_s=0, **kw)
+
+    started = _time.perf_counter()
+    manifests, _ = ingest_all(personas, tmp_path, fetcher, delay_s=5.0, **kw)
+    assert _time.perf_counter() - started < 1.0, "reuse must not sleep"
+    assert all(m["reused"] for m in manifests)
