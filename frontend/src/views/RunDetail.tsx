@@ -26,12 +26,17 @@ import RungHistogram from '../components/RungHistogram'
 import { RUNG_LABELS, percent } from '../lib/format'
 import { usePlayback } from '../lib/playback'
 import type { RepresentativeView } from '../types/api'
-import type { ArmSummary, SessionSummary } from '../types/artsoc'
+import type { ArmSummary, RunNarrative, SessionSummary } from '../types/artsoc'
 
 export default function RunDetail() {
   const { sessionId = '', arm = '' } = useParams()
   const [view, setView] = useState<RepresentativeView | null>(null)
   const [agentId, setAgentId] = useState<string | null>(null)
+  // Fetched after the main payload rather than with it. The first request costs a model
+  // call, so it happens for the arm actually opened rather than for every arm a sweep ran,
+  // and keeping it off the critical path means a slow summary never delays the page.
+  const [narrative, setNarrative] = useState<RunNarrative | null>(null)
+  const [narrativeState, setNarrativeState] = useState<'idle' | 'loading' | 'done'>('idle')
   const [summary, setSummary] = useState<SessionSummary | null>(null)
   const [reveal, setReveal] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,6 +55,27 @@ export default function RunDetail() {
       }
     })()
   }, [sessionId, arm, reveal])
+
+  // Requested once the run is on screen, and only for this arm. A failure leaves the
+  // deterministic facts standing on their own, which is the half that cannot be wrong.
+  useEffect(() => {
+    if (view == null || narrativeState !== 'idle') return
+    if (view.narrative) {
+      setNarrative(view.narrative)
+      setNarrativeState('done')
+      return
+    }
+    setNarrativeState('loading')
+    void (async () => {
+      try {
+        setNarrative(await api.narrative(sessionId, arm))
+      } catch {
+        setNarrative(null)
+      } finally {
+        setNarrativeState('done')
+      }
+    })()
+  }, [view, narrativeState, sessionId, arm])
 
   const playback = usePlayback(view?.steps.length ?? 0)
 
@@ -130,8 +156,9 @@ export default function RunDetail() {
 
       <RunSummary
         facts={view.facts}
-        narrative={view.narrative}
+        narrative={narrative ?? view.narrative ?? null}
         runId={record.run_id}
+        pending={narrativeState === 'loading'}
       />
 
       <PanelResponses record={record} />

@@ -53,6 +53,7 @@ from artsoc.session import (
     SessionSummary,
     arm_records,
     create_session,
+    ensure_narrative,
     estimate_calls,
     list_sessions,
     load_narrative,
@@ -205,8 +206,11 @@ class RepresentativeView(BaseModel):
     #: Every number the header states, read from the record rather than interpreted. The
     #: narrative beside it therefore never has to carry a count it could get wrong.
     facts: RunFacts
-    #: Absent for sessions run before narratives existed, and for arms whose summary call
-    #: failed. The UI falls back to `facts` alone rather than erroring.
+    #: Present only once one has been generated for this arm. Narratives are written on
+    #: request rather than during the sweep — a sweep runs every arm and a reader opens one
+    #: — so this is null until someone asks. The UI shows `facts` alone meanwhile and
+    #: fetches the summary separately, which also keeps this payload off the critical path
+    #: of a page load.
     narrative: RunNarrative | None = None
     engagement: EngagementSummary
     flow: PipelineFlow
@@ -471,6 +475,26 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
             else _record_without_ground_truth(record)
         )
         return payload
+
+    @app.post(
+        "/api/sessions/{session_id}/runs/{arm}/narrative",
+        response_model=RunNarrative | None,
+    )
+    def post_narrative(session_id: str, arm: str) -> RunNarrative | None:
+        """Generate this arm's summary, or return the one already stored.
+
+        A POST because the first call has an effect and costs a model call. Idempotent
+        after that: the narrative is written to disk and served from there, so a reader who
+        revisits the page pays nothing and sees the same text.
+
+        Deliberately not part of the representative payload's generation path. Summarising
+        every arm as a sweep finished meant paying for twenty summaries so that nineteen
+        could go unread.
+        """
+        state = _session_or_404(session_id)
+        if arm not in state.spec.arms:
+            raise HTTPException(status_code=404, detail=f"session has no arm {arm!r}")
+        return ensure_narrative(session_id, arm)
 
     if static_dir is not None and static_dir.is_dir():
         _serve_frontend(app, static_dir)

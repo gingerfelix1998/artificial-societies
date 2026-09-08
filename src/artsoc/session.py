@@ -359,19 +359,28 @@ def load_narrative(session_id: str, arm: str, root: Path | None = None) -> RunNa
         return None
 
 
-def _write_narrative(
-    spec: SessionSpec, arm: str, records: list[RunRecord], root: Path | None = None
-) -> None:
-    """Summarise the representative run once, when the arm finishes.
+def ensure_narrative(
+    session_id: str, arm: str, root: Path | None = None
+) -> RunNarrative | None:
+    """The stored narrative for an arm, generating it once if it does not exist.
 
-    Written once rather than regenerated per page view, so the summary a reader sees is the
-    same on every visit. Text that changed on refresh would not be a record.
+    **Generated on request, not during the sweep.** A sweep runs every arm; a reader opens
+    one. Summarising at run time meant a twenty-arm session paid for twenty summaries to
+    have nineteen of them never read — small against the sweep itself, and still waste with
+    no upside, since a summary nobody opens tells nobody anything.
 
-    A failure here is swallowed deliberately: the narrative is an orientation aid, and
-    losing a completed sweep because a summary call failed would be a poor trade. Its
-    absence is visible — the UI shows the deterministic facts alone.
+    Written to disk on first request and served from there afterwards, so the text is the
+    same on every visit. A summary that changed on refresh would not be a record.
+
+    A failure returns None rather than raising: the narrative is an orientation aid beside
+    figures that are already correct, and its absence degrades to those figures alone.
     """
+    existing = load_narrative(session_id, arm, root)
+    if existing is not None:
+        return existing
+
     try:
+        records = arm_records(session_id, arm, root)
         config = load_arm(arm)
         client = LLMClient(
             backend=get_backend(
@@ -382,11 +391,13 @@ def _write_narrative(
             cache_enabled=True,
         )
         narrative = summarise_run(representative_run(records).record, client, arm)
-        narrative_path(spec.session_id, arm, root).write_text(
-            narrative.model_dump_json(indent=2), encoding="utf-8"
-        )
-    except Exception:  # noqa: BLE001 - an orientation aid must not lose a finished sweep
-        return
+    except Exception:  # noqa: BLE001 - an orientation aid must not break a results page
+        return None
+
+    narrative_path(session_id, arm, root).write_text(
+        narrative.model_dump_json(indent=2), encoding="utf-8"
+    )
+    return narrative
 
 
 def _write_state(state: SessionState, root: Path | None = None) -> None:
@@ -523,7 +534,6 @@ def run_session(
 
             if records:
                 write_jsonl(records, target)
-                _write_narrative(spec, arm, records, root)
             state.est_cost_usd = cumulative
             _write_state(state, root)
 

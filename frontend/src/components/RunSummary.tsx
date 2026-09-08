@@ -24,6 +24,9 @@ interface Props {
   narrative?: RunNarrative | null
   /** The record this describes, so a stored narrative can be checked against it. */
   runId: string
+  /** The summary is being generated. Shown as pending rather than as absent, so a reader
+   *  does not read "no summary" and conclude none is coming. */
+  pending?: boolean
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -36,7 +39,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
   )
 }
 
-export default function RunSummary({ facts, narrative, runId }: Props) {
+export default function RunSummary({ facts, narrative, runId, pending }: Props) {
   const basis = facts.basis_counts ?? {}
   const fromSources = basis.sources ?? 0
   const fromBeliefs = basis.beliefs ?? 0
@@ -108,9 +111,11 @@ export default function RunSummary({ facts, narrative, runId }: Props) {
         </div>
       ) : (
         <p className="faint small">
-          {stale
-            ? 'A stored summary exists but describes a different replication, so it is not shown.'
-            : 'No written summary for this run. The figures above are read from the record.'}
+          {pending
+            ? 'Writing a summary of this run…'
+            : stale
+              ? 'A stored summary exists but describes a different replication, so it is not shown.'
+              : 'No written summary for this run. The figures above are read from the record.'}
         </p>
       )}
     </section>

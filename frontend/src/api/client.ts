@@ -16,7 +16,7 @@ import type {
   SessionCreated,
   SessionSpecRequest,
 } from '../types/api'
-import type { SessionState, SessionSummary } from '../types/artsoc'
+import type { RunNarrative, SessionState, SessionSummary } from '../types/artsoc'
 
 export class ApiError extends Error {
   constructor(
@@ -118,6 +118,17 @@ export const api = {
 
   cancel: (id: string) =>
     request<SessionState>(`/api/sessions/${id}/cancel`, { method: 'POST' }),
+
+  /** Generate this arm's summary, or fetch the one already stored.
+   *
+   *  Separate from `representative` on purpose. The first call costs a model call, so it
+   *  happens for the arm a reader actually opens rather than for every arm a sweep ran —
+   *  and keeping it off the main payload means a slow summary never delays the page. */
+  narrative: (id: string, arm: string) =>
+    request<RunNarrative | null>(
+      `/api/sessions/${id}/runs/${encodeURIComponent(arm)}/narrative`,
+      { method: 'POST' },
+    ),
 
   representative: (id: string, arm: string, revealGroundTruth = false) =>
     request<RepresentativeView>(

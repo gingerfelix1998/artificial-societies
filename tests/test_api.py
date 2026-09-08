@@ -497,3 +497,54 @@ def test_the_narrative_never_carries_host_ground_truth(client: TestClient) -> No
     text = " ".join(narrative["sentences"]).lower()
     for phrase in ("host-only", "survivability hedge", "not launch preparation"):
         assert phrase not in text
+
+
+def test_a_sweep_generates_no_narratives(client: TestClient) -> None:
+    """Summarising every arm as a sweep finished paid for summaries nobody would read.
+
+    A sweep runs every arm; a reader opens one. This is asserted at the payload level
+    because the cost is invisible otherwise — a wasted call leaves no trace in the output.
+    """
+    session_id = _run_session(client, ["baseline", "escalation_prior"], n=3)
+    for arm in ("baseline", "escalation_prior"):
+        body = client.get(f"/api/sessions/{session_id}/runs/{arm}/representative").json()
+        assert body["narrative"] is None, f"{arm} was summarised without being asked for"
+
+
+def test_a_narrative_is_generated_on_request_and_then_reused(client: TestClient) -> None:
+    """First request writes it; every later one serves the same text from disk.
+
+    The second half matters as much as the first: a summary that changed on refresh would
+    not be a record, and re-generating would charge for the same page twice.
+    """
+    session_id = _run_session(client, ["baseline"], n=3)
+    arm = "baseline"
+
+    first = client.post(f"/api/sessions/{session_id}/runs/{arm}/narrative").json()
+    assert first is not None and len(first["sentences"]) == 3
+
+    second = client.post(f"/api/sessions/{session_id}/runs/{arm}/narrative").json()
+    assert second == first, "a second request must not rewrite the summary"
+
+    # And it now travels with the representative payload, so a revisit costs nothing.
+    body = client.get(f"/api/sessions/{session_id}/runs/{arm}/representative").json()
+    assert body["narrative"] == first
+
+
+def test_only_the_arm_asked_for_is_summarised(client: TestClient) -> None:
+    """Asking about one arm must not quietly summarise its neighbours."""
+    session_id = _run_session(client, ["baseline", "escalation_prior"], n=3)
+    client.post(f"/api/sessions/{session_id}/runs/baseline/narrative")
+
+    other = client.get(
+        f"/api/sessions/{session_id}/runs/escalation_prior/representative"
+    ).json()
+    assert other["narrative"] is None
+
+
+def test_the_narrative_endpoint_rejects_an_arm_not_in_the_session(
+    client: TestClient,
+) -> None:
+    session_id = _run_session(client, ["baseline"], n=2)
+    response = client.post(f"/api/sessions/{session_id}/runs/synth_only/narrative")
+    assert response.status_code == 404
