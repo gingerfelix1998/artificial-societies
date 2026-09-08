@@ -50,6 +50,10 @@ METHODS: frozenset[str] = frozenset({"m1", "m2", "m3"})
 #: theorist in an output record.
 SYNTH_PREFIX = "synth_"
 
+#: Where a persona's store is built from. Closed, and checked at load: a typo here would
+#: otherwise route a persona down whichever branch the dispatch happens to end on.
+CORPUS_SOURCES: frozenset[str] = frozenset({"markdown", "wikipedia"})
+
 
 class Persona(BaseModel):
     """One member of the modelled population.
@@ -64,6 +68,15 @@ class Persona(BaseModel):
     persona_id: str
     name: str
     era: str = "unspecified"
+    #: Which pipeline builds this persona's store: `wikipedia` fetches and chunks the page
+    #: below, `markdown` reads committed documents from `data/corpora-src/<persona_id>/`.
+    #:
+    #: Declared, never inferred. Deciding it from whether a source directory happens to
+    #: exist is a silent fallback under another name — a persona whose documents were not
+    #: added yet would be built from an encyclopedia article and still reported as
+    #: grounded. The default exists so personas constructed in code need not restate it;
+    #: a test requires every registry entry to declare it explicitly.
+    corpus_source: str = "wikipedia"
     #: Wikipedia page title for `artsoc ingest`. None means this persona has no corpus and
     #: will decline every question — correct behaviour, not a failure to work around.
     wikipedia: str | None = None
@@ -83,6 +96,17 @@ class Persona(BaseModel):
         default="",
         description="PLACEHOLDER paraphrase written so the loop runs. Never evidence.",
     )
+
+    @field_validator("corpus_source")
+    @classmethod
+    def _corpus_source_must_be_known(cls, value: str) -> str:
+        if value not in CORPUS_SOURCES:
+            raise ValueError(
+                f"unknown corpus_source {value!r}; expected one of {sorted(CORPUS_SOURCES)}. "
+                "The source of record is declared here and never inferred from what happens "
+                "to be on disk"
+            )
+        return value
 
     @field_validator("tags")
     @classmethod

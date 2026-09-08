@@ -216,6 +216,35 @@ def test_a_persona_with_no_store_declines_rather_than_erroring(tmp_path) -> None
     assert retriever.retrieve(_persona("has_no_store"), question) == ("", "none")
 
 
+def test_a_store_built_from_something_other_than_what_is_declared_raises(tmp_path) -> None:
+    """Invariant 9. The registry declares, the manifest confirms, and they must agree.
+
+    A persona declared `markdown` whose store was built from an encyclopedia article would
+    answer from biography while the record said it answered from summaries of its own
+    publications. Serving whichever happens to be on disk makes that undetectable
+    afterwards, so it raises.
+    """
+    retriever = _corpus(tmp_path)
+    declared_markdown = _persona("brodie").model_copy(update={"corpus_source": "markdown"})
+    with pytest.raises(ValueError, match="was built as 'wikipedia'"):
+        retriever.retrieve(declared_markdown, "deterrence and the atomic bomb")
+
+
+def test_declaring_markdown_with_nothing_ingested_raises(tmp_path) -> None:
+    """Invariant 4. Not a warning, not an empty store, and above all not a fetch.
+
+    Reached through the same check as the mismatch above rather than a separate existence
+    test: a persona with no store has no manifest to confirm the declaration, so there is
+    one way to be wrong instead of two.
+    """
+    retriever = _corpus(tmp_path)
+    never_ingested = _persona("has_no_store").model_copy(
+        update={"corpus_source": "markdown"}
+    )
+    with pytest.raises(ValueError, match="artsoc ingest"):
+        retriever.retrieve(never_ingested, "what makes a threat credible")
+
+
 def test_one_store_per_persona(tmp_path) -> None:
     """Persona A citing persona B's text as its own would destroy the design."""
     retriever = _corpus(tmp_path)

@@ -204,6 +204,44 @@ class CorpusRetriever:
             belief_min_terms if belief_min_terms is not None else max(1, min_terms - 1)
         )
         self._cache: dict[str, list[dict[str, Any]]] = {}
+        self._manifests: dict[str, dict[str, Any]] = {}
+
+    def _manifest(self, persona_id: str) -> dict[str, Any]:
+        """This persona's ingest manifest, or `{}` if it has no store."""
+        if persona_id not in self._manifests:
+            path = self.root / persona_id / "manifest.json"
+            try:
+                self._manifests[persona_id] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                self._manifests[persona_id] = {}
+        return self._manifests[persona_id]
+
+    def _confirmed_source(self, persona: Persona) -> str:
+        """What built this persona's store, checked against what the registry declares.
+
+        The registry declares and the manifest confirms. A disagreement raises rather than
+        picking one: a persona declared `markdown` whose store was built from an
+        encyclopedia article would answer from biography while the record said otherwise,
+        and no test downstream could detect it afterwards.
+
+        A persona declared `markdown` with nothing ingested reaches this with an empty
+        manifest, so it raises here too — which is exactly the required behaviour, arrived
+        at structurally rather than by a separate existence check.
+        """
+        # Manifests written before schema 1.2.0 carry no `corpus_source`. Reading those as
+        # `wikipedia` is not an inference: no code that could write a markdown store existed
+        # before the key did, so every keyless store is a Wikipedia one by construction.
+        built = self._manifest(persona.persona_id).get("corpus_source", "wikipedia")
+        if persona.corpus_source != built:
+            raise ValueError(
+                f"{persona.persona_id}: the registry declares corpus_source="
+                f"{persona.corpus_source!r} but the store at {self.root / persona.persona_id} "
+                f"was built as {built!r}. Run `artsoc ingest` to rebuild it. This raises "
+                "rather than serving whichever is present, because a run answering from an "
+                "encyclopedia article while reporting a summary corpus could not be detected "
+                "afterwards."
+            )
+        return built
 
     def _load(self, persona_id: str, filename: str = "chunks.jsonl") -> list[dict[str, Any]]:
         """One of this persona's stores, or an empty list if it has none."""
@@ -278,6 +316,7 @@ class CorpusRetriever:
         overlaps none of them retrieves nothing and the persona declines — which is what
         stops the out-of-record rate collapsing to zero.
         """
+        self._confirmed_source(persona)
         query = tokenise(question_text)
         if not query:
             return "", "none"

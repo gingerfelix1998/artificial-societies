@@ -16,6 +16,7 @@ import random
 import subprocess
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from artsoc import llm as llm_module
@@ -433,6 +434,28 @@ def test_an_off_vocabulary_tag_is_rejected_at_load_not_at_route_time() -> None:
     """Silent unreachability is worse than a loud failure, so it must fail at the boundary."""
     with pytest.raises(ValidationError):
         Persona(persona_id="p", name="MOCK", tags=["not_a_real_tag"])
+
+
+def test_every_registry_persona_declares_its_corpus_source() -> None:
+    """The source of record is declared, never inferred.
+
+    Read from the raw YAML rather than the loaded model, because the model carries a
+    default: the point is that each entry says so in the file a reviewer reads. Inferring
+    it from whether a source directory happens to exist would mean a persona whose
+    documents had not been added yet was quietly built from an encyclopedia article and
+    still reported as grounded.
+    """
+    raw = yaml.safe_load(personas_module.REGISTRY_PATH.read_text(encoding="utf-8"))
+    missing = [
+        entry["persona_id"] for entry in raw["personas"] if "corpus_source" not in entry
+    ]
+    assert missing == [], f"these personas do not declare a corpus_source: {missing}"
+
+
+def test_an_unknown_corpus_source_is_rejected_at_load() -> None:
+    """A typo would otherwise route the persona down whichever branch dispatch ends on."""
+    with pytest.raises(ValidationError, match="unknown corpus_source"):
+        Persona(persona_id="p", name="MOCK", corpus_source="wikipedia_", tags=["deterrence"])
 
 
 def test_duplicate_persona_ids_are_rejected() -> None:

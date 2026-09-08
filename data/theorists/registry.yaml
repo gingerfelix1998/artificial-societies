@@ -22,6 +22,16 @@
 #
 # `era` is host-side metadata for later period comparison (phase 3). It is not routed on.
 #
+# `corpus_source` names which pipeline builds this persona's store: `wikipedia` fetches and
+# chunks the page below, `markdown` reads committed documents from
+# data/corpora-src/<persona_id>/ and builds a claim index from them. It is DECLARED HERE
+# AND NEVER INFERRED. Inferring it from whether a source directory happens to exist is a
+# silent fallback under another name: a persona whose documents had not been added yet
+# would quietly be built from an encyclopedia article and reported as grounded. Declared
+# `markdown` with no documents raises instead (invariant 4), and the retriever refuses to
+# serve a store whose manifest says it was built from something other than what is declared
+# here (invariant 9).
+#
 # `wikipedia` is the page title `artsoc ingest` fetches for this persona. WIKIPEDIA IS A
 # TERTIARY SOURCE: an encyclopedia article *about* the theorist, not the theorist's own
 # writing. It proves the retrieval pipeline and calibrates the decline threshold against
@@ -50,6 +60,7 @@ personas:
   - persona_id: brodie
     name: Bernard Brodie
     era: early_deterrence
+    corpus_source: wikipedia
     wikipedia: 'Bernard Brodie (military strategist)'
     semantic_scholar: null
     key_works:
@@ -65,6 +76,7 @@ personas:
   - persona_id: schelling
     name: Thomas Schelling
     era: early_deterrence
+    corpus_source: wikipedia
     wikipedia: 'Thomas Schelling'
     semantic_scholar: '5068532'
     key_works:
@@ -80,6 +92,7 @@ personas:
   - persona_id: kahn
     name: Herman Kahn
     era: early_deterrence
+    corpus_source: wikipedia
     wikipedia: 'Herman Kahn'
     semantic_scholar: '143603002'
     key_works:
@@ -95,6 +108,7 @@ personas:
   - persona_id: wohlstetter
     name: Albert Wohlstetter
     era: early_deterrence
+    corpus_source: wikipedia
     wikipedia: 'Albert Wohlstetter'
     semantic_scholar: '98481021'
     key_works:
@@ -109,6 +123,7 @@ personas:
   - persona_id: jervis
     name: Robert Jervis
     era: cold_war_theory
+    corpus_source: wikipedia
     wikipedia: 'Robert Jervis'
     semantic_scholar: '38456725'
     key_works:
@@ -124,6 +139,7 @@ personas:
   - persona_id: waltz
     name: Kenneth Waltz
     era: cold_war_theory
+    corpus_source: wikipedia
     wikipedia: 'Kenneth Waltz'
     semantic_scholar: '39402289'
     key_works:
@@ -139,6 +155,7 @@ personas:
   - persona_id: sagan
     name: Scott Sagan
     era: post_cold_war
+    corpus_source: wikipedia
     wikipedia: 'Scott Sagan'
     semantic_scholar: '4427745'
     key_works:
@@ -154,6 +171,7 @@ personas:
   - persona_id: posen
     name: Barry Posen
     era: cold_war_theory
+    corpus_source: wikipedia
     wikipedia: 'Barry Posen'
     semantic_scholar: '66949810'
     key_works:
@@ -169,6 +187,7 @@ personas:
   - persona_id: tannenwald
     name: Nina Tannenwald
     era: post_cold_war
+    corpus_source: wikipedia
     wikipedia: 'Nina Tannenwald'
     semantic_scholar: '66185977'
     key_works:
@@ -183,6 +202,7 @@ personas:
   - persona_id: george
     name: Alexander George
     era: cold_war_theory
+    corpus_source: wikipedia
     wikipedia: 'Alexander L. George'
     semantic_scholar: '97762784'
     key_works:
@@ -198,6 +218,7 @@ personas:
   - persona_id: freedman
     name: Lawrence Freedman
     era: post_cold_war
+    corpus_source: wikipedia
     wikipedia: 'Lawrence Freedman'
     semantic_scholar: null
     key_works:
@@ -213,6 +234,7 @@ personas:
   - persona_id: blair
     name: Bruce Blair
     era: post_cold_war
+    corpus_source: wikipedia
     wikipedia: 'Bruce G. Blair'
     semantic_scholar: '69353658'
     key_works:

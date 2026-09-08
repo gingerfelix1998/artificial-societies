@@ -453,6 +453,11 @@ def ingest_persona(
     manifest = {
         "persona_id": persona.persona_id,
         "source": SOURCE_SLUG,
+        #: What actually built this store, and what tier of source it is. Recorded here so
+        #: the retriever can check the registry's declaration against what happened rather
+        #: than trusting it (invariant 9).
+        "corpus_source": "wikipedia",
+        "corpus_tier": "encyclopedia",
         "title": fetched["title"],
         # Reproducibility hook. A run cannot state which text it saw without this.
         "revision_id": fetched["revision_id"],
