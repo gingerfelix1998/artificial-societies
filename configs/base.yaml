@@ -24,6 +24,9 @@ backend: anthropic
 #                       single saving available, at the cost of persona fidelity.
 #   advisor_selection   ~18% of input. A routing judgement with short output.
 #   advisor_synthesis   ~10%. A modelled compression whose losses are a finding.
+#   advisor_coas        Added with ADR 0006. Same character of work as synthesis and
+#                       selection — a compression/proposal step, not the primary metric —
+#                       priced the same until it is measured on its own.
 #   upstream roles      under 4% combined, because only a handful of distinct perceived
 #                       views exist and they cache almost completely. Effectively free,
 #                       so they get the strongest model.
@@ -34,6 +37,7 @@ models:
   advisor_selection: claude-sonnet-5
   theorist: claude-haiku-4-5
   advisor_synthesis: claude-sonnet-5
+  advisor_coas: claude-sonnet-5
   president_decision: claude-opus-5
 
 # Thinking depth for models that take adaptive thinking. Thinking tokens bill as output,

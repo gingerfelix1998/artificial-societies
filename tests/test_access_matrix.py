@@ -106,7 +106,8 @@ class LoopRun:
                 self.opinions.append(opinion)
 
         self.brief = advisor.synthesise(self.query, self.opinions, "full_range")
-        self.action = president.decide(self.intel, self.brief)
+        self.coas = advisor.propose_coas(self.query, self.opinions)
+        self.action = president.decide(self.intel, self.brief, self.coas)
 
     def texts_for(self, role: Role) -> list[str]:
         """Every prompt this role saw, system and user concatenated."""
@@ -284,6 +285,61 @@ def test_the_president_does_see_the_advisor_brief(run: LoopRun) -> None:
     """Guards the test above: a President shown nothing would pass it trivially."""
     texts = run.texts_for(Role.PRESIDENT_DECISION)
     assert any(run.brief.summary in t for t in texts)
+
+
+def test_the_advisor_sees_full_opinions_to_write_the_coas(run: LoopRun) -> None:
+    """The Advisor's *input* legitimately contains full opinion text — invariant 1
+    restricts what the President sees, not what the Advisor sees, and this is the same
+    thing `synthesise` already does to write the brief. Guards the next test: a COA
+    proposal step that saw nothing could not possibly cite anything real."""
+    texts = run.texts_for(Role.ADVISOR_COAS)
+    assert texts, "COA proposal never ran; the scan proves nothing"
+    assert any(
+        opinion.position in text for opinion in run.opinions for text in texts
+    ), "the Advisor was shown no real opinion text; its citations would be fabricated"
+
+
+def test_a_coas_rationale_never_quotes_raw_theorist_output(run: LoopRun) -> None:
+    """ADR 0006: a course of action is the Advisor's own case, cited by id — never a
+    theorist's position or reasoning reproduced verbatim. Checked on the Advisor's
+    *output* (what it wrote), not its input (which the test above confirms is the full
+    opinions, exactly as `synthesise` already receives)."""
+    assert run.coas, "no courses of action were produced; the scan proves nothing"
+    for coa in run.coas:
+        for opinion in run.opinions:
+            assert opinion.position not in coa.rationale
+            assert opinion.reasoning not in coa.rationale
+
+
+def test_the_presidents_decision_prompt_shows_coas_but_not_raw_opinions(
+    run: LoopRun,
+) -> None:
+    """The President reads the Advisor's case for each option, never the opinions behind
+    it — the same boundary `test_the_president_never_sees_raw_theorist_output` already
+    checks against the brief, checked again against this new surface."""
+    texts = run.texts_for(Role.PRESIDENT_DECISION)
+    assert any(coa.rationale in t for coa in run.coas for t in texts), (
+        "guards against a vacuous pass: the President must actually be shown the COAs"
+    )
+    for text in texts:
+        for opinion in run.opinions:
+            assert opinion.position not in text
+            assert opinion.reasoning not in text
+
+
+def test_the_three_coas_are_distinct_actions(run: LoopRun) -> None:
+    """Three identical proposals is not three courses of action."""
+    assert len(run.coas) == 3
+    assert len({coa.action for coa in run.coas}) == 3
+
+
+def test_the_chosen_action_matches_one_of_the_offered_coas(run: LoopRun) -> None:
+    """The action taken is the offered course's action, not a free-floating choice."""
+    matching = [
+        coa for coa in run.coas
+        if coa.coa_id == run.action.chosen_coa_id and coa.action == run.action.action
+    ]
+    assert len(matching) == 1
 
 
 def test_the_president_writing_the_query_has_not_yet_seen_any_opinion(run: LoopRun) -> None:

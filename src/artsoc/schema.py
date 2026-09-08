@@ -33,7 +33,11 @@ from pydantic import (
     model_validator,
 )
 
-SCHEMA_VERSION = "1.0.0"
+#: 1.1.0: courses of action (ADR 0006). Not a purely additive bump — the mechanism that
+#: produces `action` changed (advisor-curated choice of three, rather than a free choice
+#: among all fifteen, under `consult_panel: true`), so a record from before this version
+#: cannot be reproduced by re-running the same config and seed against current code.
+SCHEMA_VERSION = "1.1.0"
 
 
 class ActionType(str, Enum):
@@ -437,6 +441,28 @@ class AdvisorBrief(_Model):
 
     _coerce_text = field_validator('summary', mode="before")(as_text_field)
 
+
+class CourseOfAction(_Model):
+    """One advisor-authored, citable option put to the President.
+
+    Never a verbatim theorist quotation. This is the Advisor's own case for one action,
+    backed by ids an analyst can trace back to the opinions that support it — exactly the
+    relationship `AdvisorBrief.consensus_points` and `.minority_positions` already have to
+    the raw opinions behind them, not a new exception to invariant 1 (ADR 0006).
+    """
+
+    coa_id: str
+    action: ActionType
+    rationale: str = Field(
+        description="The Advisor's own case for this action, grounded in citations."
+    )
+    #: "question_id:persona_id" pairs — which opinions this option is grounded in. Ids,
+    #: never the opinion text itself.
+    supporting_opinions: list[str] = Field(default_factory=list)
+
+    _coerce_text = field_validator("rationale", mode="before")(as_text_field)
+
+
 class PresidentialAction(_Model):
     """Exactly one typed action, plus the justification that did not produce it."""
 
@@ -444,6 +470,10 @@ class PresidentialAction(_Model):
     justification: str = Field(
         description="Qualitative data only. Never an input to the rung."
     )
+    #: Which of the three offered courses of action this was, when any were offered.
+    #: `None` under the control arm, where the President chose freely from the closed
+    #: action space because there was no panel to cite (ADR 0006).
+    chosen_coa_id: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -503,6 +533,9 @@ class RunRecord(_Model):
     routing: list[RoutingRecord] = Field(default_factory=list)
     opinions: list[TheoristOpinion] = Field(default_factory=list)
     advisor_brief: AdvisorBrief | None = None
+    #: Empty under the control arm, where there is no panel to cite a course of action
+    #: from. Three entries otherwise (ADR 0006).
+    courses_of_action: list[CourseOfAction] = Field(default_factory=list)
 
     #: Passage ids an opinion cited that were absent from the block it was shown. A
     #: hallucinated citation is reported, never corrected: the rate is a finding about the

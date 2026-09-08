@@ -55,6 +55,7 @@ class Role(str, Enum):
     ADVISOR_SELECTION = "advisor_selection"
     THEORIST = "theorist"
     ADVISOR_SYNTHESIS = "advisor_synthesis"
+    ADVISOR_COAS = "advisor_coas"
     PRESIDENT_DECISION = "president_decision"
 
 
@@ -81,6 +82,14 @@ NO_RECORD_MARKER = "[[CORPUS:none]]"
 #: in an argument so that a prompt-scanning test can see exactly who was on offer.
 ROSTER_ENTRY = re.compile(r"\[\[WHO:([A-Za-z0-9_]+)\]\]")
 CONSENSUS_MARKER = "[[SYNTHESIS:consensus]]"
+#: One action the Advisor may draw a course of action from, or the President choose freely
+#: among. Lives in the prompt for the same reason ROSTER_ENTRY does: a side channel would
+#: be invisible to tests/test_access_matrix.py.
+ACTION_ENTRY = re.compile(r"\[\[ACTION:([a-z_]+)\]\]")
+#: One opinion a course of action may cite as support, as "question_id:persona_id".
+OPINION_ENTRY = re.compile(r"\[\[OPINION:([A-Za-z0-9_]+):([A-Za-z0-9_]+)\]\]")
+#: One course of action offered to the President, as "coa_id:action_value".
+COA_ENTRY = re.compile(r"\[\[COA:([a-z0-9]+):([a-z_]+)\]\]")
 #: A host-side summarisation request rather than a persona answering a question. It reuses
 #: the theorist role because it is not a participant in the loop — giving it a role of its
 #: own would place it inside the access matrix and imply an agent that never existed.
@@ -192,6 +201,7 @@ class MockBackend:
             Role.ADVISOR_SELECTION: self._selection,
             Role.THEORIST: self._theorist,
             Role.ADVISOR_SYNTHESIS: self._synthesis,
+            Role.ADVISOR_COAS: self._coas,
             Role.PRESIDENT_DECISION: self._decision,
         }[role]
         return json.dumps(handler(prompt, rng, digest))
@@ -324,7 +334,54 @@ class MockBackend:
             "minority_positions": minority,
         }
 
+    def _coas(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # The action set and the citable opinions are both read out of the prompt, never
+        # passed in — the same principle ROSTER_ENTRY already follows for advisor
+        # selection: a side channel here would be invisible to test_access_matrix.py.
+        actions = ACTION_ENTRY.findall(prompt)
+        opinions = [f"{q}:{p}" for q, p in OPINION_ENTRY.findall(prompt)]
+        chosen = rng.sample(actions, min(3, len(actions))) if actions else []
+
+        courses = []
+        for action in chosen:
+            cites = rng.sample(opinions, min(2, len(opinions))) if opinions else []
+            courses.append(
+                {
+                    "action": action,
+                    "rationale": (
+                        f"{MOCK_PREFIX} placeholder case for {action} {digest[:6]}; this "
+                        "text is not reasoning and cites nothing real"
+                    ),
+                    "supporting_opinions": cites,
+                }
+            )
+        return {
+            # Always present, regardless of whether any action markers were found — the
+            # same shape `_selection`'s `rationale` field takes with an empty roster.
+            # Mock output must never be indistinguishable from real output in any shape it
+            # can take, including this degenerate one.
+            "note": f"{MOCK_PREFIX} placeholder COA batch {digest[:6]}",
+            "courses": courses,
+        }
+
     def _decision(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # Deliberately always valid: the retry-then-raise guard on an invalid coa_id is
+        # exercised by dedicated fake-backend tests (test_invariants.py), not by chance
+        # inside the shared mock. Baking a random failure in here once caused a ~0.1%
+        # chance per decision of exhausting all retries, which meant an occasional,
+        # unrelated test elsewhere in the suite would fail for no reason a reader could see.
+        offered = COA_ENTRY.findall(prompt)
+        if offered:
+            coa_id, action = rng.choice(offered)
+            return {
+                "chosen_coa_id": coa_id,
+                "action": action,
+                "justification": (
+                    f"{MOCK_PREFIX} placeholder justification {digest[:6]}; qualitative "
+                    "data only, and no part of it produced the action above"
+                ),
+            }
+
         actions = sorted(DECISION_WEIGHTS, key=lambda a: a.value)
         weights = [DECISION_WEIGHTS[a] for a in actions]
         action = rng.choices(actions, weights=weights, k=1)[0]
@@ -375,6 +432,9 @@ DEFAULT_MODELS: dict[str, str] = {
     Role.ADVISOR_SELECTION.value: "claude-sonnet-5",
     Role.THEORIST.value: "claude-haiku-4-5",
     Role.ADVISOR_SYNTHESIS.value: "claude-sonnet-5",
+    # A compression/proposal step, the same character of work as synthesis and selection —
+    # not the primary metric (ADR 0006).
+    Role.ADVISOR_COAS.value: "claude-sonnet-5",
     Role.PRESIDENT_DECISION.value: "claude-opus-5",
 }
 

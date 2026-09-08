@@ -43,6 +43,7 @@ from artsoc.retrieval import get_retriever
 from artsoc.schema import (
     AdvisorBrief,
     AnalyticalQuestion,
+    CourseOfAction,
     PresidentialQuery,
     RoutingRecord,
     RunRecord,
@@ -127,7 +128,7 @@ def _consult(
     rng: random.Random,
     panel: list[Persona],
 ) -> tuple[PresidentialQuery, list[AnalyticalQuestion], list[RoutingRecord],
-           list[TheoristOpinion], AdvisorBrief, list[str]]:
+           list[TheoristOpinion], AdvisorBrief, list[CourseOfAction], list[str]]:
     """The advisory half of the loop: query, panel, brief.
 
     Split out so `run_once` reads as the sequence it is, and so the control arm's absence
@@ -179,7 +180,8 @@ def _consult(
     unsupported = [cite for _, _, cites in results for cite in cites]
 
     brief = advisor.synthesise(query, opinions, config.synthesis_mode)
-    return query, questions, routing, opinions, brief, unsupported
+    coas = advisor.propose_coas(query, opinions)
+    return query, questions, routing, opinions, brief, coas, unsupported
 
 
 def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> RunRecord:
@@ -227,14 +229,20 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
     routing: list[RoutingRecord] = []
     opinions: list[TheoristOpinion] = []
     brief: AdvisorBrief | None = None
+    coas: list[CourseOfAction] = []
     unsupported: list[str] = []
 
     if config.consult_panel:
-        query, questions, routing, opinions, brief, unsupported = _consult(
+        query, questions, routing, opinions, brief, coas, unsupported = _consult(
             config, client, scenario, intel, rng, panel
         )
 
-    action = President(client, scenario.doctrine_card).decide(intel, brief)
+    # `coas` stays [] under the control arm, and President.decide's free-choice path is
+    # what runs when the list is empty — the base-rate measurement every other arm's delta
+    # is read against is untouched by ADR 0006 (`decide` treats `coas=None` the same as
+    # today; an empty list from a consulted-but-COA-less path would be a design error, so
+    # it is passed through honestly rather than coerced to None here).
+    action = President(client, scenario.doctrine_card).decide(intel, brief, coas or None)
 
     return RunRecord(
         run_id=f"{config.arm}-{seed}",
@@ -263,6 +271,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         routing=routing,
         opinions=opinions,
         advisor_brief=brief,
+        courses_of_action=coas,
         unsupported_citations=unsupported,
         action=action,
         rung=action.rung,

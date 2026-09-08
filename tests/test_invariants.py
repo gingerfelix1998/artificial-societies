@@ -24,6 +24,7 @@ from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
 from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
+    COA_ENTRY,
     DEFAULT_MODELS,
     MOCK_PREFIX,
     NO_RECORD_MARKER,
@@ -62,6 +63,7 @@ from artsoc.schema import (
     ActionType,
     AdvisorBrief,
     AnalyticalQuestion,
+    CourseOfAction,
     DoctrineCard,
     IntelBrief,
     PerceivedEvent,
@@ -711,6 +713,195 @@ def test_the_presidential_decision_is_typed_and_scored_deterministically() -> No
     assert action.rung == rung_for(action.action)
 
 
+# ---------------------------------------------------------------------------
+# Courses of action (ADR 0006). The Advisor proposes three distinct, citation-backed
+# options; the President chooses one of the three rather than choosing freely.
+# ---------------------------------------------------------------------------
+
+
+def _opinions_for_coas() -> list[TheoristOpinion]:
+    return [
+        TheoristOpinion(
+            persona_id=f"p{i}",
+            persona_name=f"MOCK persona {i}",
+            question_id="q0",
+            position=f"MOCK: position {i}",
+            reasoning=f"MOCK: reasoning {i}",
+        )
+        for i in range(4)
+    ]
+
+
+def test_propose_coas_returns_three_distinct_actions() -> None:
+    advisor = Advisor(_loop_client())
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    coas = advisor.propose_coas(query, _opinions_for_coas())
+    assert len(coas) == 3
+    assert len({coa.action for coa in coas}) == 3
+    assert {coa.coa_id for coa in coas} == {"a", "b", "c"}
+
+
+def test_a_coas_citations_point_at_real_opinions_never_at_their_text() -> None:
+    """A citation is an id an analyst can trace, not a copy of what it points at."""
+    advisor = Advisor(_loop_client())
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    opinions = _opinions_for_coas()
+    valid_tags = {f"{o.question_id}:{o.persona_id}" for o in opinions}
+    coas = advisor.propose_coas(query, opinions)
+    for coa in coas:
+        assert set(coa.supporting_opinions) <= valid_tags
+        for opinion in opinions:
+            assert opinion.position not in coa.rationale
+            assert opinion.reasoning not in coa.rationale
+
+
+def test_decide_with_coas_chooses_one_of_the_three_offered() -> None:
+    """The action taken is the offered course's action, not read separately from the
+    model's own say-so — decide() overwrites `action` from the validated `coa_id`."""
+    client = _loop_client()
+    president = President(client, _doctrine())
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    advisor = Advisor(client)
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    coas = advisor.propose_coas(query, _opinions_for_coas())
+
+    action = president.decide(intel, None, coas)
+    matching = [c for c in coas if c.coa_id == action.chosen_coa_id]
+    assert len(matching) == 1
+    assert matching[0].action == action.action
+    assert action.rung == rung_for(action.action)
+
+
+def test_decide_without_coas_chooses_freely_and_sets_no_coa_id() -> None:
+    """`coas=None` is the `escalation_prior` path and must be untouched by ADR 0006."""
+    client = _loop_client()
+    president = President(client, _doctrine())
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    action = president.decide(intel, None, None)
+    assert action.chosen_coa_id is None
+    assert isinstance(action.action, ActionType)
+
+
+class _FixedCoaBackend:
+    """Names an id on the first call, a different one on the second — every other role
+    falls through to the ordinary mock so the surrounding loop still works."""
+
+    name = "fixed-coa"
+
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = list(ids)
+        self._mock = MockBackend()
+
+    def model_for(self, role: Role) -> str:
+        return "fixed-coa-model"
+
+    def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str:
+        if role is not Role.PRESIDENT_DECISION or not COA_ENTRY.search(prompt):
+            return self._mock.complete(role, system, prompt, seed_hint)
+        coa_id = self._ids.pop(0) if self._ids else "still-wrong"
+        return json.dumps(
+            {"chosen_coa_id": coa_id, "action": "no_action", "justification": "MOCK:"}
+        )
+
+
+def test_decide_retries_once_then_recovers_from_an_invalid_coa_id() -> None:
+    """The host corrects a model that names an id outside the three offered, and the
+    corrected choice — not the rejected one — is what ends up in the record."""
+    client = LLMClient(backend=_FixedCoaBackend(["not-a-real-id", "b"]), run_seed=1)
+    president = President(client, _doctrine())
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    coas = [
+        CourseOfAction(coa_id=cid, action=action, rationale="MOCK:")
+        for cid, action in zip(
+            "abc",
+            [ActionType.NO_ACTION, ActionType.PRIVATE_WARNING, ActionType.PUBLIC_STATEMENT],
+            strict=True,
+        )
+    ]
+    action = president.decide(intel, None, coas)
+    assert action.chosen_coa_id == "b"
+    assert action.action == ActionType.PRIVATE_WARNING
+
+
+def test_decide_raises_after_exhausting_retries_on_an_uncorrectable_backend() -> None:
+    """No silent substitution: a decision recorded as chosen when it was actually
+    corrected by the host would misstate the one field this project treats as ground
+    truth for what the President did — so exhaustion is a raise, never a fallback."""
+    client = LLMClient(backend=_FixedCoaBackend([]), run_seed=1)
+    president = President(client, _doctrine())
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    coas = [
+        CourseOfAction(coa_id=cid, action=action, rationale="MOCK:")
+        for cid, action in zip(
+            "abc",
+            [ActionType.NO_ACTION, ActionType.PRIVATE_WARNING, ActionType.PUBLIC_STATEMENT],
+            strict=True,
+        )
+    ]
+    with pytest.raises(ValueError, match="could not choose one of the offered"):
+        president.decide(intel, None, coas)
+
+
+class _DuplicateThenDistinctBackend:
+    """Proposes the same action twice on the first call, three distinct ones on the
+    second — every other role falls through to the ordinary mock."""
+
+    name = "dup-coa"
+
+    def __init__(self, always_duplicate: bool = False) -> None:
+        self._always_duplicate = always_duplicate
+        self._served = False
+        self._mock = MockBackend()
+
+    def model_for(self, role: Role) -> str:
+        return "dup-coa-model"
+
+    def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str:
+        if role is not Role.ADVISOR_COAS:
+            return self._mock.complete(role, system, prompt, seed_hint)
+        if self._always_duplicate or not self._served:
+            self._served = True
+            courses = [{"action": "no_action", "rationale": "MOCK:", "supporting_opinions": []}] * 3
+        else:
+            courses = [
+                {"action": a, "rationale": "MOCK:", "supporting_opinions": []}
+                for a in ("no_action", "private_warning", "public_statement")
+            ]
+        return json.dumps({"courses": courses})
+
+
+def test_propose_coas_retries_once_then_recovers_from_a_duplicate() -> None:
+    client = LLMClient(backend=_DuplicateThenDistinctBackend(), run_seed=1)
+    advisor = Advisor(client)
+    query = PresidentialQuery(text="MOCK:", concerns=[])
+    coas = advisor.propose_coas(query, _opinions_for_coas())
+    assert len({coa.action for coa in coas}) == 3
+
+
+def test_propose_coas_raises_after_exhausting_retries_on_a_backend_that_never_varies() -> None:
+    client = LLMClient(backend=_DuplicateThenDistinctBackend(always_duplicate=True), run_seed=1)
+    advisor = Advisor(client)
+    query = PresidentialQuery(text="MOCK:", concerns=[])
+    with pytest.raises(ValueError, match="three distinct courses of action"):
+        advisor.propose_coas(query, _opinions_for_coas())
+
+
+def test_the_control_arm_has_no_courses_of_action() -> None:
+    """No panel means nothing to cite a course of action from (ADR 0006); the control
+    arm's free-choice base rate must be exactly what it was before this change."""
+    record = _run("escalation_prior", 1)
+    assert record.courses_of_action == []
+    assert record.action.chosen_coa_id is None
+
+
+def test_a_consulted_arm_always_produces_exactly_three_courses() -> None:
+    for seed in range(1, 6):
+        record = _run("baseline", seed)
+        assert len(record.courses_of_action) == 3
+        assert len({c.action for c in record.courses_of_action}) == 3
+        assert record.action.chosen_coa_id in {c.coa_id for c in record.courses_of_action}
+
+
 def test_a_malformed_backend_response_raises_rather_than_being_salvaged() -> None:
     """A half-parsed record in out/ would look exactly like a complete one."""
 
@@ -801,10 +992,16 @@ def test_the_recorded_rung_is_always_the_deterministic_one() -> None:
     for seed in range(1, 8):
         record = _run("baseline", seed)
         assert record.rung == RUNG[record.action.action]
-    # A record claiming a different rung is ignored rather than believed.
-    tampered = _run("baseline", 3).model_dump(mode="json")
-    tampered["action"]["rung"] = 8
-    assert RunRecord.model_validate(tampered).action.rung != 8
+    # A record claiming a different rung is ignored rather than believed. The tamper value
+    # is chosen to actually differ from the real rung — seed 3 happens to land on
+    # nuclear_countervalue (rung 8), so a hardcoded 8 here would coincidentally match
+    # rather than test anything.
+    real = _run("baseline", 3)
+    tampered = real.model_dump(mode="json")
+    fake_rung = 0 if real.rung != 0 else 1
+    tampered["action"]["rung"] = fake_rung
+    assert RunRecord.model_validate(tampered).action.rung == real.rung
+    assert RunRecord.model_validate(tampered).action.rung != fake_rung
 
 
 def test_the_control_arm_consults_nobody() -> None:

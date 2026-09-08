@@ -44,6 +44,7 @@ from artsoc.schema import (
     ActionType,
     AdvisorBrief,
     AnalyticalQuestion,
+    CourseOfAction,
     DoctrineCard,
     IntelBrief,
     PerceivedEvent,
@@ -207,6 +208,10 @@ _PRESIDENT_QUERY_SYSTEM = (
 #: text that failed the guard is ever passed on, and exhausting the retries still raises.
 QUERY_ATTEMPTS = 3
 
+#: How many times the President may be asked to choose again after naming a course of
+#: action id that was not among the three offered (ADR 0006).
+COA_ATTEMPTS = 3
+
 _PRESIDENT_DECISION_SYSTEM = (
     "You are the head of state of a nuclear-armed nation. You have an intelligence brief "
     "and an advisor's synthesis of expert opinion. Select exactly one action from the "
@@ -288,16 +293,28 @@ class President:
             f"{QUERY_ATTEMPTS} attempts: {last}"
         )
 
-    def decide(self, intel: IntelBrief, brief: AdvisorBrief | None) -> PresidentialAction:
+    def decide(
+        self,
+        intel: IntelBrief,
+        brief: AdvisorBrief | None,
+        coas: list[CourseOfAction] | None = None,
+    ) -> PresidentialAction:
         """Select one action. The rung is derived from the action afterwards, not here.
 
-        `brief` is `None` in the `escalation_prior` control arm, where the President has no
-        advisory input at all. The advisory section is then omitted rather than sent empty:
-        a heading with nothing under it still tells the model an advisor was consulted and
-        had nothing to say, which is a different situation from not having one.
+        `brief` and `coas` are both `None` in the `escalation_prior` control arm, where the
+        President has no advisory input at all and chooses freely from the closed action
+        space (ADR 0006) — the base-rate measurement every other arm's delta is read
+        against, so this path is untouched by anything below.
+
+        When `coas` is given, the President chooses among exactly those three rather than
+        the full action space, and the response is validated against them: a chosen action
+        outside the three offered gets one bounded retry naming the valid options, then
+        raises. No silent substitution — a decision recorded as chosen when it was actually
+        corrected by the host would misstate the one field this project treats as ground
+        truth for what the President did.
         """
         system = _system(Role.PRESIDENT_DECISION, _PRESIDENT_DECISION_SYSTEM)
-        lines = [
+        base = [
             f"YOUR STANDING DOCTRINE: {self.doctrine.doctrine}",
             f"YOUR DISPOSITION: {self.doctrine.disposition}",
             "YOUR DECLARED RED LINES:",
@@ -314,7 +331,7 @@ class President:
             "",
         ]
         if brief is not None:
-            lines += [
+            base += [
                 # The advisory brief only. Raw opinions are never reproduced here: what the
                 # compression dropped is a finding, and showing both would erase it.
                 "ADVISOR'S BRIEF:",
@@ -325,24 +342,68 @@ class President:
                 *(f"    - {pos}" for pos in brief.minority_positions),
                 "",
             ]
-        lines += [
-            "AVAILABLE ACTIONS (choose exactly one):",
-            *(f"  - {action.value}" for action in ActionType),
-            "",
-            "Produce JSON with keys: action, justification. " + JSON_ONLY,
-        ]
-        payload = _parse_json(
-            self.client.complete(
-                role=Role.PRESIDENT_DECISION,
-                system=system,
-                prompt="\n".join(lines),
-                # The decision must vary with the seed. Caching it would collapse the
-                # Monte Carlo distribution to a point mass.
-                cacheable=False,
-            ),
-            Role.PRESIDENT_DECISION,
+
+        if coas:
+            base += [
+                "COURSES OF ACTION — choose exactly one of these three by its id. Each is "
+                "your advisor's own case for that action; you are not choosing from the "
+                "full list of possible actions, only from these three.",
+                *(
+                    f"  [[COA:{coa.coa_id}:{coa.action.value}]] {coa.coa_id}: "
+                    f"{coa.action.value} — {coa.rationale}"
+                    for coa in coas
+                ),
+                "",
+                "Produce JSON with keys: chosen_coa_id, action, justification. `action` "
+                "must be the action of the course you chose. " + JSON_ONLY,
+            ]
+        else:
+            base += [
+                "AVAILABLE ACTIONS (choose exactly one):",
+                *(f"  - {action.value}" for action in ActionType),
+                "",
+                "Produce JSON with keys: action, justification. " + JSON_ONLY,
+            ]
+
+        valid = {coa.coa_id: coa.action for coa in (coas or [])}
+        last_invalid: str | None = None
+        for attempt in range(COA_ATTEMPTS if coas else 1):
+            lines = list(base)
+            if attempt:
+                lines += [
+                    "",
+                    f"Your previous attempt chose {last_invalid!r}, which is not one of "
+                    f"the three ids offered above: {', '.join(valid)}. Choose one of "
+                    "those ids and give its action exactly as shown.",
+                ]
+            payload = _parse_json(
+                self.client.complete(
+                    role=Role.PRESIDENT_DECISION,
+                    system=system,
+                    prompt="\n".join(lines),
+                    # The decision must vary with the seed. Caching it would collapse the
+                    # Monte Carlo distribution to a point mass.
+                    cacheable=False,
+                ),
+                Role.PRESIDENT_DECISION,
+            )
+            if not valid:
+                return PresidentialAction.model_validate(payload)
+
+            chosen_id = str(payload.get("chosen_coa_id", ""))
+            if chosen_id in valid:
+                # The action is taken from the offered course, not from the model's own
+                # `action` field — the id is what was validated, so the id is what decides
+                # which typed action was actually chosen.
+                payload["action"] = valid[chosen_id].value
+                return PresidentialAction.model_validate(payload)
+            last_invalid = chosen_id
+
+        raise ValueError(
+            f"the President could not choose one of the offered courses of action "
+            f"({', '.join(valid)}) after {COA_ATTEMPTS} attempts; last invalid id: "
+            f"{last_invalid!r}"
         )
-        return PresidentialAction.model_validate(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +430,16 @@ _ADVISOR_SYNTHESIS_SYSTEM = (
     "You are not adding analysis of your own and you have no access to intelligence "
     "reporting."
 )
+
+_ADVISOR_COAS_SYSTEM = (
+    "You are a strategic advisor. Propose distinct courses of action for the President to "
+    "choose among, each your own case grounded in the expert opinions you collected. You "
+    "have no access to intelligence reporting. Cite opinions by id; never quote their text."
+)
+
+#: How many times the Advisor may be asked to try again after proposing courses of action
+#: that named the same ActionType more than once (ADR 0006).
+COA_PROPOSAL_ATTEMPTS = 3
 
 
 class Advisor:
@@ -566,6 +637,100 @@ class Advisor:
             minority_positions=list(payload.get("minority_positions", [])),
             synthesis_mode=mode,
             n_opinions=len(opinions),
+        )
+
+    def propose_coas(
+        self, query: PresidentialQuery, opinions: list[TheoristOpinion]
+    ) -> list[CourseOfAction]:
+        """Three distinct, citation-backed options for the President to choose among.
+
+        Its own role and its own prompt rather than a field added to `synthesise`'s
+        response (ADR 0006): `llm.py`'s own design is one prompt shape per role with no
+        shared scratchpad, and a response mixing a prose brief with three structured
+        options would conflate two different products for no saving worth the coupling.
+
+        Reads the same `opinions` `synthesise` already reads — nothing reaches this method
+        that invariant 1 does not already permit the Advisor to see. What comes back is the
+        Advisor's own case for each action, citing opinions by id; it must never be a
+        theorist's `position` or `reasoning` reproduced verbatim, which is what keeps the
+        President's side of this exchange within invariant 1 unchanged.
+
+        Not instructed to spread the three across severity. If the panel's opinions
+        genuinely converge, three similar options grounded in real citations is a more
+        honest record than a manufactured spread backed by nothing.
+        """
+        system = _system(Role.ADVISOR_COAS, _ADVISOR_COAS_SYSTEM)
+        lines = [
+            "QUESTION FROM THE PRESIDENT:",
+            f"  {query.text}",
+            "",
+            "OPINIONS COLLECTED — cite these by their [[OPINION:...]] id, never by "
+            "quoting their text in your rationale:",
+        ]
+        for opinion in opinions:
+            tag = f"{opinion.question_id}:{opinion.persona_id}"
+            marker = " [DECLINED — OUT OF RECORD]" if opinion.out_of_record else ""
+            lines.append(f"  [[OPINION:{tag}]] {opinion.persona_name}{marker}")
+            lines.append(f"    position: {opinion.position}")
+            lines.append(f"    reasoning: {opinion.reasoning}")
+        lines += [
+            "",
+            "AVAILABLE ACTIONS you may draw your three options from:",
+            *(f"  [[ACTION:{action.value}]] {action.value}" for action in ActionType),
+            "",
+            "Propose exactly three courses of action. Rules:",
+            "  - Each names a DISTINCT action from the list above.",
+            "  - Each rationale is your own case for that action, grounded only in the "
+            "opinions above. Cite by [[OPINION:...]] id; never quote position or "
+            "reasoning text directly.",
+            "  - You do not need the three to span a range of severity. If the opinions "
+            "converge, three closely related options grounded in real citations is "
+            "correct; do not invent a case for an option nobody supports.",
+            "  - Decline to cite an opinion marked OUT OF RECORD as support for anything.",
+            "",
+            "Produce JSON with key `courses`, a list of exactly three objects each with "
+            "keys: action, rationale, supporting_opinions (a list of the cited "
+            "[[OPINION:...]] ids). " + JSON_ONLY,
+        ]
+
+        last_duplicate: str | None = None
+        for attempt in range(COA_PROPOSAL_ATTEMPTS):
+            prompt = "\n".join(lines)
+            if attempt:
+                prompt += (
+                    "\n\nYour previous proposal repeated an action "
+                    f"({last_duplicate!r}) across more than one course. Propose three "
+                    "options with three different actions."
+                )
+            payload = _parse_json(
+                self.client.complete(
+                    role=Role.ADVISOR_COAS,
+                    system=system,
+                    prompt=prompt,
+                    cacheable=attempt == 0,
+                ),
+                Role.ADVISOR_COAS,
+            )
+            raw = payload.get("courses", [])
+            coas = [
+                CourseOfAction(
+                    coa_id=letter,
+                    action=ActionType(item["action"]),
+                    rationale=item.get("rationale", ""),
+                    supporting_opinions=list(item.get("supporting_opinions", [])),
+                )
+                for letter, item in zip("abc", raw, strict=False)
+            ]
+            actions = [coa.action for coa in coas]
+            if len(coas) == 3 and len(set(actions)) == 3:
+                return coas
+            last_duplicate = next(
+                (a.value for a in actions if actions.count(a) > 1), None
+            )
+
+        raise ValueError(
+            f"the Advisor could not propose three distinct courses of action after "
+            f"{COA_PROPOSAL_ATTEMPTS} attempts"
         )
 
 
