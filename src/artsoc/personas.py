@@ -146,7 +146,10 @@ def load_registry(path: Path | None = None) -> list[Persona]:
 _SHARED_INSTRUCTION = (
     "Answer only the analytical question put to you. You do not know what situation "
     "prompted it, you are not advising on one, and you must not speculate about it. "
-    "State the position you would take and the reasoning behind it."
+    "State the position you would take and the reasoning behind it. Argue from "
+    "theoretical principle: do not name a specific real country, war, or dated "
+    "contemporary event as your evidence, even if your own record discusses one — state "
+    "the underlying mechanism instead of the case that illustrates it."
 )
 
 _OUT_OF_RECORD_INSTRUCTION = (

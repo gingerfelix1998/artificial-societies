@@ -320,7 +320,7 @@ BELIEF_SYSTEM = (
 
 BELIEF_INSTRUCTION = """From the material below, list the specific positions {name} argued for.
 
-Rules, and the third is the one that matters most:
+Rules, and 3 and 4 are the ones that matter most:
 
 1. Each belief is a distinct claim this person advanced, phrased as they would state it.
 2. Ground every belief in the material. If it does not support one, list fewer. Never
@@ -328,6 +328,11 @@ Rules, and the third is the one that matters most:
 3. KEEP EACH BELIEF NARROW. A belief about "nuclear strategy" or "the importance of
    deterrence" is useless: it matches every question, so this persona would answer
    everything and never decline. Name the specific mechanism, condition or claim.
+4. PHRASE EACH BELIEF AS A TIMELESS THEORETICAL CLAIM. If the material illustrates the
+   claim with a specific real country, war, or dated event, extract the general mechanism
+   and drop the case name from the belief — never the reverse. "A reinforcement force
+   sized to the defender's own territorial requirement is a more credible deterrent than
+   a power-projection force" is a belief; naming which real war showed this is not.
 
 Between three and eight beliefs. Produce JSON with key `beliefs`, a list of strings."""
 
@@ -473,6 +478,45 @@ def ingest_persona(
     return manifest
 
 
+def regenerate_beliefs(persona: Persona, client: Any, corpus_root: Path | None = None) -> int:
+    """Rewrite one persona's belief store from its already-fetched chunks. No refetch.
+
+    For when the belief-generation *prompt* changes and the sources it should run over are
+    already sitting on disk — ADR 0005's fix, for instance. `ingest_all(..., refresh=True)`
+    would re-fetch Wikipedia and every abstract to get there, which is a ~26-minute pass
+    hitting Semantic Scholar's rate limit for text that has not changed. This reads the
+    existing `chunks.jsonl` instead and only touches `beliefs.jsonl` and the manifest's
+    belief count.
+
+    Raises if the store has no `chunks.jsonl` — there is nothing to regenerate from, and
+    silently producing an empty belief store would look like "no beliefs supported" rather
+    than "not ingested yet". Returns the number of beliefs written.
+    """
+    store = (corpus_root or CORPUS_ROOT) / persona.persona_id
+    chunks_path = store / "chunks.jsonl"
+    if not chunks_path.exists():
+        raise FileNotFoundError(
+            f"no chunks.jsonl for {persona.persona_id} at {store}; run ingestion first"
+        )
+    sources = [
+        json.loads(line)["text"] for line in chunks_path.read_text().splitlines() if line.strip()
+    ]
+    beliefs = generate_beliefs(persona, sources, client)
+
+    (store / "beliefs.jsonl").write_text(
+        "".join(json.dumps(c) + "\n" for c in build_belief_chunks(persona.persona_id, beliefs)),
+        encoding="utf-8",
+    )
+
+    manifest_path = store / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        manifest["n_beliefs"] = len(beliefs)
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return len(beliefs)
+
+
 #: Files a complete store must have. A store missing any of them was interrupted
 #: part-way and is refetched rather than half-used.
 STORE_FILES = ("manifest.json", "chunks.jsonl", "beliefs.jsonl")
@@ -551,6 +595,7 @@ def ingest_all(
 
 __all__ = [
     "ABSTRACT_SLUG",
+    "BELIEF_INSTRUCTION",
     "BELIEF_SLUG",
     "SOURCE_SLUG",
     "build_abstract_chunks",
@@ -566,5 +611,6 @@ __all__ = [
     "ingest_all",
     "ingest_persona",
     "load_manifest",
+    "regenerate_beliefs",
     "split_sections",
 ]

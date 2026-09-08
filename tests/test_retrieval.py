@@ -15,6 +15,7 @@ import pytest
 
 from artsoc.ingest import (
     ABSTRACT_SLUG,
+    BELIEF_INSTRUCTION,
     BELIEF_SLUG,
     SOURCE_SLUG,
     build_abstract_chunks,
@@ -22,13 +23,21 @@ from artsoc.ingest import (
     build_chunks,
     chunk_text,
     content_key,
+    generate_beliefs,
     ingest_all,
     ingest_persona,
     load_manifest,
+    regenerate_beliefs,
     split_sections,
 )
 from artsoc.llm import PASSAGE_ID
-from artsoc.personas import NO_RECORD_MARKER, Persona, build_question_prompt
+from artsoc.personas import (
+    _SHARED_INSTRUCTION,
+    NO_RECORD_MARKER,
+    Persona,
+    build_identity_prompt,
+    build_question_prompt,
+)
 from artsoc.retrieval import (
     CorpusRetriever,
     get_retriever,
@@ -606,3 +615,122 @@ def test_resolving_passages_is_not_a_retrieval_path(tmp_path) -> None:
     assert "_select" not in source
     assert "_rank" not in source
     assert "format_passage" not in source
+
+
+# ---------------------------------------------------------------------------
+# ADR 0005 — no named real-world contemporary events in theorist output. Found live: the
+# Posen persona justified a position with "as shown by Ukraine's 2022 posture", traced to
+# a belief that faithfully summarised his real 2025 paper on the 2022 invasion. Not a
+# hallucination — the belief-generation prompt had nothing telling it to abstract away the
+# real case it was accurately citing.
+# ---------------------------------------------------------------------------
+
+
+def test_the_shared_instruction_forbids_naming_a_real_contemporary_event() -> None:
+    """Reached by every theorist call through `build_identity_prompt`, any method or
+    basis — the one point of leverage that covers both the sources path and the beliefs
+    path without a separate rule for each."""
+    lowered = _SHARED_INSTRUCTION.lower()
+    assert "real country" in lowered or "specific real" in lowered
+    assert "dated contemporary event" in lowered
+    assert "underlying mechanism" in lowered
+
+    persona = Persona(persona_id="posen", name="Barry Posen", tags=["organisational"])
+    for method in ("m1", "m2", "m3"):
+        assert "dated contemporary event" in build_identity_prompt(persona, method).lower()
+
+
+def test_the_belief_generation_instruction_forbids_the_same() -> None:
+    """New beliefs should come out already abstract rather than needing to be caught
+    afterwards — the fix at the source, not only at the point of answering."""
+    lowered = BELIEF_INSTRUCTION.lower()
+    assert "timeless theoretical claim" in lowered
+    assert "drop the case name" in lowered
+
+
+class _CapturingBackend:
+    """Records the prompt it was sent and returns a canned beliefs payload.
+
+    What this proves is that `BELIEF_INSTRUCTION` — including the new rule — actually
+    reaches the prompt sent to the model. It cannot prove a live model complies with it;
+    that is a live-run check (see ADR 0005's Verification section), not something testable
+    offline.
+    """
+
+    def __init__(self) -> None:
+        self.last_prompt: str = ""
+
+    def complete(self, *, role, system, prompt, cacheable=True):  # noqa: ANN001, ARG002
+        self.last_prompt = prompt
+        return json.dumps({"beliefs": ["A reinforcement force sized to the defender's own "
+                                        "territorial requirement is a credible deterrent."]})
+
+
+def test_belief_generation_sends_the_no_named_events_rule_to_the_model() -> None:
+    """Wiring, not compliance: the instruction must reach the prompt `generate_beliefs`
+    actually sends, or fixing the constant would be fixing nothing that is ever read."""
+    persona = Persona(persona_id="posen", name="Barry Posen", tags=["organisational"])
+    backend = _CapturingBackend()
+    beliefs = generate_beliefs(persona, ["Some fetched source material."], backend)
+
+    assert "drop the case name" in backend.last_prompt.lower()
+    assert beliefs and "reinforcement force" in beliefs[0]
+
+
+def test_regenerate_beliefs_rewrites_the_store_without_refetching(tmp_path) -> None:
+    """The actual mechanism used to fix Posen's corpus.
+
+    `ingest_all(..., refresh=True)` would re-fetch Wikipedia and every abstract to pick up
+    a changed belief-generation prompt — a ~26-minute pass hitting Semantic Scholar's rate
+    limit for source text that has not changed at all. This reads the chunks already on
+    disk instead, so a fetcher that raises must never be reached.
+    """
+
+    def _must_not_fetch(title: str) -> dict:  # noqa: ARG001
+        raise AssertionError("regenerate_beliefs must not fetch anything")
+
+    persona = _persona("brodie")
+    ingest_persona(persona, tmp_path, _fetcher(PAGE))
+
+    backend = _CapturingBackend()
+    n = regenerate_beliefs(persona, backend, tmp_path)
+
+    assert n == 1
+    assert "drop the case name" in backend.last_prompt.lower()
+    rewritten = [
+        json.loads(line)["text"]
+        for line in (tmp_path / "brodie" / "beliefs.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert rewritten and "reinforcement force" in rewritten[0]
+
+    manifest = json.loads((tmp_path / "brodie" / "manifest.json").read_text())
+    assert manifest["n_beliefs"] == 1
+    # chunks.jsonl and the source text are untouched by a belief-only regeneration.
+    assert manifest["n_chunks"] > 0
+
+
+def test_regenerate_beliefs_requires_an_ingested_store(tmp_path) -> None:
+    """Nothing to regenerate from is a different fact from "no beliefs supported"."""
+    with pytest.raises(FileNotFoundError):
+        regenerate_beliefs(_persona("nobody"), _CapturingBackend(), tmp_path)
+
+
+def test_posens_regenerated_beliefs_no_longer_name_ukraine() -> None:
+    """The actual defect this ADR fixes, checked directly against the live corpus.
+
+    Skipped rather than failed when the corpus has not been ingested on this machine —
+    `make test` must still pass on a fresh clone with nothing in `data/corpora/`. Where the
+    corpus IS present, this is the regression test naming the real thing that went wrong.
+    """
+    from artsoc.retrieval import CORPUS_ROOT
+
+    path = CORPUS_ROOT / "posen" / "beliefs.jsonl"
+    if not path.exists():
+        pytest.skip("data/corpora/posen not ingested on this machine")
+
+    texts = [json.loads(line)["text"] for line in path.read_text().splitlines() if line.strip()]
+    assert texts, "posen has no beliefs; the assertion below would be vacuous"
+    for text in texts:
+        assert "ukraine" not in text.lower(), f"still names Ukraine: {text!r}"
+        assert "2022" not in text, f"still names a dated event: {text!r}"
