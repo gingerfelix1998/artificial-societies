@@ -796,3 +796,306 @@ def pipeline_flow(records: list[RunRecord]) -> PipelineFlow:
     return PipelineFlow(
         arm=records[0].arm, n_records=len(records), nodes=nodes, links=links
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-agent detail, and the deterministic facts of one run
+# ---------------------------------------------------------------------------
+
+
+class AgentAnswer(_View):
+    """One question put to one theorist, and what came back.
+
+    `basis` and `declined` are kept apart because they answer different questions. A
+    persona shown belief text that still declined is a different fact from one shown
+    nothing at all, and collapsing them would hide which of the two happened.
+    """
+
+    question_id: str
+    question: str
+    #: chosen | topped_up — why this persona was asked at all.
+    how_selected: str
+    #: The Advisor's stated reason for the selection this answer belongs to. Empty under
+    #: `tag` routing, where nobody reasoned.
+    selection_rationale: str
+    declined: bool
+    #: sources | beliefs | none
+    basis: str
+    position: str
+    reasoning: str
+    citations: list[str] = Field(default_factory=list)
+    confidence: float
+
+
+class AgentDetail(_View):
+    """What one participant did in one replication, and the record's account of why.
+
+    Keyed on the ids `interaction_graph` emits, so a clicked node maps straight to a panel
+    without a second lookup that could disagree with the graph.
+
+    The "why" is only ever what the record holds. For a theorist that is its own reasoning,
+    the basis it drew on, and the Advisor's rationale for consulting it. For the President
+    it is the justification it gave — which `schema.PresidentialAction` documents as
+    qualitative data that never fed the rung, so it is labelled as the reason stated rather
+    than the reason the action occurred.
+    """
+
+    id: str
+    label: str
+    #: world | instrument | persona
+    kind: str
+    #: One line naming what this agent did, for the panel header.
+    summary: str
+    #: Populated for theorists.
+    answers: list[AgentAnswer] = Field(default_factory=list)
+    #: Free-form key/value detail, ordered for display. Used by the instrument roles, whose
+    #: outputs differ too much from one another to share a schema worth the indirection.
+    fields: list[tuple[str, str]] = Field(default_factory=list)
+    #: Longer blocks shown under the fields: the brief, the query, the justification.
+    passages: list[tuple[str, str]] = Field(default_factory=list)
+
+
+def _selection_index(record: RunRecord) -> dict[tuple[str, str], tuple[str, str]]:
+    """(question_id, persona_id) -> (how_selected, rationale), from the routing records."""
+    index: dict[tuple[str, str], tuple[str, str]] = {}
+    for routing in record.routing:
+        chosen = set(routing.matched_by_tag) | set(routing.chosen_by_advisor)
+        for persona_id in routing.selected:
+            how = "chosen" if persona_id in chosen else "topped_up"
+            index[(routing.question_id, persona_id)] = (how, routing.rationale)
+    return index
+
+
+def agent_details(record: RunRecord) -> list[AgentDetail]:
+    """One entry per participant in this replication.
+
+    Every node `interaction_graph` draws gets a detail, so no clickable node opens an empty
+    panel. An excluded persona has neither, which is the intervention working: the world
+    operated as though it never existed.
+    """
+    names = _persona_names(record)
+    questions = {q.question_id: q.text for q in record.questions}
+    selection = _selection_index(record)
+    details: list[AgentDetail] = []
+
+    detected, missed = len(record.detected_event_ids), len(record.missed_event_ids)
+    degraded = sum(1 for event in record.view if event.degraded)
+    details.append(
+        AgentDetail(
+            id=WORLD,
+            label="World",
+            kind="world",
+            summary=f"{len(record.injected_event_ids)} event(s) injected by the host.",
+            fields=[("Injected", ", ".join(record.injected_event_ids) or "none")],
+        )
+    )
+
+    details.append(
+        AgentDetail(
+            id="intelligence_officer",
+            label="Intelligence Officer",
+            kind="instrument",
+            summary=(
+                f"Detected {detected} of {detected + missed} event(s), "
+                f"{degraded} under degraded collection; assessed confidence "
+                f"{record.intel_brief.confidence}."
+            ),
+            fields=[
+                ("Detected", str(detected)),
+                ("Missed", str(missed)),
+                ("Degraded", str(degraded)),
+                ("Stated confidence", record.intel_brief.confidence),
+            ],
+            passages=[
+                ("Summary", record.intel_brief.summary),
+                ("Assessment", record.intel_brief.assessed_activity),
+                *[("Alternative", alt) for alt in record.intel_brief.alternative_explanations],
+                *[("Collection gap", gap) for gap in record.intel_brief.collection_gaps],
+            ],
+        )
+    )
+
+    brief = record.advisor_brief
+    if brief is not None or record.questions:
+        rationales = [
+            (f"Selection for {r.question_id}", r.rationale) for r in record.routing if r.rationale
+        ]
+        details.append(
+            AgentDetail(
+                id="advisor",
+                label="Advisor",
+                kind="instrument",
+                summary=(
+                    f"Wrote {len(record.questions)} question(s), consulted "
+                    f"{len(record.personas_consulted)} persona(s), and reported "
+                    f"{len(brief.consensus_points) if brief else 0} consensus point(s) and "
+                    f"{len(brief.minority_positions) if brief else 0} minority position(s)."
+                ),
+                fields=[
+                    ("Synthesis mode", brief.synthesis_mode if brief else "n/a"),
+                    ("Opinions received", str(brief.n_opinions if brief else 0)),
+                    ("Consensus points", str(len(brief.consensus_points) if brief else 0)),
+                    ("Minority positions", str(len(brief.minority_positions) if brief else 0)),
+                ],
+                passages=[
+                    *[("Question", text) for text in questions.values()],
+                    *rationales,
+                    *([("Brief", brief.summary)] if brief else []),
+                    *[("Consensus", p) for p in (brief.consensus_points if brief else [])],
+                    *[("Minority", p) for p in (brief.minority_positions if brief else [])],
+                ],
+            )
+        )
+
+    details.append(
+        AgentDetail(
+            id="president",
+            label="President",
+            kind="instrument",
+            summary=(
+                f"Selected {record.action.action.value} (rung {record.rung}) after "
+                f"{'an advisory brief' if brief else 'no advisory input'}."
+            ),
+            fields=[
+                ("Action", record.action.action.value),
+                ("Rung", str(record.rung)),
+                ("Nuclear", "yes" if record.action.is_nuclear else "no"),
+            ],
+            passages=[
+                *(
+                    [("Question to the Advisor", record.presidential_query.text)]
+                    if record.presidential_query
+                    else []
+                ),
+                # Labelled as the reason given, not the reason it happened. The action is
+                # what gets scored; the justification is written alongside it and never
+                # feeds the rung (schema.PresidentialAction).
+                ("Reason given for the action", record.action.justification),
+            ],
+        )
+    )
+
+    by_persona: dict[str, list[AgentAnswer]] = {}
+    for opinion in record.opinions:
+        how, rationale = selection.get((opinion.question_id, opinion.persona_id), ("chosen", ""))
+        by_persona.setdefault(opinion.persona_id, []).append(
+            AgentAnswer(
+                question_id=opinion.question_id,
+                question=questions.get(opinion.question_id, ""),
+                how_selected=how,
+                selection_rationale=rationale,
+                declined=opinion.out_of_record,
+                basis=opinion.basis,
+                position=opinion.position,
+                reasoning=opinion.reasoning,
+                citations=list(opinion.citations),
+                confidence=opinion.confidence,
+            )
+        )
+
+    # The phantom node is drawn whenever the Advisor named an id that was not on the
+    # roster, so it needs a panel too — an empty one on a clickable node reads as a bug.
+    # The rate is a finding about how reliably a model routes, not an incidental error.
+    hallucinated = [pid for routing in record.routing for pid in routing.hallucinated]
+    if hallucinated:
+        details.append(
+            AgentDetail(
+                id=PHANTOM,
+                label="Named but not on the roster",
+                kind="world",
+                summary=(
+                    f"The Advisor named {len(hallucinated)} id(s) that were not on the "
+                    "roster. Each was dropped and the panel topped up instead."
+                ),
+                fields=[
+                    ("Times named", str(len(hallucinated))),
+                    ("Distinct ids", str(len(set(hallucinated)))),
+                ],
+                passages=[("Named", pid) for pid in sorted(set(hallucinated))],
+            )
+        )
+
+    for persona_id in panel_for(record):
+        answers = by_persona.get(persona_id, [])
+        declines = sum(1 for a in answers if a.declined)
+        if not answers:
+            summary = "On the panel; never consulted."
+        else:
+            bases = sorted({a.basis for a in answers if not a.declined})
+            summary = (
+                f"Answered {len(answers)} question(s), declined {declines}"
+                + (f"; drew on {', '.join(bases)}." if bases else ".")
+            )
+        details.append(
+            AgentDetail(
+                id=persona_id,
+                label=names.get(persona_id, persona_id),
+                kind="persona",
+                summary=summary,
+                answers=answers,
+                fields=[
+                    ("Questions asked", str(len(answers))),
+                    ("Declined", str(declines)),
+                    (
+                        "Citations",
+                        str(sum(len(a.citations) for a in answers)),
+                    ),
+                ],
+            )
+        )
+    return details
+
+
+class RunFacts(_View):
+    """The deterministic account of one replication. Every field is read, none inferred.
+
+    This exists so the readable narrative beside it never has to carry a number. A model
+    asked to summarise can misstate a count; these cannot, because they are the record.
+    """
+
+    action: str
+    rung: int
+    is_nuclear: bool
+    panel_size: int
+    personas_consulted: int
+    n_opinions: int
+    n_declines: int
+    #: sources | beliefs | none, over stated positions and declines alike.
+    basis_counts: dict[str, int]
+    synthesis_mode: str
+    n_consensus: int
+    n_minority: int
+    events_detected: int
+    events_missed: int
+    events_degraded: int
+    intel_confidence: str
+    n_citations: int
+    n_unsupported_citations: int
+    grounded: bool
+    retrieval_mode: str
+
+
+def run_facts(record: RunRecord) -> RunFacts:
+    """Reduce one record to the facts a header can state without interpreting anything."""
+    brief = record.advisor_brief
+    return RunFacts(
+        action=record.action.action.value,
+        rung=record.rung,
+        is_nuclear=record.action.is_nuclear,
+        panel_size=record.panel_size,
+        personas_consulted=len(record.personas_consulted),
+        n_opinions=len(record.opinions),
+        n_declines=sum(1 for o in record.opinions if o.out_of_record),
+        basis_counts=dict(Counter(o.basis for o in record.opinions)),
+        synthesis_mode=brief.synthesis_mode if brief else "none",
+        n_consensus=len(brief.consensus_points) if brief else 0,
+        n_minority=len(brief.minority_positions) if brief else 0,
+        events_detected=len(record.detected_event_ids),
+        events_missed=len(record.missed_event_ids),
+        events_degraded=sum(1 for event in record.view if event.degraded),
+        intel_confidence=record.intel_brief.confidence,
+        n_citations=sum(len(o.citations) for o in record.opinions),
+        n_unsupported_citations=len(record.unsupported_citations),
+        grounded=record.grounded,
+        retrieval_mode=record.retrieval_mode,
+    )

@@ -531,6 +531,9 @@ export interface RepresentativeView {
   steps: LoopStep[]
   graph: InteractionGraph
   panel: string[]
+  agents: AgentDetail[]
+  facts: RunFacts
+  narrative?: RunNarrative | null
   engagement: EngagementSummary
   flow: PipelineFlow
   host_ground_truth?: {
@@ -544,6 +547,80 @@ export interface RepresentativeView {
  * **Not a result.** One replication reaching a nuclear rung is an anecdote; the
  * distribution over replications is the finding. `selection_note` exists so a viewer can
  * see why this record and not another, and must be rendered with it.
+ */
+
+export interface AgentDetail {
+  id: string
+  label: string
+  kind: string
+  summary: string
+  answers?: AgentAnswer[]
+  fields?: [any, any][]
+  passages?: [any, any][]
+}
+/**
+ * One question put to one theorist, and what came back.
+ *
+ * `basis` and `declined` are kept apart because they answer different questions. A
+ * persona shown belief text that still declined is a different fact from one shown
+ * nothing at all, and collapsing them would hide which of the two happened.
+ */
+
+export interface AgentAnswer {
+  question_id: string
+  question: string
+  how_selected: string
+  selection_rationale: string
+  declined: boolean
+  basis: string
+  position: string
+  reasoning: string
+  citations?: string[]
+  confidence: number
+}
+/**
+ * The deterministic account of one replication. Every field is read, none inferred.
+ *
+ * This exists so the readable narrative beside it never has to carry a number. A model
+ * asked to summarise can misstate a count; these cannot, because they are the record.
+ */
+
+export interface RunFacts {
+  action: string
+  rung: number
+  is_nuclear: boolean
+  panel_size: number
+  personas_consulted: number
+  n_opinions: number
+  n_declines: number
+  basis_counts: {
+    [k: string]: number
+  }
+  synthesis_mode: string
+  n_consensus: number
+  n_minority: number
+  events_detected: number
+  events_missed: number
+  events_degraded: number
+  intel_confidence: string
+  n_citations: number
+  n_unsupported_citations: number
+  grounded: boolean
+  retrieval_mode: string
+}
+/**
+ * A stored three-sentence summary, tied to the run it describes.
+ */
+
+export interface RunNarrative {
+  run_id: string
+  arm: string
+  sentences?: string[]
+  model?: string
+  caveat?: string
+}
+/**
+ * Per-persona engagement across an arm, plus what could not be attributed.
  */
 
 export interface RunConfig {

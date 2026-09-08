@@ -17,17 +17,21 @@ import json
 import pytest
 
 from artsoc.config import RunConfig, load_arm
+from artsoc.llm import MOCK_PREFIX, LLMClient, MockBackend
+from artsoc.narrative import INSTRUCTION, build_prompt, summarise_run
 from artsoc.schema import RunRecord
 from artsoc.sim import run_once
 from artsoc.views import (
     PHANTOM,
     WORLD,
+    agent_details,
     engagement_stats,
     interaction_graph,
     loop_steps,
     panel_for,
     pipeline_flow,
     representative_run,
+    run_facts,
 )
 
 
@@ -470,3 +474,130 @@ def test_no_view_carries_a_prompt(baseline_records: list[RunRecord]) -> None:
     for group in blobs:
         for item in group:
             assert "[[ROLE:" not in item.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# Agent detail. Every node the graph draws must open onto something.
+# ---------------------------------------------------------------------------
+
+
+def test_every_graph_node_has_a_detail_panel(baseline_record: RunRecord) -> None:
+    """A clickable node with no panel reads as a bug, and the phantom node is clickable.
+
+    Checked over several seeds because the hallucination node only appears when the Advisor
+    names an off-roster id, and a single seed may not produce one.
+    """
+    for seed in range(1, 6):
+        record = _run("baseline", seed)
+        nodes = {node.id for node in interaction_graph(record).nodes}
+        details = {detail.id for detail in agent_details(record)}
+        assert nodes <= details, f"seed {seed}: nodes with no detail {nodes - details}"
+
+
+def test_a_theorist_panel_says_why_it_was_consulted(baseline_record: RunRecord) -> None:
+    """The record holds a real answer to "why this persona" and it was unsurfaced.
+
+    Under advisor routing that is the Advisor's stated rationale; a persona reached by
+    top-up is one nobody judged relevant, which is a different fact and stays distinct.
+    """
+    personas = [d for d in agent_details(baseline_record) if d.kind == "persona" and d.answers]
+    assert personas, "no persona answered; the assertion would be vacuous"
+    for detail in personas:
+        for answer in detail.answers:
+            assert answer.how_selected in {"chosen", "topped_up"}
+            assert answer.question, "the question text must travel with the answer"
+
+
+def test_a_declining_theorist_shows_its_basis_and_no_citations(
+    baseline_record: RunRecord,
+) -> None:
+    """Declining is a substantive act; the panel must show what it was shown."""
+    declines = [
+        answer
+        for detail in agent_details(baseline_record)
+        for answer in detail.answers
+        if answer.declined
+    ]
+    assert declines, "no persona declined; the escape hatch is not firing"
+    for answer in declines:
+        assert answer.basis in {"sources", "beliefs", "none"}
+        assert answer.citations == [], "a declining persona cites nothing"
+
+
+def test_an_excluded_persona_has_no_detail_at_all() -> None:
+    """The intervention is a world without them, not a world that declined to ask them."""
+    record = _run("loo_schelling", 1)
+    details = {detail.id for detail in agent_details(record)}
+    assert "schelling" not in details
+    assert len(details) > 1, "the rest of the panel must still be present"
+
+
+def test_the_president_panel_calls_the_justification_a_stated_reason(
+    baseline_record: RunRecord,
+) -> None:
+    """`schema.PresidentialAction` documents the justification as never feeding the rung.
+
+    A panel labelling it "why the action happened" would assert a causal claim the design
+    declines to make, so the label is asserted rather than left to whoever edits it next.
+    """
+    president = next(d for d in agent_details(baseline_record) if d.id == "president")
+    labels = [label for label, _ in president.passages]
+    assert any("reason given" in label.lower() for label in labels)
+    assert not any("because" in label.lower() for label in labels)
+
+
+def test_run_facts_are_read_from_the_record_not_inferred(baseline_record: RunRecord) -> None:
+    """The facts line carries every number so the narrative beside it carries none."""
+    facts = run_facts(baseline_record)
+    assert facts.action == baseline_record.action.action.value
+    assert facts.rung == baseline_record.rung
+    assert facts.panel_size == baseline_record.panel_size
+    assert facts.personas_consulted == len(baseline_record.personas_consulted)
+    assert facts.n_opinions == len(baseline_record.opinions)
+    assert facts.n_declines == sum(1 for o in baseline_record.opinions if o.out_of_record)
+    assert sum(facts.basis_counts.values()) == len(baseline_record.opinions)
+    assert facts.grounded is baseline_record.grounded
+
+
+def test_agent_details_are_deterministic(baseline_record: RunRecord) -> None:
+    """A client that re-fetches must get the same panels, as with every other view."""
+    first = [d.model_dump() for d in agent_details(baseline_record)]
+    assert first == [d.model_dump() for d in agent_details(baseline_record)]
+
+
+# ---------------------------------------------------------------------------
+# The narrative. Interpretation, and it must not know things no agent knew.
+# ---------------------------------------------------------------------------
+
+
+def test_the_narrative_prompt_carries_no_ground_truth(baseline_record: RunRecord) -> None:
+    """Scanned the way tests/test_access_matrix.py scans role prompts.
+
+    A leak here reaches no agent — the run is over — but it would put the host's stipulated
+    truth into a summary a reader takes as the simulation's own account of what happened.
+    """
+    prompt = build_prompt(baseline_record)
+    assert baseline_record.host_ground_truth, "the record must have ground truth to leak"
+    for phrase in ("HOST-ONLY", "survivability hedge", "host_ground_truth"):
+        assert phrase.lower() not in prompt.lower(), f"the narrative prompt leaked {phrase!r}"
+
+
+def test_the_narrative_is_three_sentences_and_obviously_mock(
+    baseline_record: RunRecord,
+) -> None:
+    """Mock output must never be mistaken for a real summary of a real run."""
+    client = LLMClient(backend=MockBackend(), run_seed=0)
+    narrative = summarise_run(baseline_record, client, "baseline")
+    assert narrative.run_id == baseline_record.run_id
+    assert narrative.arm == "baseline"
+    assert len(narrative.sentences) == 3
+    assert all(MOCK_PREFIX in sentence for sentence in narrative.sentences)
+    assert narrative.model == "mock"
+    assert "not a finding" in narrative.caveat.lower()
+
+
+def test_the_narrative_instruction_forbids_causal_language() -> None:
+    """The constraint is in the prompt, not only in the docstring that explains it."""
+    assert "gave as its reason" in INSTRUCTION
+    assert "because" in INSTRUCTION, "the prohibition names the word it forbids"
+    assert "did not determine it" in INSTRUCTION

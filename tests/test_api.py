@@ -430,3 +430,70 @@ def test_the_openapi_surface_exposes_no_run_config_fields(client: TestClient) ->
     # file and is cross-checked against every arm's own config, so it cannot introduce a
     # setting no file describes. Everything else experimental must be absent.
     assert not spec_fields & (set(RunConfig.model_fields) - {"arm", "scenario_id"})
+
+
+def test_the_representative_payload_carries_a_panel_for_every_node(
+    client: TestClient,
+) -> None:
+    """A clickable node with no detail opens an empty panel, which reads as a bug.
+
+    Checked against the graph the same payload ships, so the two cannot drift: the panel a
+    click opens is built from the same record as the node it was drawn from.
+    """
+    session_id = _run_session(client, ["baseline"], n=4)
+    body = client.get(f"/api/sessions/{session_id}/runs/baseline/representative").json()
+
+    nodes = {node["id"] for node in body["graph"]["nodes"]}
+    agents = {agent["id"] for agent in body["agents"]}
+    assert nodes <= agents, f"nodes with no detail: {nodes - agents}"
+    assert all(agent["summary"] for agent in body["agents"]), "every panel needs a header"
+
+
+def test_the_representative_payload_carries_facts_read_from_the_record(
+    client: TestClient,
+) -> None:
+    """The facts line carries every number so the narrative beside it carries none."""
+    session_id = _run_session(client, ["baseline"], n=4)
+    body = client.get(f"/api/sessions/{session_id}/runs/baseline/representative").json()
+
+    record = body["representative"]["record"]
+    facts = body["facts"]
+    assert facts["action"] == record["action"]["action"]
+    assert facts["rung"] == record["rung"]
+    assert facts["panel_size"] == record["panel_size"]
+    assert facts["n_opinions"] == len(record["opinions"])
+
+
+def test_a_stored_narrative_is_tied_to_the_run_it_describes(client: TestClient) -> None:
+    """A summary shown against a different replication would be worse than none.
+
+    Absence is a normal state rather than an error — sessions predating the feature have no
+    file, and a failed summary call must not lose a finished sweep — so the payload is
+    asserted to validate either way and the UI falls back to the facts alone.
+    """
+    session_id = _run_session(client, ["baseline"], n=4)
+    body = client.get(f"/api/sessions/{session_id}/runs/baseline/representative").json()
+
+    narrative = body["narrative"]
+    if narrative is None:
+        return
+    assert narrative["run_id"] == body["representative"]["record"]["run_id"]
+    assert narrative["arm"] == "baseline"
+    assert len(narrative["sentences"]) == 3
+    assert "not a finding" in narrative["caveat"].lower()
+
+
+def test_the_narrative_never_carries_host_ground_truth(client: TestClient) -> None:
+    """It is written from the agent-visible record, so it cannot say what was really true.
+
+    A summary that quietly knew would read as something the simulation determined, when it
+    is something the host stipulated so misperception could be scored afterwards.
+    """
+    session_id = _run_session(client, ["baseline"], n=4)
+    body = client.get(f"/api/sessions/{session_id}/runs/baseline/representative").json()
+    narrative = body["narrative"]
+    if narrative is None:
+        return
+    text = " ".join(narrative["sentences"]).lower()
+    for phrase in ("host-only", "survivability hedge", "not launch preparation"):
+        assert phrase not in text

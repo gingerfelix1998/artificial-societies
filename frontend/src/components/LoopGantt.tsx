@@ -29,9 +29,20 @@ interface Props {
   /** Steps with index <= cursor have happened. -1 reveals nothing. */
   cursor: number
   onSelect?: (index: number) => void
+  /** Clicking a row label opens that agent's detail. Bars still seek: the label names an
+   *  agent and the bar names a moment, so they select different things. */
+  onSelectAgent?: (id: string) => void
+  selectedAgent?: string | null
 }
 
-export default function LoopGantt({ steps, nodes, cursor, onSelect }: Props) {
+export default function LoopGantt({
+  steps,
+  nodes,
+  cursor,
+  onSelect,
+  onSelectAgent,
+  selectedAgent,
+}: Props) {
   const rows = useMemo(() => buildRows(steps, nodes), [steps, nodes])
   const total = steps.length || 1
   const width = 900
@@ -67,8 +78,16 @@ export default function LoopGantt({ steps, nodes, cursor, onSelect }: Props) {
                 dy="0.35em"
                 textAnchor="end"
                 fontSize={11}
-                fill={row.state === 'unconsulted' || row.state === 'excluded' ? '#4a5160' : '#9aa3b2'}
+                fill={
+                  selectedAgent === row.id
+                    ? '#f2c14e'
+                    : row.state === 'unconsulted' || row.state === 'excluded'
+                      ? '#4a5160'
+                      : '#9aa3b2'
+                }
                 opacity={row.state === 'unconsulted' ? 0.5 : 1}
+                onClick={onSelectAgent ? () => onSelectAgent(row.id) : undefined}
+                style={onSelectAgent ? { cursor: 'pointer' } : undefined}
               >
                 {row.label}
               </text>

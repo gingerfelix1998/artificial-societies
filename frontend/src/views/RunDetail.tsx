@@ -19,7 +19,9 @@ import EventLog from '../components/EventLog'
 import InteractionGraphView from '../components/InteractionGraphView'
 import LoopGantt from '../components/LoopGantt'
 import PanelResponses from '../components/PanelResponses'
+import AgentPanel from '../components/AgentPanel'
 import PlaybackControls from '../components/PlaybackControls'
+import RunSummary from '../components/RunSummary'
 import RungHistogram from '../components/RungHistogram'
 import { RUNG_LABELS, percent } from '../lib/format'
 import { usePlayback } from '../lib/playback'
@@ -29,6 +31,7 @@ import type { ArmSummary, SessionSummary } from '../types/artsoc'
 export default function RunDetail() {
   const { sessionId = '', arm = '' } = useParams()
   const [view, setView] = useState<RepresentativeView | null>(null)
+  const [agentId, setAgentId] = useState<string | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
   const [reveal, setReveal] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -125,6 +128,12 @@ export default function RunDetail() {
         </section>
       </div>
 
+      <RunSummary
+        facts={view.facts}
+        narrative={view.narrative}
+        runId={record.run_id}
+      />
+
       <PanelResponses record={record} />
 
       <section className="panel playback-panel">
@@ -154,6 +163,8 @@ export default function RunDetail() {
           nodes={view.graph.nodes}
           cursor={playback.cursor}
           onSelect={playback.seek}
+          onSelectAgent={setAgentId}
+          selectedAgent={agentId}
         />
       </section>
 
@@ -172,6 +183,8 @@ export default function RunDetail() {
             edges={view.graph.edges}
             hallucinated={view.graph.hallucinated_ids ?? []}
             cursor={playback.cursor}
+            onSelectAgent={setAgentId}
+            selectedAgent={agentId}
           />
         </section>
 
@@ -193,6 +206,11 @@ export default function RunDetail() {
           />
         </section>
       </div>
+
+      <AgentPanel
+        agent={(view.agents ?? []).find((a) => a.id === agentId) ?? null}
+        onClose={() => setAgentId(null)}
+      />
 
       <section className="panel">
         <header>

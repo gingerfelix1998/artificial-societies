@@ -41,10 +41,12 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artsoc.config import RunConfig, list_arms, load_arm
-from artsoc.llm import PRICE_PER_MTOK
+from artsoc.llm import PRICE_PER_MTOK, DiskCache, LLMClient, get_backend
 from artsoc.metrics import CONTROL_ARM, ArmSummary, Delta, delta, load_jsonl, summarise
+from artsoc.narrative import RunNarrative, summarise_run
 from artsoc.schema import RunRecord
-from artsoc.sim import DEFAULT_OUT_DIR, run_many, write_jsonl
+from artsoc.sim import CACHE_DIR, DEFAULT_OUT_DIR, run_many, write_jsonl
+from artsoc.views import representative_run
 
 #: Where sessions live. Under `out/`, which is gitignored: a session is reproducible from
 #: its spec plus the arm configs, so the records themselves are not source.
@@ -338,6 +340,55 @@ def session_dir(session_id: str, root: Path | None = None) -> Path:
     return (root or SESSIONS_DIR) / session_id
 
 
+def narrative_path(session_id: str, arm: str, root: Path | None = None) -> Path:
+    return session_dir(session_id, root) / f"{arm}.narrative.json"
+
+
+def load_narrative(session_id: str, arm: str, root: Path | None = None) -> RunNarrative | None:
+    """The stored narrative for an arm, or None.
+
+    None is a normal state, not an error: sessions run before this existed have no file, and
+    the UI falls back to the deterministic facts rather than showing nothing.
+    """
+    path = narrative_path(session_id, arm, root)
+    if not path.exists():
+        return None
+    try:
+        return RunNarrative.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_narrative(
+    spec: SessionSpec, arm: str, records: list[RunRecord], root: Path | None = None
+) -> None:
+    """Summarise the representative run once, when the arm finishes.
+
+    Written once rather than regenerated per page view, so the summary a reader sees is the
+    same on every visit. Text that changed on refresh would not be a record.
+
+    A failure here is swallowed deliberately: the narrative is an orientation aid, and
+    losing a completed sweep because a summary call failed would be a poor trade. Its
+    absence is visible — the UI shows the deterministic facts alone.
+    """
+    try:
+        config = load_arm(arm)
+        client = LLMClient(
+            backend=get_backend(
+                config.backend, config.resolved_models(), effort=config.effort
+            ),
+            run_seed=0,
+            cache=DiskCache(CACHE_DIR),
+            cache_enabled=True,
+        )
+        narrative = summarise_run(representative_run(records).record, client, arm)
+        narrative_path(spec.session_id, arm, root).write_text(
+            narrative.model_dump_json(indent=2), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001 - an orientation aid must not lose a finished sweep
+        return
+
+
 def _write_state(state: SessionState, root: Path | None = None) -> None:
     target = session_dir(state.spec.session_id, root)
     target.mkdir(parents=True, exist_ok=True)
@@ -472,6 +523,7 @@ def run_session(
 
             if records:
                 write_jsonl(records, target)
+                _write_narrative(spec, arm, records, root)
             state.est_cost_usd = cumulative
             _write_state(state, root)
 

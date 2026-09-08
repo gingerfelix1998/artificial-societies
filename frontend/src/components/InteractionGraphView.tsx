@@ -59,9 +59,20 @@ interface Props {
   hallucinated: string[]
   /** Edges with step_index <= cursor are drawn. -1 draws none. */
   cursor: number
+  /** Selecting a node opens its detail panel. It does not move the playback cursor:
+   *  "show me this agent" and "take me to this moment" are different intents. */
+  onSelectAgent?: (id: string) => void
+  selectedAgent?: string | null
 }
 
-export default function InteractionGraphView({ nodes, edges, hallucinated, cursor }: Props) {
+export default function InteractionGraphView({
+  nodes,
+  edges,
+  hallucinated,
+  cursor,
+  onSelectAgent,
+  selectedAgent,
+}: Props) {
   const layout = useMemo(() => {
     const positioned: Positioned[] = nodes.map((node, i) => ({
       id: node.id,
@@ -143,7 +154,22 @@ export default function InteractionGraphView({ nodes, edges, hallucinated, curso
               const dim = node.state === 'unconsulted'
               const own = selfSteps.get(node.id) ?? 0
               return (
-                <g key={node.id} opacity={dim ? 0.35 : 1}>
+                <g
+                  key={node.id}
+                  opacity={dim ? 0.35 : 1}
+                  onClick={onSelectAgent ? () => onSelectAgent(node.id) : undefined}
+                  style={onSelectAgent ? { cursor: 'pointer' } : undefined}
+                >
+                  {selectedAgent === node.id && (
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={radius + 9}
+                      fill="none"
+                      stroke="#f2c14e"
+                      strokeWidth={2}
+                    />
+                  )}
                   {own > 0 && (
                     <circle
                       cx={node.x}

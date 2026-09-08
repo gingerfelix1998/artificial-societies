@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from artsoc.config import base_defaults, list_arms, load_arm, varied_fields
 from artsoc.metrics import CONTROL_ARM
+from artsoc.narrative import RunNarrative
 from artsoc.retrieval import resolve_passages
 from artsoc.schema import RunRecord
 from artsoc.session import (
@@ -54,22 +55,27 @@ from artsoc.session import (
     create_session,
     estimate_calls,
     list_sessions,
+    load_narrative,
     load_session,
     run_session,
     summarise_session,
 )
 from artsoc.views import (
+    AgentDetail,
     EngagementSummary,
     InteractionGraph,
     LoopStep,
     PipelineFlow,
     RepresentativeRun,
+    RunFacts,
+    agent_details,
     engagement_stats,
     interaction_graph,
     loop_steps,
     panel_for,
     pipeline_flow,
     representative_run,
+    run_facts,
 )
 from artsoc.world import SCENARIO_DIR, load_scenario
 
@@ -194,6 +200,14 @@ class RepresentativeView(BaseModel):
     steps: list[LoopStep]
     graph: InteractionGraph
     panel: list[str]
+    #: One entry per node the graph draws, so no clickable node opens an empty panel.
+    agents: list[AgentDetail]
+    #: Every number the header states, read from the record rather than interpreted. The
+    #: narrative beside it therefore never has to carry a count it could get wrong.
+    facts: RunFacts
+    #: Absent for sessions run before narratives existed, and for arms whose summary call
+    #: failed. The UI falls back to `facts` alone rather than erroring.
+    narrative: RunNarrative | None = None
     engagement: EngagementSummary
     flow: PipelineFlow
     #: Present only when explicitly requested. Host-only: it is in the record so an analyst
@@ -441,6 +455,9 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
             steps=loop_steps(record),
             graph=interaction_graph(record),
             panel=panel_for(record),
+            agents=agent_details(record),
+            facts=run_facts(record),
+            narrative=load_narrative(session_id, arm),
             engagement=engagement_stats(records),
             flow=pipeline_flow(records),
             host_ground_truth=dict(record.host_ground_truth) if reveal_ground_truth else None,

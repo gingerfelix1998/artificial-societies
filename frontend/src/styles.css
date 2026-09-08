@@ -352,3 +352,36 @@ tr.dim td { color: var(--ink-faint); }
 }
 
 .empty { color: var(--ink-faint); font-size: 0.85rem; padding: 1.5rem; text-align: center; }
+
+/* Run summary and agent detail.
+   The facts grid and the narrative are styled apart on purpose: one is read from the
+   record and one is model-written interpretation, and they must not look equally
+   authoritative. */
+.summary-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin: 0.6rem 0;
+}
+.summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.7rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+}
+.summary-stat-value {
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.narrative {
+  margin-top: 0.8rem;
+  padding: 0.8rem 0.9rem;
+  border-left: 3px solid #f2c14e;
+  background: rgba(242, 193, 78, 0.05);
+}
+.narrative p { margin: 0.45rem 0 0; }
+.pill.warn { background: rgba(242, 193, 78, 0.16); color: #f2c14e; }

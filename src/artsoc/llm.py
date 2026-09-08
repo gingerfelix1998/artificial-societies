@@ -81,6 +81,10 @@ NO_RECORD_MARKER = "[[CORPUS:none]]"
 #: in an argument so that a prompt-scanning test can see exactly who was on offer.
 ROSTER_ENTRY = re.compile(r"\[\[WHO:([A-Za-z0-9_]+)\]\]")
 CONSENSUS_MARKER = "[[SYNTHESIS:consensus]]"
+#: A host-side summarisation request rather than a persona answering a question. It reuses
+#: the theorist role because it is not a participant in the loop — giving it a role of its
+#: own would place it inside the access matrix and imply an agent that never existed.
+NARRATIVE_MARKER = "[[NARRATIVE:3]]"
 PASSAGE_ID = re.compile(r"\[([A-Za-z0-9_]+:[A-Za-z0-9_]+:\d+)\]")
 
 
@@ -258,6 +262,17 @@ class MockBackend:
         }
 
     def _theorist(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        if NARRATIVE_MARKER in prompt:
+            return {
+                "sentences": [
+                    f"{MOCK_PREFIX} placeholder sentence about what was perceived "
+                    f"{digest[:6]}.",
+                    f"{MOCK_PREFIX} placeholder sentence about what the panel provided.",
+                    f"{MOCK_PREFIX} placeholder sentence about what the President did; "
+                    "this text is not a summary of anything.",
+                ]
+            }
+
         passage_ids = PASSAGE_ID.findall(prompt)
         no_record = NO_RECORD_MARKER in prompt
 
