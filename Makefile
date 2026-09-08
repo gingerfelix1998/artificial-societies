@@ -10,6 +10,8 @@ PY ?= python3
 # Elsewhere the suffix is just part of a directory name and costs nothing.
 VENV ?= .venv.nosync
 BIN := $(VENV)/bin
+UI := frontend
+PORT ?= 8000
 N ?= 100
 SEED0 ?= 1
 ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth_only full_stack_variance tag_routing
@@ -21,7 +23,8 @@ ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth
 LOO_ARMS := $(addprefix loo_,brodie schelling kahn wohlstetter jervis waltz sagan posen \
 	tannenwald george freedman blair)
 
-.PHONY: install install-live test lint fmt arms smoke phase1 attribution clean
+.PHONY: install install-live install-api install-ui test lint fmt arms smoke phase1 \
+	attribution types api ui demo demo-fixture clean
 
 install:
 	$(PY) -m venv $(VENV)
@@ -37,6 +40,15 @@ install:
 # the test suite keeps running on a machine with no provider dependency.
 install-live:
 	$(BIN)/python -m pip install -e ".[dev,live]"
+
+# Adds FastAPI and uvicorn for the local frontend's API. Separate from `install` for the
+# same reason `install-live` is: nothing in artsoc imports artsoc.api, so the core package
+# and the offline test suite must keep working without a web framework present.
+install-api:
+	$(BIN)/python -m pip install -e ".[dev,api]"
+
+install-ui:
+	cd $(UI) && npm install
 
 test:
 	$(BIN)/python -m pytest
@@ -74,6 +86,39 @@ attribution:
 		$(BIN)/artsoc run $$arm --n $(N) --seed0 $(SEED0) || exit 1; \
 	done
 	$(BIN)/artsoc analyse $(addprefix out/,$(addsuffix .jsonl,$(LOO_ARMS)))
+
+# ---------------------------------------------------------------------------
+# Local frontend. Everything below is demoware: it selects among committed arm configs and
+# renders what a session produced. It cannot construct an experiment that no file in
+# configs/ describes, and it never sees a prompt.
+# ---------------------------------------------------------------------------
+
+# TypeScript types are GENERATED from the pydantic models, never hand-written. A
+# hand-maintained copy drifts from the schema silently, and the drift surfaces as a blank
+# panel rather than an error.
+types:
+	$(BIN)/python scripts/dump_schema.py $(UI)/schema
+	cd $(UI) && npm run gen:types
+
+# The API alone, for frontend development against `npm run dev` on 5173.
+api:
+	$(BIN)/python -m artsoc.api --port $(PORT)
+
+ui:
+	cd $(UI) && npm run dev
+
+# The demo: build the frontend and serve it from the same process as the API, so it is one
+# command on one port. Localhost only — this API has no authentication.
+demo:
+	cd $(UI) && npm run build
+	$(BIN)/python -m artsoc.api --port $(PORT) --static $(UI)/dist
+
+# A mock-backed session for developing the UI without spending money. It pins `backend:
+# mock` onto a committed arm, which is the one place in the repository a config is built
+# outside configs/ — the records say `backend: mock`, the UI banners them as such, and this
+# path is not reachable from the API.
+demo-fixture:
+	$(BIN)/python scripts/demo_fixture.py
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .cache

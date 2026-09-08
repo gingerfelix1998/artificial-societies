@@ -173,6 +173,35 @@ def test_every_arm_file_records_why_it_exists() -> None:
         assert load_arm(name).notes.strip(), f"arm {name!r} has no notes"
 
 
+def test_an_arms_notes_do_not_claim_a_panel_size_it_does_not_run() -> None:
+    """Notes are read as description, and the frontend renders them on the arm cards.
+
+    `baseline` claimed a 15-persona panel while the registry held 12 — harmless in a
+    comment, and a false statement the moment it is shown to someone choosing arms.
+
+    The realised size is what has to match, not `panel_size`. That field is a cap:
+    `build_panel` returns the whole pool when the cap exceeds it, so an exclusion arm
+    declaring 12 actually runs one fewer than the registry holds.
+    """
+    from artsoc.personas import load_registry
+
+    registry = len(load_registry())
+    for name in list_arms():
+        config = load_arm(name)
+        if config.panel_source != "registry":
+            continue
+        realised = min(config.panel_size, registry - len(config.excluded_personas))
+        # `\b` so "M2 personas" does not read as a two-person panel.
+        for claimed in re.findall(r"\b(\d+)(?:[-\s]persona|\s*$)", config.notes):
+            assert int(claimed) == realised, (
+                f"arm {name!r} notes claim a {claimed}-persona panel but it runs {realised}"
+            )
+        for claimed in re.findall(r"[Pp]anel of (\d+)", config.notes):
+            assert int(claimed) == realised, (
+                f"arm {name!r} notes say 'panel of {claimed}' but it runs {realised}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # The CLI must not become a second place to define an experiment.
 # ---------------------------------------------------------------------------

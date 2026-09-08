@@ -1,5 +1,5 @@
 # The reference configuration: every base default, unchanged. Deliberately empty of
 # overrides so that "baseline vs X" isolates exactly the field X varies.
 notes: >-
-  Full loop at base defaults: M2 personas, full_range synthesis, 15-persona panel,
+  Full loop at base defaults: M2 personas, full_range synthesis, 12-persona panel,
   caching on.

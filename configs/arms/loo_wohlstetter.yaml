@@ -9,10 +9,10 @@
 # between a theorist and an outcome proves nothing. Removing them and re-running does.
 #
 # COMPARE AGAINST THE OTHER loo_* ARMS, NOT AGAINST baseline. Every loo_* arm has a
-# 14-person panel, so contrasting them holds panel size fixed and isolates *which* theorist
-# is missing. Against baseline (15) the delta also carries the cost of a smaller panel.
+# 11-person panel, so contrasting them holds panel size fixed and isolates *which* theorist
+# is missing. Against baseline (12) the delta also carries the cost of a smaller panel.
 excluded_personas: [wohlstetter]
 notes: >-
-  Forced exclusion of Albert Wohlstetter. Panel of 14. Compare against the mean of all loo_* arms to
+  Forced exclusion of Albert Wohlstetter. Panel of 11. Compare against the mean of all loo_* arms to
   hold panel size constant; comparing to baseline confounds this theorist's absence with
   the panel being one smaller.

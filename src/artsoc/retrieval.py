@@ -323,3 +323,58 @@ def verify_citations(citations: list[str], record_block: str) -> list[str]:
     """
     available = passage_ids(record_block)
     return [c for c in citations if c not in available]
+
+
+#: The stores a persona's passages can live in, and what each one is.
+#:
+#: `wikipedia` and `abstract` ids are in `chunks.jsonl`; `belief` ids are in
+#: `beliefs.jsonl`. Both are read here because a citation names a passage without saying
+#: which file it came from, and an analyst reading a citation should not have to know.
+_STORE_FILES = ("chunks.jsonl", "beliefs.jsonl")
+
+
+def resolve_passages(
+    persona_id: str, ids: list[str], corpus_root: Path | None = None
+) -> dict[str, dict[str, str]]:
+    """Look up the text behind cited passage ids, for reading rather than for retrieval.
+
+    **This is an analyst-facing lookup and is not part of the retrieval path.** It takes ids
+    that are already in a `RunRecord` and returns what they point at, so a citation can be
+    checked against the claim it was attached to. It never selects, ranks or assembles a
+    block, and nothing it returns can reach a prompt: `Theorist.opine` goes through
+    `Retriever.retrieve` and has no route to this function.
+
+    **An unresolvable id is left out rather than filled in.** That is the whole point of the
+    citation-integrity metric — an id the store does not contain was invented, and returning
+    a placeholder for it would erase exactly the finding `unsupported_citations` records.
+    The caller sees which ids came back and which did not.
+
+    Ids are only read from the named persona's own store, mirroring the one-store-per-persona
+    rule in `CorpusRetriever`: an id whose prefix names someone else is not resolved here.
+    """
+    root = corpus_root or CORPUS_ROOT
+    wanted = {i for i in ids if i.split(":", 1)[0] == persona_id}
+    if not wanted:
+        return {}
+
+    found: dict[str, dict[str, str]] = {}
+    for filename in _STORE_FILES:
+        path = root / persona_id / filename
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            passage_id = record.get("passage_id")
+            if passage_id in wanted and passage_id not in found:
+                found[passage_id] = {
+                    "passage_id": passage_id,
+                    "section": record.get("section", ""),
+                    "text": record.get("text", ""),
+                    # The middle segment of the id says what kind of source this is:
+                    # a tertiary encyclopedia article, a publication abstract, or a
+                    # belief generated from that persona's own fetched sources.
+                    "source": passage_id.split(":")[1] if ":" in passage_id else "",
+                }
+    return found

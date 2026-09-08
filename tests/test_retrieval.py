@@ -32,6 +32,7 @@ from artsoc.personas import NO_RECORD_MARKER, Persona, build_question_prompt
 from artsoc.retrieval import (
     CorpusRetriever,
     get_retriever,
+    resolve_passages,
     stem,
     tokenise,
     verify_citations,
@@ -519,3 +520,89 @@ def test_reuse_does_not_pause_between_personas(tmp_path) -> None:
     manifests, _ = ingest_all(personas, tmp_path, fetcher, delay_s=5.0, **kw)
     assert _time.perf_counter() - started < 1.0, "reuse must not sleep"
     assert all(m["reused"] for m in manifests)
+
+
+# ---------------------------------------------------------------------------
+# Resolving cited ids back to their text. Analyst-facing, and deliberately outside the
+# retrieval path: a citation is only checkable against its claim if it can be read.
+# ---------------------------------------------------------------------------
+
+
+def test_a_cited_id_resolves_to_the_text_it_points_at(tmp_path) -> None:
+    ingest_persona(_persona(), tmp_path, _fetcher(PAGE))
+    chunks = [
+        json.loads(line)
+        for line in (tmp_path / "brodie" / "chunks.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    wanted = chunks[0]["passage_id"]
+
+    found = resolve_passages("brodie", [wanted], tmp_path)
+    assert found[wanted]["text"] == chunks[0]["text"]
+    assert found[wanted]["section"] == chunks[0]["section"]
+    assert found[wanted]["source"] == SOURCE_SLUG
+
+
+def test_an_invented_id_does_not_resolve_and_is_not_filled_in(tmp_path) -> None:
+    """The rate of invented citations is a finding about the method. Returning a
+    placeholder for one would erase exactly what `unsupported_citations` records."""
+    ingest_persona(_persona(), tmp_path, _fetcher(PAGE))
+    assert resolve_passages("brodie", ["brodie:wikipedia:99999999"], tmp_path) == {}
+
+
+def test_ids_resolve_only_against_the_persona_who_owns_them(tmp_path) -> None:
+    """One store per persona, the same rule `CorpusRetriever` holds: persona A must not be
+    able to show persona B's text as its own, in the reader any more than in the loop."""
+    ingest_persona(_persona("brodie"), tmp_path, _fetcher(PAGE))
+    ingest_persona(_persona("schelling", "Thomas Schelling"), tmp_path, _fetcher(OTHER_PAGE))
+    schelling = [
+        json.loads(line)["passage_id"]
+        for line in (tmp_path / "schelling" / "chunks.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert resolve_passages("brodie", schelling, tmp_path) == {}
+
+
+def test_beliefs_and_source_chunks_both_resolve(tmp_path) -> None:
+    """A citation names a passage without saying which file it came from, and an analyst
+    reading one should not have to know which store to look in."""
+    store = tmp_path / "brodie"
+    store.mkdir(parents=True)
+    (store / "chunks.jsonl").write_text(
+        json.dumps(
+            {"passage_id": f"brodie:{SOURCE_SLUG}:11", "section": "Deterrence", "text": "src"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (store / "beliefs.jsonl").write_text(
+        json.dumps(
+            {"passage_id": f"brodie:{BELIEF_SLUG}:22", "section": "belief", "text": "blf"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ids = [f"brodie:{SOURCE_SLUG}:11", f"brodie:{BELIEF_SLUG}:22"]
+    found = resolve_passages("brodie", ids, tmp_path)
+    assert {p["source"] for p in found.values()} == {SOURCE_SLUG, BELIEF_SLUG}
+    assert found[f"brodie:{BELIEF_SLUG}:22"]["text"] == "blf"
+
+
+def test_a_persona_with_no_store_resolves_nothing_rather_than_raising(tmp_path) -> None:
+    """A persona with no corpus is a fact about the world, not a broken configuration —
+    the same distinction CorpusRetriever draws."""
+    assert resolve_passages("nobody", ["nobody:wikipedia:1"], tmp_path) == {}
+
+
+def test_resolving_passages_is_not_a_retrieval_path(tmp_path) -> None:
+    """It returns what ids point at; it never selects, ranks or assembles a block. A
+    function that could build a block would be a second, untested way into a prompt."""
+    import inspect
+
+    import artsoc.retrieval as retrieval_module
+
+    source = inspect.getsource(retrieval_module.resolve_passages)
+    assert "_select" not in source
+    assert "_rank" not in source
+    assert "format_passage" not in source

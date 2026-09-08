@@ -25,12 +25,13 @@ sources of truth drift apart and the copy you happen to read wins.
 | Question | Document |
 |---|---|
 | What is this delivering, and what will never be claimed? | `README.md` → Delivery |
-| How is it built, and why is it built that way? | `docs/design.md` |
-| Who may see what, and why each boundary exists? | `docs/access-matrix.md` |
-| What is measured, and what may be claimed from a run? | `docs/measurement.md` |
-| What still needs fixing before results are presented? | `docs/improvements.md` |
+| How is it built, and why is it built that way? | `docs/framework/design.md` |
+| Who may see what, and why each boundary exists? | `docs/framework/access-matrix.md` |
+| What is measured, and what may be claimed from a run? | `docs/framework/measurement.md` |
+| What still needs fixing before results are presented? | `docs/prompts/improvements-log.md` |
 | Why was a past decision made? | `docs/decisions/` |
 | What is a specific piece of work? | `docs/prompts/` |
+| How do I run the local viewer, and what may it show? | `frontend/README.md` |
 
 If this file and one of those disagree, this file wins on invariants and the other wins on
 detail — and the disagreement is a bug to be fixed in the same change, not left standing.
@@ -48,15 +49,15 @@ narrower and stronger.
 
 **The numbers below are load-bearing.** Invariants 1, 4 and 5 are referenced by number in
 `agents.py`, `personas.py`, `retrieval.py`, `cli.py`, `config.py`, `base.yaml`,
-`docs/access-matrix.md`, `docs/approach/` and four test modules. Never renumber. Append new
-invariants at the end.
+`docs/framework/access-matrix.md`, `docs/approach/` and four test modules. Never renumber.
+Append new invariants at the end.
 
 1. **Role context boundaries.** Theorists get a decontextualised analytical question and their
    own record — no scenario, no peer opinions. The Advisor never sees intelligence reporting.
    The President never sees raw theorist output, only the brief. `ground_truth_detail` never
    reaches any agent. Do not pass extra context to a role to improve its output: that is the
    experiment leaking, and it invalidates every run in `out/`. Reasons for each boundary are in
-   `docs/access-matrix.md`; knowing them is what prevents well-meant violations.
+   `docs/framework/access-matrix.md`; knowing them is what prevents well-meant violations.
 
 2. **The escalation rung is deterministic.** `schema.RUNG`, keyed on the typed action, and
    `rung_for` sees nothing else. Never introduce a model judge, heuristic or free-text parse
@@ -117,7 +118,7 @@ escalation rates as results.
 
 ## Interpretation constraints
 
-Full detail in `docs/measurement.md`. The three most easily forgotten:
+Full detail in `docs/framework/measurement.md`. The three most easily forgotten:
 
 - **Report distributions, never a modal narrative.** One run reaching a nuclear rung is an
   anecdote.
@@ -143,7 +144,7 @@ not — is confounded and is not used here. Any influence figure must state whic
 - Arm contrasts have no confidence intervals and no multiple-comparisons correction.
 
 Never report the project as producing grounded results while `StubRetriever` is in use. If
-asked to "finish phase 1", `docs/improvements.md` is the ordered backlog — P0 items are ones
+asked to "finish phase 1", `docs/prompts/improvements-log.md` is the ordered backlog — P0 are
 where a claim is currently false or unsupportable.
 
 ## Working practice
@@ -183,3 +184,7 @@ where a claim is currently false or unsupportable.
 | World log, perception filter, scenarios | `src/artsoc/world.py` |
 | Outcome metrics, diagnostics, report rendering | `src/artsoc/metrics.py` |
 | CLI surface and the flag invariant | `src/artsoc/cli.py` |
+| Derived views a client consumes, all tested here | `src/artsoc/views.py` |
+| Sessions, the cost gate, provenance flags | `src/artsoc/session.py` |
+| Local read-only API (optional `api` extra) | `src/artsoc/api.py` |
+| The localhost viewer | `frontend/`, and `frontend/README.md` first |

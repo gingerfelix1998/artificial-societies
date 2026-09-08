@@ -1,6 +1,6 @@
 # Does panel size change decisions?
 #
-# Four personas instead of fifteen. If the rung distribution is unchanged, the panel-size
+# Four personas instead of twelve. If the rung distribution is unchanged, the panel-size
 # claim is doing no work and must be restated — which is itself a finding, and a more
 # useful one than asserting that 100 personas are better than four.
 panel_size: 4

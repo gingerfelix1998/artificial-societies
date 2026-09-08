@@ -22,6 +22,14 @@ data/corpora/*
 build/
 dist/
 
+# Frontend. `src/types/artsoc.ts` IS committed — it is generated from the pydantic models
+# by `make types`, and committing it means the UI builds without a Python environment. The
+# JSON Schema it is generated from is an intermediate and is not.
+frontend/node_modules/
+frontend/dist/
+frontend/schema/
+frontend/tsconfig.tsbuildinfo
+
 # Python
 __pycache__/
 *.py[cod]

@@ -24,6 +24,14 @@ dev = [
 live = [
     "anthropic>=1",
 ]
+# The local frontend's read-only API. Optional for the same reason `live` is: `make
+# install` and `make test` must keep working with neither installed. Nothing in `artsoc`
+# imports `artsoc.api`, so the core package does not acquire a web framework, and a test
+# asserts that stays true.
+api = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [project.scripts]
 artsoc = "artsoc.cli:main"
