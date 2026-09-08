@@ -23,6 +23,7 @@ Two properties make these tests meaningful rather than decorative:
 from __future__ import annotations
 
 import random
+import re
 
 import pytest
 
@@ -494,10 +495,35 @@ def test_no_prompt_uses_a_real_persona_id_as_a_worked_example() -> None:
     A format example written as `["brodie", "schelling"]` put an excluded theorist back
     into the selection prompt, which is exactly what forced exclusion is supposed to
     prevent. Examples must use ids that belong to nobody.
+
+    Both roles legitimately list real ids and names in their *data* section — the roster
+    for selection, the collected opinions for COAs (`test_the_advisor_sees_full_opinions_
+    to_write_the_coas` guards that this stays true). A blanket scan of the whole prompt
+    would flag that legitimate data as if it were a leak. So this checks only the
+    *instructions* tail of each prompt — the format rules and worked examples that follow
+    the data — which should never reference a persona at all. The same mistake recurred
+    there once already: `ADVISOR_COAS`'s citation-format example was first written as
+    "q0:schelling" on the first live run of ADR 0006.
     """
     run = LoopRun()
-    real = {p.persona_id for p in load_registry()}
-    for _system, prompt in run.client.prompts_for(Role.ADVISOR_SELECTION):
-        # Ids inside the roster block are legitimate; anything quoted as an example is not.
-        for quoted in __import__("re").findall(r'"([a-z_]+)"', prompt):
-            assert quoted not in real, f"{quoted!r} is a real persona used as an example"
+    real_ids = {p.persona_id for p in load_registry()}
+    real_names = {p.name.lower() for p in load_registry()}
+    # Where each role's instructions begin, right after its data section ends.
+    instructions_start = {
+        Role.ADVISOR_SELECTION: "Select exactly",
+        Role.ADVISOR_COAS: "AVAILABLE ACTIONS",
+    }
+    for role, marker in instructions_start.items():
+        for _system, prompt in run.client.prompts_for(role):
+            assert marker in prompt, f"{role.value} is missing its instructions marker {marker!r}"
+            instructions = prompt.split(marker, 1)[1].lower()
+            leaked_ids = {
+                pid for pid in real_ids if re.search(rf"\b{re.escape(pid)}\b", instructions)
+            }
+            leaked_names = {name for name in real_names if name in instructions}
+            assert not leaked_ids, (
+                f"{role.value} instructions used real id(s) {leaked_ids} as an example"
+            )
+            assert not leaked_names, (
+                f"{role.value} instructions used real name(s) {leaked_names} as an example"
+            )

@@ -32,7 +32,15 @@ import random
 import re
 from typing import Any
 
-from artsoc.llm import CONSENSUS_MARKER, ROSTER_ENTRY, LLMClient, Role, role_marker
+from artsoc.llm import (
+    ACTION_ENTRY,
+    CONSENSUS_MARKER,
+    OPINION_ENTRY,
+    ROSTER_ENTRY,
+    LLMClient,
+    Role,
+    role_marker,
+)
 from artsoc.personas import (
     Persona,
     build_identity_prompt,
@@ -132,6 +140,29 @@ def _parse_json(raw: str, role: Role) -> dict[str, Any]:
 def _system(role: Role, body: str) -> str:
     """Every system prompt carries its role marker, which the choke point requires."""
     return f"{role_marker(role)} {body}"
+
+
+def _unwrap_marker(raw: str, pattern: re.Pattern[str]) -> str:
+    """If `raw` is exactly one bracketed marker, return its bare content; otherwise
+    `raw` unchanged.
+
+    Mirrors the tolerance `Advisor.select` already applies to `[[WHO:...]]`: a model
+    shown a marker often answers with the marker verbatim rather than the bare content
+    inside it. That is a formatting difference, not new content, so it is unwrapped here
+    rather than treated as an error — a live run named a real opinion this way and it was
+    otherwise indistinguishable from an invented one.
+    """
+    candidate = str(raw).strip()
+    match = pattern.fullmatch(candidate)
+    return ":".join(match.groups()) if match else candidate
+
+
+def _strip_inline_markers(text: str) -> str:
+    """Replace any `[[OPINION:...]]` or `[[ACTION:...]]` marker syntax found inline
+    within free text with its bare content, so a reader sees a clean citation rather than
+    raw bracket syntax the model echoed back into its own prose."""
+    text = OPINION_ENTRY.sub(lambda m: ":".join(m.groups()), text)
+    return ACTION_ENTRY.sub(lambda m: m.group(1), text)
 
 
 # ---------------------------------------------------------------------------
@@ -664,8 +695,8 @@ class Advisor:
             "QUESTION FROM THE PRESIDENT:",
             f"  {query.text}",
             "",
-            "OPINIONS COLLECTED — cite these by their [[OPINION:...]] id, never by "
-            "quoting their text in your rationale:",
+            "OPINIONS COLLECTED — cite these by their bare id, never by quoting their "
+            "text in your rationale:",
         ]
         for opinion in opinions:
             tag = f"{opinion.question_id}:{opinion.persona_id}"
@@ -681,16 +712,19 @@ class Advisor:
             "Propose exactly three courses of action. Rules:",
             "  - Each names a DISTINCT action from the list above.",
             "  - Each rationale is your own case for that action, grounded only in the "
-            "opinions above. Cite by [[OPINION:...]] id; never quote position or "
-            "reasoning text directly.",
+            "opinions above. Cite by bare id in `supporting_opinions`, for example "
+            '"q0:example_id", not the wrapper itself. Do not write the [[OPINION:...]] '
+            "or [[ACTION:...]] brackets anywhere in your rationale text — write the "
+            "id alone if you name it in prose, e.g. \"q0:example_id shows...\".",
+            "  - Never quote position or reasoning text directly.",
             "  - You do not need the three to span a range of severity. If the opinions "
             "converge, three closely related options grounded in real citations is "
             "correct; do not invent a case for an option nobody supports.",
             "  - Decline to cite an opinion marked OUT OF RECORD as support for anything.",
             "",
             "Produce JSON with key `courses`, a list of exactly three objects each with "
-            "keys: action, rationale, supporting_opinions (a list of the cited "
-            "[[OPINION:...]] ids). " + JSON_ONLY,
+            "keys: action, rationale, supporting_opinions (a list of the cited bare "
+            "ids, e.g. \"q0:example_id\"). " + JSON_ONLY,
         ]
 
         last_duplicate: str | None = None
@@ -712,15 +746,25 @@ class Advisor:
                 Role.ADVISOR_COAS,
             )
             raw = payload.get("courses", [])
-            coas = [
-                CourseOfAction(
+            coas = []
+            for letter, item in zip("abc", raw, strict=False):
+                coa = CourseOfAction(
                     coa_id=letter,
-                    action=ActionType(item["action"]),
+                    action=ActionType(_unwrap_marker(item["action"], ACTION_ENTRY)),
                     rationale=item.get("rationale", ""),
-                    supporting_opinions=list(item.get("supporting_opinions", [])),
+                    supporting_opinions=[
+                        _unwrap_marker(tag, OPINION_ENTRY)
+                        for tag in item.get("supporting_opinions", [])
+                    ],
                 )
-                for letter, item in zip("abc", raw, strict=False)
-            ]
+                # Marker-stripping runs after CourseOfAction's own `as_text_field`
+                # coercion has already turned whatever shape the model returned into a
+                # plain string, so this never has to guard against a non-string rationale.
+                coas.append(
+                    coa.model_copy(
+                        update={"rationale": _strip_inline_markers(coa.rationale)}
+                    )
+                )
             actions = [coa.action for coa in coas]
             if len(coas) == 3 and len(set(actions)) == 3:
                 return coas
