@@ -61,6 +61,39 @@ def format_passage(persona_id: str, source: str, index: int, text: str) -> str:
     return f"[{persona_id}:{source}:{index}] {text}"
 
 
+def bm25_rank(docs: list[list[str]], query: list[str]) -> list[tuple[float, int]]:
+    """BM25 scores over one candidate set, highest first, as `(score, index)` pairs.
+
+    **One scorer, used at both ends.** Retrieval ranks passages and claims with it; ingest
+    ranks a claim's own document to derive its evidence edges. Two implementations would
+    let the edges recorded at build time disagree with the ranking applied at run time,
+    and the disagreement would be invisible in the output.
+
+    Ties break on index, so a rebuild produces the same order from the same input.
+    """
+    lengths = [len(d) for d in docs]
+    avg_len = sum(lengths) / len(lengths) if lengths else 0.0
+    n = len(docs)
+
+    scored: list[tuple[float, int]] = []
+    for i, doc in enumerate(docs):
+        counts: dict[str, int] = {}
+        for token in doc:
+            counts[token] = counts.get(token, 0) + 1
+        score = 0.0
+        for term in set(query):
+            freq = counts.get(term, 0)
+            if not freq:
+                continue
+            containing = sum(1 for d in docs if term in d)
+            idf = math.log(1 + (n - containing + 0.5) / (containing + 0.5))
+            denom = freq + BM25_K1 * (1 - BM25_B + BM25_B * lengths[i] / (avg_len or 1))
+            score += idf * freq * (BM25_K1 + 1) / denom
+        scored.append((score, i))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]))
+    return scored
+
+
 class StubRetriever:
     """A one-line paraphrase from the registry. Never grounded, and says so.
 
@@ -284,28 +317,7 @@ class CorpusRetriever:
 
     def _rank(self, chunks: list[dict[str, Any]], query: list[str]) -> list[tuple[float, int]]:
         """BM25 scores over one persona's store, highest first."""
-        docs = [tokenise(c["text"]) for c in chunks]
-        lengths = [len(d) for d in docs]
-        avg_len = sum(lengths) / len(lengths) if lengths else 0.0
-        n = len(docs)
-
-        scored: list[tuple[float, int]] = []
-        for i, doc in enumerate(docs):
-            counts: dict[str, int] = {}
-            for token in doc:
-                counts[token] = counts.get(token, 0) + 1
-            score = 0.0
-            for term in set(query):
-                freq = counts.get(term, 0)
-                if not freq:
-                    continue
-                containing = sum(1 for d in docs if term in d)
-                idf = math.log(1 + (n - containing + 0.5) / (containing + 0.5))
-                denom = freq + BM25_K1 * (1 - BM25_B + BM25_B * lengths[i] / (avg_len or 1))
-                score += idf * freq * (BM25_K1 + 1) / denom
-            scored.append((score, i))
-        scored.sort(key=lambda pair: (-pair[0], pair[1]))
-        return scored
+        return bm25_rank([tokenise(c["text"]) for c in chunks], query)
 
     def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
         """Return `(block, basis)` — sources first, beliefs only as a fallback.
