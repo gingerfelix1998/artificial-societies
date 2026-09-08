@@ -30,11 +30,15 @@ from __future__ import annotations
 import json
 import random
 import re
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from artsoc.llm import (
     ACTION_ENTRY,
+    COA_ENTRY,
     CONSENSUS_MARKER,
+    NO_RECORD_MARKER,
     OPINION_ENTRY,
     ROSTER_ENTRY,
     LLMClient,
@@ -142,27 +146,75 @@ def _system(role: Role, body: str) -> str:
     return f"{role_marker(role)} {body}"
 
 
-def _unwrap_marker(raw: str, pattern: re.Pattern[str]) -> str:
+_M = TypeVar("_M", bound=BaseModel)
+
+#: Every marker whose content a model can be asked to name back. `[[N:...]]`,
+#: `[[SYNTHESIS:consensus]]` and `[[NARRATIVE:3]]` are absent deliberately: they are
+#: instructions rather than entities to be cited, so an echo of one is not a citation to
+#: repair. `[[CORPUS:none]]` is handled separately in `_strip_inline_markers`.
+_MARKER_PATTERNS = (ROSTER_ENTRY, ACTION_ENTRY, OPINION_ENTRY, COA_ENTRY)
+
+
+def _unwrap_marker(raw: str, *, group: int | None = None) -> str:
     """If `raw` is exactly one bracketed marker, return its bare content; otherwise
     `raw` unchanged.
 
-    Mirrors the tolerance `Advisor.select` already applies to `[[WHO:...]]`: a model
-    shown a marker often answers with the marker verbatim rather than the bare content
-    inside it. That is a formatting difference, not new content, so it is unwrapped here
-    rather than treated as an error — a live run named a real opinion this way and it was
-    otherwise indistinguishable from an invented one.
+    A model shown a marker often answers with the marker verbatim rather than the bare
+    content inside it. That is a formatting difference, not new content, so it is unwrapped
+    here rather than treated as an error — counting it as a hallucination discarded every
+    Advisor selection on the first live run, and a live COA named a real opinion this way
+    and was otherwise indistinguishable from an invented one.
+
+    **Every marker pattern is tried, not the one the caller expects.** This defect has now
+    appeared twice, at `[[WHO:...]]` and then at `[[OPINION:...]]`/`[[ACTION:...]]`, and the
+    second reached live running because the first fix was written for its own site. Two
+    independent occurrences of one defect class is a pattern, so the guard is shared.
+
+    `group` selects a single capture where the joined content is not what the field holds:
+    `[[COA:id:action]]` is offered as a pair, but `chosen_coa_id` holds the id alone.
     """
     candidate = str(raw).strip()
-    match = pattern.fullmatch(candidate)
-    return ":".join(match.groups()) if match else candidate
+    for pattern in _MARKER_PATTERNS:
+        match = pattern.fullmatch(candidate)
+        if match:
+            return match.group(group) if group else ":".join(match.groups())
+    return candidate
 
 
 def _strip_inline_markers(text: str) -> str:
-    """Replace any `[[OPINION:...]]` or `[[ACTION:...]]` marker syntax found inline
-    within free text with its bare content, so a reader sees a clean citation rather than
-    raw bracket syntax the model echoed back into its own prose."""
-    text = OPINION_ENTRY.sub(lambda m: ":".join(m.groups()), text)
-    return ACTION_ENTRY.sub(lambda m: m.group(1), text)
+    """Replace marker syntax echoed inline within free text with its bare content, so a
+    reader sees a clean citation rather than the raw brackets a model copied into its prose.
+
+    `[[CORPUS:none]]` is removed rather than unwrapped, because it names no entity: the bare
+    word "none" left mid-sentence would read worse than the marker it replaced.
+    """
+    for pattern in _MARKER_PATTERNS:
+        text = pattern.sub(lambda m: ":".join(m.groups()), text)
+    if NO_RECORD_MARKER in text:
+        # Whitespace is renormalised only on this branch, so prose that never carried the
+        # marker keeps whatever line structure the model gave it.
+        text = " ".join(text.replace(NO_RECORD_MARKER, " ").split())
+    return text
+
+
+def _clean(model: _M, *fields: str) -> _M:
+    """Strip echoed marker syntax from a validated message's prose fields.
+
+    Runs *after* validation on purpose: the model's own `as_text_field` coercion has
+    already turned whatever shape the backend returned into a plain string, so this never
+    has to guard against a list arriving where prose was asked for. Lists of strings are
+    handled elementwise, because `consensus_points` is prose too.
+    """
+    update: dict[str, Any] = {}
+    for name in fields:
+        value = getattr(model, name)
+        if isinstance(value, str):
+            update[name] = _strip_inline_markers(value)
+        elif isinstance(value, list):
+            update[name] = [
+                _strip_inline_markers(item) if isinstance(item, str) else item for item in value
+            ]
+    return model.model_copy(update=update)
 
 
 # ---------------------------------------------------------------------------
@@ -419,15 +471,18 @@ class President:
                 Role.PRESIDENT_DECISION,
             )
             if not valid:
-                return PresidentialAction.model_validate(payload)
+                return _clean(PresidentialAction.model_validate(payload), "justification")
 
-            chosen_id = str(payload.get("chosen_coa_id", ""))
+            # The President is shown "[[COA:a:hold]]" and answers "[[COA:a:hold]]" often
+            # enough that treating it as an invented id would burn a retry and then raise.
+            chosen_id = _unwrap_marker(payload.get("chosen_coa_id", ""), group=1)
             if chosen_id in valid:
                 # The action is taken from the offered course, not from the model's own
                 # `action` field — the id is what was validated, so the id is what decides
                 # which typed action was actually chosen.
                 payload["action"] = valid[chosen_id].value
-                return PresidentialAction.model_validate(payload)
+                payload["chosen_coa_id"] = chosen_id
+                return _clean(PresidentialAction.model_validate(payload), "justification")
             last_invalid = chosen_id
 
         raise ValueError(
@@ -585,11 +640,7 @@ class Advisor:
         # and not a hallucination — counting it as one discarded every selection on the
         # first live run and filled the whole panel by top-up, silently throwing away the
         # Advisor's reasoning. Unwrapped here; genuinely unknown names still fall through.
-        named = []
-        for raw in payload.get("selected", []):
-            candidate = str(raw).strip()
-            wrapper = ROSTER_ENTRY.fullmatch(candidate)
-            named.append(wrapper.group(1) if wrapper else candidate)
+        named = [_unwrap_marker(raw) for raw in payload.get("selected", [])]
 
         chosen: list[str] = []
         hallucinated: list[str] = []
@@ -615,7 +666,7 @@ class Advisor:
             mode="advisor",
             chosen_by_advisor=chosen,
             topped_up=topped_up,
-            rationale=str(payload.get("rationale", "")),
+            rationale=_strip_inline_markers(str(payload.get("rationale", ""))),
             roster=sorted(available),
             hallucinated=hallucinated,
         )
@@ -662,12 +713,17 @@ class Advisor:
             ),
             Role.ADVISOR_SYNTHESIS,
         )
-        return AdvisorBrief(
-            summary=payload["summary"],
-            consensus_points=list(payload.get("consensus_points", [])),
-            minority_positions=list(payload.get("minority_positions", [])),
-            synthesis_mode=mode,
-            n_opinions=len(opinions),
+        return _clean(
+            AdvisorBrief(
+                summary=payload["summary"],
+                consensus_points=list(payload.get("consensus_points", [])),
+                minority_positions=list(payload.get("minority_positions", [])),
+                synthesis_mode=mode,
+                n_opinions=len(opinions),
+            ),
+            "summary",
+            "consensus_points",
+            "minority_positions",
         )
 
     def propose_coas(
@@ -750,21 +806,13 @@ class Advisor:
             for letter, item in zip("abc", raw, strict=False):
                 coa = CourseOfAction(
                     coa_id=letter,
-                    action=ActionType(_unwrap_marker(item["action"], ACTION_ENTRY)),
+                    action=ActionType(_unwrap_marker(item["action"])),
                     rationale=item.get("rationale", ""),
                     supporting_opinions=[
-                        _unwrap_marker(tag, OPINION_ENTRY)
-                        for tag in item.get("supporting_opinions", [])
+                        _unwrap_marker(tag) for tag in item.get("supporting_opinions", [])
                     ],
                 )
-                # Marker-stripping runs after CourseOfAction's own `as_text_field`
-                # coercion has already turned whatever shape the model returned into a
-                # plain string, so this never has to guard against a non-string rationale.
-                coas.append(
-                    coa.model_copy(
-                        update={"rationale": _strip_inline_markers(coa.rationale)}
-                    )
-                )
+                coas.append(_clean(coa, "rationale"))
             actions = [coa.action for coa in coas]
             if len(coas) == 3 and len(set(actions)) == 3:
                 return coas
@@ -851,7 +899,7 @@ class Theorist:
             # retrieving knows which store the text came from.
             basis=basis,
         )
-        return opinion, record_block
+        return _clean(opinion, "position", "reasoning"), record_block
 
     def unsupported_citations(self, opinion: TheoristOpinion, record_block: str) -> list[str]:
         """Ids this persona cited that were not in the block it was shown."""

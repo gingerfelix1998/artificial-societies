@@ -24,10 +24,12 @@ from artsoc import personas as personas_module
 from artsoc.agents import Advisor, President, Theorist
 from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
+    ACTION_ENTRY,
     COA_ENTRY,
     DEFAULT_MODELS,
     MOCK_PREFIX,
     NO_RECORD_MARKER,
+    OPINION_ENTRY,
     PASSAGE_ID,
     DiskCache,
     LLMClient,
@@ -1562,6 +1564,180 @@ def test_the_advisor_may_answer_with_the_marker_it_was_shown() -> None:
     assert len(record.chosen_by_advisor) == 4
     assert record.topped_up == [], "a fully-honoured selection needs no top-up"
     assert set(record.chosen_by_advisor) <= {p.persona_id for p in personas}
+
+
+class _EchoBackend:
+    """Answers every role with the marker syntax it was shown, in every shape live running
+    has produced. Roles it has no echo for fall through to the ordinary mock.
+
+    Deliberate counterpart to the low-rate echoes baked into `MockBackend`: those give the
+    whole suite exposure to the failure mode, this makes the coverage certain.
+    """
+
+    name = "echo"
+
+    def model_for(self, role: Role) -> str:
+        return "echo-model"
+
+    def __init__(self) -> None:
+        self._mock = MockBackend()
+
+    def complete(self, role: Role, system: str, prompt: str, seed_hint: str) -> str:
+        if role is Role.ADVISOR_COAS:
+            actions = [f"[[ACTION:{a}]]" for a in ACTION_ENTRY.findall(prompt)[:3]]
+            cites = [f"[[OPINION:{q}:{p}]]" for q, p in OPINION_ENTRY.findall(prompt)[:2]]
+            return json.dumps(
+                {
+                    "note": "MOCK:",
+                    "courses": [
+                        {
+                            "action": action,
+                            "rationale": f"MOCK: case, per {cites[0] if cites else 'nothing'}",
+                            "supporting_opinions": cites,
+                        }
+                        for action in actions
+                    ],
+                }
+            )
+        if role is Role.PRESIDENT_DECISION and COA_ENTRY.search(prompt):
+            coa_id, action = COA_ENTRY.findall(prompt)[1]
+            return json.dumps(
+                {
+                    "chosen_coa_id": f"[[COA:{coa_id}:{action}]]",
+                    "action": action,
+                    "justification": f"MOCK: because [[COA:{coa_id}:{action}]] was best",
+                }
+            )
+        if role is Role.ADVISOR_SYNTHESIS:
+            tag = OPINION_ENTRY.search(prompt)
+            cite = f"[[OPINION:{tag.group(1)}:{tag.group(2)}]]" if tag else "[[ACTION:no_action]]"
+            return json.dumps(
+                {
+                    "summary": f"MOCK: summary citing {cite}",
+                    "consensus_points": [f"MOCK: point from {cite}"],
+                    "minority_positions": [],
+                }
+            )
+        if role is Role.THEORIST:
+            return json.dumps(
+                {
+                    "position": f"MOCK: position {NO_RECORD_MARKER} stated anyway",
+                    "reasoning": f"MOCK: reasoning {NO_RECORD_MARKER}",
+                    "citations": [],
+                    "out_of_record": False,
+                    "confidence": 0.5,
+                }
+            )
+        return self._mock.complete(role, system, prompt, seed_hint)
+
+
+def test_a_course_of_action_may_echo_every_marker_it_was_shown() -> None:
+    """The COA path accepts the wrapper form in all three places it has appeared.
+
+    `[[OPINION:...]]` and `[[ACTION:...]]` leaked back from a live model after the same
+    defect had already been fixed for `[[WHO:...]]`, because that fix was written for its
+    own site. The guard is shared now, so all three shapes are asserted together.
+    """
+    client = LLMClient(backend=_EchoBackend(), run_seed=1)
+    opinions = _opinions_for_coas()
+    coas = Advisor(client).propose_coas(
+        PresidentialQuery(text="MOCK: q", concerns=[]), opinions
+    )
+
+    assert len(coas) == 3
+    assert len({c.action for c in coas}) == 3, "wrapped actions must still parse as typed"
+    tags = {f"{o.question_id}:{o.persona_id}" for o in opinions}
+    for coa in coas:
+        assert set(coa.supporting_opinions) <= tags, "a wrapped citation is not an invented one"
+        assert "[[" not in coa.rationale, "raw marker syntax must not survive into the record"
+
+
+def test_the_president_may_echo_the_course_marker_it_was_shown() -> None:
+    """Echoing `[[COA:b:...]]` is a formatting difference, not an invalid id.
+
+    Reading it as invalid would burn a retry and then raise, discarding a decision the
+    President actually made — the same failure the Advisor's roster echo once caused.
+    """
+    client = LLMClient(backend=_EchoBackend(), run_seed=1)
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    coas = [
+        CourseOfAction(coa_id=cid, action=action, rationale="MOCK:")
+        for cid, action in zip(
+            "abc",
+            [ActionType.NO_ACTION, ActionType.PRIVATE_WARNING, ActionType.PUBLIC_STATEMENT],
+            strict=True,
+        )
+    ]
+    action = President(client, _doctrine()).decide(intel, None, coas)
+
+    assert action.chosen_coa_id == "b", "the bare id is what the record keeps"
+    assert action.action == ActionType.PRIVATE_WARNING
+    assert "[[" not in action.justification
+
+
+def test_marker_syntax_never_survives_into_recorded_prose() -> None:
+    """No field an analyst reads carries the host's own bracket syntax.
+
+    Stated over the whole loop rather than per role: the two occurrences of this defect
+    were each caught at one site and fixed there, and the second was found by live running
+    because nothing asserted the general property.
+    """
+    record = _run("baseline", seed=7)
+
+    prose = [
+        record.intel_brief.summary,
+        record.intel_brief.assessed_activity,
+        record.action.justification,
+        *(o.position for o in record.opinions),
+        *(o.reasoning for o in record.opinions),
+        *(r.rationale for r in record.routing),
+        *(c.rationale for c in record.courses_of_action),
+    ]
+    if record.advisor_brief is not None:
+        prose += [
+            record.advisor_brief.summary,
+            *record.advisor_brief.consensus_points,
+            *record.advisor_brief.minority_positions,
+        ]
+
+    offenders = [text for text in prose if "[[" in text]
+    assert offenders == [], f"marker syntax reached the record: {offenders[:2]}"
+
+
+def test_a_theorist_echoing_the_no_record_marker_does_not_keep_it() -> None:
+    """`[[CORPUS:none]]` is removed, not unwrapped.
+
+    It names no entity, so the bare word "none" left mid-sentence would read worse than
+    the marker it replaced — the one case where stripping is not the same as unwrapping.
+    """
+    client = LLMClient(backend=_EchoBackend(), run_seed=1)
+    persona = load_registry()[0]
+    opinion, _ = Theorist(client, persona, "m2", StubRetriever()).opine(
+        AnalyticalQuestion(question_id="q0", text="MOCK: question", tags=["deterrence"])
+    )
+
+    assert NO_RECORD_MARKER not in opinion.position
+    assert NO_RECORD_MARKER not in opinion.reasoning
+    assert "none" not in opinion.position.split(), "removed, not unwrapped to its content"
+    assert opinion.position.startswith("MOCK:"), "the rest of the answer is untouched"
+
+
+def test_the_advisors_brief_never_quotes_the_marker_it_cites_with() -> None:
+    """The brief is guarded even though its own prompt shows no marker.
+
+    One backend answers every role, and a model that met `[[ACTION:...]]` while writing
+    courses of action can reproduce the shape while writing the brief. The brief is what
+    the President reads, so raw host syntax there is both unreadable and a sign the model
+    is copying structure rather than compressing content. Guarding only the sites whose
+    prompts carry a marker is how the second leak reached live running.
+    """
+    client = LLMClient(backend=_EchoBackend(), run_seed=1)
+    brief = Advisor(client).synthesise(
+        PresidentialQuery(text="MOCK: q", concerns=[]), _opinions_for_coas()
+    )
+
+    assert "[[" not in brief.summary
+    assert all("[[" not in point for point in brief.consensus_points)
 
 
 # ---------------------------------------------------------------------------

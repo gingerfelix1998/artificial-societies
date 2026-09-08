@@ -43,7 +43,7 @@ MOCK_PREFIX = "MOCK:"
 
 #: Bumped whenever mock output changes shape. It is part of the cache key, so old cached
 #: responses cannot be silently served against new parsing code.
-MOCK_VERSION = "mock-2"
+MOCK_VERSION = "mock-3"
 
 
 class Role(str, Enum):
@@ -263,6 +263,13 @@ class MockBackend:
         if roster and rng.random() < 0.10:
             chosen.append(f"{MOCK_PREFIX.rstrip(':').lower()}_not_on_roster")
 
+        # Occasionally answer with the marker verbatim instead of the bare id inside it.
+        # A real model does this — it is how the first live sweep lost every Advisor
+        # selection — so the shared unwrap guard must stay exercised by the ordinary suite
+        # and not only by the dedicated echo tests.
+        if chosen and rng.random() < 0.15:
+            chosen[0] = f"[[WHO:{chosen[0]}]]"
+
         return {
             "rationale": (
                 f"{MOCK_PREFIX} placeholder selection rationale {digest[:6]}; this text is "
@@ -345,13 +352,23 @@ class MockBackend:
         courses = []
         for action in chosen:
             cites = rng.sample(opinions, min(2, len(opinions))) if opinions else []
+            rationale = (
+                f"{MOCK_PREFIX} placeholder case for {action} {digest[:6]}; this "
+                "text is not reasoning and cites nothing real"
+            )
+            # Echo the marker syntax back, in each of the three shapes live running has
+            # produced: wrapped around the action, wrapped around a citation, and copied
+            # into the prose. The last one reached a live sweep before the suite saw it.
+            if rng.random() < 0.15:
+                action = f"[[ACTION:{action}]]"
+            if cites and rng.random() < 0.15:
+                rationale = f"{rationale}, see [[OPINION:{cites[-1]}]]"
+            if cites and rng.random() < 0.15:
+                cites = [f"[[OPINION:{cites[0]}]]", *cites[1:]]
             courses.append(
                 {
                     "action": action,
-                    "rationale": (
-                        f"{MOCK_PREFIX} placeholder case for {action} {digest[:6]}; this "
-                        "text is not reasoning and cites nothing real"
-                    ),
+                    "rationale": rationale,
                     "supporting_opinions": cites,
                 }
             )
@@ -373,8 +390,12 @@ class MockBackend:
         offered = COA_ENTRY.findall(prompt)
         if offered:
             coa_id, action = rng.choice(offered)
+            # Echoing the wrapper is a formatting difference, not an invalid id, and the
+            # unwrap guard is what keeps it from burning a retry. That distinction is the
+            # reason this echo is safe here while a genuinely invalid id would not be.
+            answered = f"[[COA:{coa_id}:{action}]]" if rng.random() < 0.15 else coa_id
             return {
-                "chosen_coa_id": coa_id,
+                "chosen_coa_id": answered,
                 "action": action,
                 "justification": (
                     f"{MOCK_PREFIX} placeholder justification {digest[:6]}; qualitative "
