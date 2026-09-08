@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from artsoc import metrics, schema, session, views
+from artsoc import metrics, narrative, schema, session, views
 from artsoc.config import RunConfig
 
 #: One file per model. Names match the TypeScript type they become.
@@ -37,6 +37,9 @@ PYDANTIC_MODELS: dict[str, Any] = {
     "PresidentialAction": schema.PresidentialAction,
     "RunConfig": RunConfig,
     "LoopStep": views.LoopStep,
+    "ProvenanceFlow": views.ProvenanceFlow,
+    "CoaSupport": views.CoaSupport,
+    "SessionFacts": views.SessionFacts,
     "InteractionGraph": views.InteractionGraph,
     "RepresentativeRun": views.RepresentativeRun,
     "EngagementSummary": views.EngagementSummary,
@@ -46,6 +49,9 @@ PYDANTIC_MODELS: dict[str, Any] = {
     "SessionSummary": session.SessionSummary,
     "CallEstimate": session.CallEstimate,
     "ProgressEvent": session.ProgressEvent,
+    "RunNarrative": narrative.RunNarrative,
+    "SessionAnalysis": narrative.SessionAnalysis,
+    "AnalysisAnswer": narrative.AnalysisAnswer,
 }
 
 #: Dataclasses from `metrics`. Converting them to pydantic to serialise them would touch a
@@ -77,6 +83,7 @@ def _api_models() -> dict[str, Any]:
         "SessionCreated": api.SessionCreated,
         "RepresentativeView": api.RepresentativeView,
         "PassageLookup": api.PassageLookup,
+        "LandingView": api.LandingView,
     }
 
 

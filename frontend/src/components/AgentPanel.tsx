@@ -1,10 +1,11 @@
 /**
  * What one participant did in this replication, and the record's account of why.
  *
- * Opened by clicking a node in the interaction graph or a row label in the Gantt. Every
- * node the graph draws has an entry, including the phantom "named but not on the roster"
- * node — a clickable node that opens nothing reads as a bug, and the hallucination rate is
- * a finding about how reliably a model routes rather than an incidental error.
+ * Opened by selecting a node in the interaction graph or a row label in the activity
+ * timeline. Every node the graph draws has an entry, including the phantom "named but not
+ * on the roster" node — a clickable node that opens nothing reads as a bug, and the
+ * hallucination rate is a finding about how reliably a model routes rather than an
+ * incidental error.
  *
  * **The "why" is only ever what the record holds.** For a theorist that is its own
  * reasoning, the store it drew on, and the Advisor's stated rationale for consulting it.
@@ -14,75 +15,21 @@
  * declines to claim.
  *
  * A persona reached by top-up is marked apart from one the Advisor chose. Nobody judged the
- * first relevant, and that is the panel-coverage diagnostic showing up at the level of a
- * single answer.
+ * first relevant, and that is the panel-coverage diagnostic at the level of a single answer.
+ *
+ * Cited passages resolve to their text. A citation is only checkable against the claim it
+ * was attached to if it can be read, and an id the store does not contain is shown as
+ * unresolved rather than hidden — that is the citation-integrity finding.
  */
 
+import { useMemo, useState } from 'react'
+
+import { citationsByPersona, usePassages, type Passages } from '../lib/usePassages'
 import type { AgentAnswer, AgentDetail } from '../types/artsoc'
 
 interface Props {
   agent: AgentDetail | null
   onClose: () => void
-}
-
-function Answer({ answer }: { answer: AgentAnswer }) {
-  const citations = answer.citations ?? []
-  return (
-    <article className="answer">
-      <div className="row">
-        <span className="qid">{answer.question_id}</span>
-        <span
-          className={answer.how_selected === 'topped_up' ? 'pill muted' : 'pill'}
-          title={
-            answer.how_selected === 'topped_up'
-              ? 'Added to reach the requested panel size. Nobody judged this persona relevant to the question.'
-              : 'Selected on the basis of relevance to the question.'
-          }
-        >
-          {answer.how_selected === 'topped_up' ? 'topped up' : 'chosen'}
-        </span>
-        {answer.declined ? (
-          <span className="pill warn" title="The persona stated no position.">
-            declined
-          </span>
-        ) : (
-          <span className="pill" title="Which store the position rested on.">
-            from {answer.basis}
-          </span>
-        )}
-        <div className="spacer" />
-        <span className="faint small">confidence {answer.confidence.toFixed(2)}</span>
-      </div>
-
-      <p className="qtext">{answer.question}</p>
-
-      {answer.selection_rationale ? (
-        <p className="faint small">
-          <strong>Why this persona:</strong> {answer.selection_rationale}
-        </p>
-      ) : null}
-
-      {answer.position ? (
-        <p className="passage">
-          <strong>Position.</strong> {answer.position}
-        </p>
-      ) : null}
-      {answer.reasoning ? (
-        <p className="passage">
-          <strong>Reasoning.</strong> {answer.reasoning}
-        </p>
-      ) : null}
-
-      {citations.length > 0 ? (
-        <p className="citations small">
-          Cited {citations.length}:{' '}
-          {citations.map((id) => (
-            <code key={id}>{id}</code>
-          ))}
-        </p>
-      ) : null}
-    </article>
-  )
 }
 
 export default function AgentPanel({ agent, onClose }: Props) {
@@ -92,70 +39,165 @@ export default function AgentPanel({ agent, onClose }: Props) {
   const passages = agent?.passages ?? []
   const fields = agent?.fields ?? []
 
+  const wanted = useMemo(
+    () =>
+      agent && answers.length > 0
+        ? citationsByPersona(
+            answers.map((a) => ({ persona_id: agent.id, citations: a.citations })),
+          )
+        : new Map<string, string[]>(),
+    [agent, answers],
+  )
+  const resolved = usePassages(wanted)
+
   if (agent == null) {
     return (
-      <section className="panel">
-        <header>
-          <h2>Agent detail</h2>
-          <p className="subtitle">
-            Select a node in the graph, or a row label in the timeline, to see what that
-            participant did in this replication and what the record says about why.
-          </p>
-        </header>
-        <p className="empty">Nothing selected.</p>
-      </section>
+      <>
+        <h4>Participant</h4>
+        <p className="empty">
+          Select anyone in the graph, or a row label in the timeline, to see what they did in
+          this replication and what the record says about why.
+        </p>
+      </>
     )
   }
 
   return (
-    <section className="panel">
-      <header>
-        <div className="row">
-          <h2 style={{ margin: 0 }}>{agent.label}</h2>
-          <span className="pill muted">{agent.kind}</span>
-          <div className="spacer" />
-          <button className="small" onClick={onClose}>
-            Clear
-          </button>
-        </div>
-        <p className="subtitle">{agent.summary}</p>
-      </header>
+    <>
+      <div className="row tight">
+        <h3 style={{ margin: 0 }}>{agent.label}</h3>
+        <span className="tag">{agent.kind}</span>
+        <div className="spacer" />
+        <button className="ghost small" onClick={onClose}>
+          Clear
+        </button>
+      </div>
+      <p className="muted small">{agent.summary}</p>
 
-      {fields.length > 0 ? (
-        <div className="summary-stats">
+      {fields.length > 0 && (
+        <dl className="conditions" style={{ marginTop: '0.75rem' }}>
           {fields.map(([label, value]) => (
-            <div className="summary-stat" key={label}>
-              <span className="summary-stat-value">{value}</span>
-              <span className="faint small">{label}</span>
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {answers.length > 0 && (
+        <div className="answers">
+          {answers.map((answer) => (
+            <Answer key={answer.question_id} answer={answer} passages={resolved} />
+          ))}
+        </div>
+      )}
+
+      {passages.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          {passages.map(([label, text], i) => (
+            <div key={`${label}-${i}`}>
+              <h5 style={{ marginTop: '0.9rem' }}>{label}</h5>
+              <p className="muted small" style={{ margin: 0 }}>
+                {text}
+              </p>
             </div>
           ))}
         </div>
-      ) : null}
+      )}
 
-      {answers.length > 0 ? (
-        <div className="passages">
-          {answers.map((answer) => (
-            <Answer key={`${answer.question_id}`} answer={answer} />
-          ))}
-        </div>
-      ) : null}
-
-      {passages.length > 0 ? (
-        <div className="passages">
-          {passages.map(([label, text], i) => (
-            <p className="passage" key={`${label}-${i}`}>
-              <strong>{label}.</strong> {text}
-            </p>
-          ))}
-        </div>
-      ) : null}
-
-      {answers.length === 0 && passages.length === 0 ? (
+      {answers.length === 0 && passages.length === 0 && (
         <p className="empty">
           On the panel for this replication, but never consulted. That is a different fact
           from not being there, and it is what the panel-coverage diagnostic measures.
         </p>
-      ) : null}
-    </section>
+      )}
+    </>
+  )
+}
+
+function Answer({ answer, passages }: { answer: AgentAnswer; passages: Passages }) {
+  const [open, setOpen] = useState(false)
+  const citations = answer.citations ?? []
+
+  return (
+    <article className={`answer${answer.declined ? ' declined' : ''}`}>
+      <div className="row tight">
+        <span className="mono tiny faint">{answer.question_id}</span>
+        <span
+          className="tag"
+          title={
+            answer.how_selected === 'topped_up'
+              ? 'Added to reach the requested panel size. Nobody judged this persona relevant to the question.'
+              : 'Selected on the basis of relevance to the question.'
+          }
+        >
+          {answer.how_selected === 'topped_up' ? 'topped up' : 'chosen'}
+        </span>
+        {answer.declined ? (
+          <span className="tag declined">declined</span>
+        ) : (
+          <span className="tag" title="Which store the position rested on.">
+            from {answer.basis}
+          </span>
+        )}
+        <div className="spacer" />
+        <span className="faint tiny">confidence {answer.confidence.toFixed(2)}</span>
+      </div>
+
+      <h5>Asked</h5>
+      <p className="muted">{answer.question}</p>
+
+      {answer.selection_rationale && (
+        <>
+          <h5>Why this persona</h5>
+          <p className="faint">{answer.selection_rationale}</p>
+        </>
+      )}
+
+      {answer.position && (
+        <>
+          <h5>{answer.declined ? 'What they said instead' : 'Position'}</h5>
+          <p>{answer.position}</p>
+        </>
+      )}
+
+      {answer.reasoning && (
+        <>
+          <h5>Reasoning</h5>
+          <p className="muted">{answer.reasoning}</p>
+        </>
+      )}
+
+      {citations.length > 0 && (
+        <>
+          <button className="ghost small" onClick={() => setOpen(!open)}>
+            {open ? 'Hide' : 'Read'} the {citations.length} passage
+            {citations.length === 1 ? '' : 's'} cited
+          </button>
+          {open &&
+            citations.map((id) => {
+              const passage = passages.byId.get(id)
+              return passage ? (
+                <div className="passage" key={id}>
+                  <div className="tiny faint">
+                    <span className="tag plain">{passage.source}</span> {passage.section}
+                  </div>
+                  <p>{passage.text}</p>
+                </div>
+              ) : (
+                <div className="passage unresolved" key={id}>
+                  <div className="mono tiny">{id}</div>
+                  <p>
+                    {passages.loading
+                      ? 'Looking this up…'
+                      : 'Not in the store. The persona attributed a claim to a passage it was not shown — reported, never corrected, because the rate is a finding about the method.'}
+                  </p>
+                </div>
+              )
+            })}
+        </>
+      )}
+    </article>
   )
 }

@@ -31,19 +31,33 @@ treats them as gates on interpretation rather than footnotes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artsoc.config import RunConfig, list_arms, load_arm
 from artsoc.llm import PRICE_PER_MTOK, DiskCache, LLMClient, get_backend
 from artsoc.metrics import CONTROL_ARM, ArmSummary, Delta, delta, load_jsonl, summarise
-from artsoc.narrative import RunNarrative, summarise_run
+from artsoc.narrative import (
+    AnalysisAnswer,
+    RunNarrative,
+    SessionAnalysis,
+    answer_question,
+    summarise_run,
+)
+
+# Aliased: this module already has a `summarise_session` that builds the numeric
+# `SessionSummary`. Two functions with one name, one returning figures and the other
+# returning prose about them, is exactly the confusion to avoid here.
+from artsoc.narrative import summarise_session as generate_session_analysis
 from artsoc.schema import RunRecord
 from artsoc.sim import CACHE_DIR, DEFAULT_OUT_DIR, run_many, write_jsonl
 from artsoc.views import representative_run
@@ -398,6 +412,155 @@ def ensure_narrative(
         narrative.model_dump_json(indent=2), encoding="utf-8"
     )
     return narrative
+
+
+# ---------------------------------------------------------------------------
+# Session-level interpretation. Generated on request, cached on disk, answers keyed by
+# question so re-asking one is free.
+# ---------------------------------------------------------------------------
+
+
+def analysis_path(session_id: str, arm: str, root: Path | None = None) -> Path:
+    return session_dir(session_id, root) / f"{arm}.analysis.json"
+
+
+def _question_key(question: str) -> str:
+    """A stable id for one question, so asking it twice is not billed twice.
+
+    Normalised on whitespace and case before hashing: "why did it escalate?" and "Why did
+    it escalate?" are the same question, and charging for the second would be charging for
+    a capitalisation.
+    """
+    normalised = " ".join(question.lower().split())
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
+
+
+class StoredAnalysis(BaseModel):
+    """The cached interpretation for one arm, plus every answered follow-up."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis: SessionAnalysis | None = None
+    #: Keyed by a hash of the normalised question.
+    answers: dict[str, AnalysisAnswer] = Field(default_factory=dict)
+
+
+def load_analysis(session_id: str, arm: str, root: Path | None = None) -> StoredAnalysis:
+    """What has been generated for this arm so far. Empty is a normal state, not an error."""
+    path = analysis_path(session_id, arm, root)
+    if not path.exists():
+        return StoredAnalysis()
+    try:
+        return StoredAnalysis.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return StoredAnalysis()
+
+
+def _save_analysis(
+    session_id: str, arm: str, stored: StoredAnalysis, root: Path | None = None
+) -> None:
+    analysis_path(session_id, arm, root).write_text(
+        stored.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+
+def analysis_payload(session_id: str, arm: str, root: Path | None = None) -> dict[str, Any]:
+    """The figures a session-level call is given, and the only thing it is given.
+
+    Assembled from already-computed views: the arm summary, the contrast against the
+    control, the deterministic session facts, the course-of-action support and the
+    diagnostics. **No record, no prompt, no `host_ground_truth`** — none of those views
+    holds any of them, so this cannot carry one by accident, and a test scans the assembled
+    block to keep that true.
+    """
+    from artsoc.views import coa_support, session_facts
+
+    records = arm_records(session_id, arm, root)
+    summary = summarise(records)
+
+    control: ArmSummary | None = None
+    state = load_session(session_id, root)
+    if arm != CONTROL_ARM and CONTROL_ARM in state.spec.arms:
+        control_path = session_dir(session_id, root) / f"{CONTROL_ARM}.jsonl"
+        if control_path.exists():
+            control = summarise(load_jsonl(control_path))
+
+    contrast = delta(summary, control) if control is not None else None
+    return {
+        "arm": arm,
+        "scenario_id": state.spec.scenario_id,
+        "facts": session_facts(records, summary, contrast).model_dump(mode="json"),
+        "distribution": summary.rung_distribution,
+        "contrast_against_control": asdict(contrast) if contrast else None,
+        "control_arm_was_run": control is not None,
+        "course_of_action_support": coa_support(records).model_dump(mode="json"),
+        "diagnostics": summary.warnings,
+        "conditions": {
+            "backend": summary.backend,
+            "models": summary.models,
+            "grounded": summary.grounded,
+            "cache_enabled": summary.cache_enabled,
+            "retrieval_mode": summary.retrieval_mode,
+            "persona_method": summary.persona_method,
+        },
+    }
+
+
+def _analysis_client(arm: str) -> LLMClient:
+    """A client for a host-side analysis call, configured the way the arm's runs were."""
+    config = load_arm(arm)
+    return LLMClient(
+        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
+        run_seed=0,
+        cache=DiskCache(CACHE_DIR),
+        cache_enabled=True,
+    )
+
+
+def ensure_analysis(
+    session_id: str, arm: str, root: Path | None = None, *, regenerate: bool = False
+) -> SessionAnalysis | None:
+    """The stored interpretation for an arm, generating it once if absent.
+
+    Returns None on failure rather than raising, the same way `ensure_narrative` does: this
+    is a reading of figures that are already correct and already on the page, so its absence
+    degrades to those figures alone.
+    """
+    stored = load_analysis(session_id, arm, root)
+    if stored.analysis is not None and not regenerate:
+        return stored.analysis
+    try:
+        payload = analysis_payload(session_id, arm, root)
+        stored.analysis = generate_session_analysis(
+            payload, _analysis_client(arm), session_id, arm
+        )
+    except Exception:  # noqa: BLE001 - an orientation aid must not break a results page
+        return None
+    _save_analysis(session_id, arm, stored, root)
+    return stored.analysis
+
+
+def ask_analysis(
+    session_id: str, arm: str, question: str, root: Path | None = None
+) -> AnalysisAnswer | None:
+    """Answer one follow-up, serving a repeat of the same question from disk."""
+    if not question.strip():
+        raise SessionError("a question cannot be empty")
+
+    stored = load_analysis(session_id, arm, root)
+    key = _question_key(question)
+    if key in stored.answers:
+        return stored.answers[key]
+
+    try:
+        payload = analysis_payload(session_id, arm, root)
+        answer = answer_question(question, payload, _analysis_client(arm), session_id, arm)
+    except Exception:  # noqa: BLE001 - reported as no answer, never as a broken page
+        return None
+
+    stored.answers[key] = answer
+    _save_analysis(session_id, arm, stored, root)
+    return answer
 
 
 def _write_state(state: SessionState, root: Path | None = None) -> None:

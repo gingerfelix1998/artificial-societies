@@ -548,3 +548,177 @@ def test_the_narrative_endpoint_rejects_an_arm_not_in_the_session(
     session_id = _run_session(client, ["baseline"], n=2)
     response = client.post(f"/api/sessions/{session_id}/runs/synth_only/narrative")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The simulation landing page and its interpretation.
+# ---------------------------------------------------------------------------
+
+
+def test_the_landing_page_opens_on_a_full_loop_arm_not_the_control(
+    client: TestClient,
+) -> None:
+    """The control's distribution is the base rate the others are measured against, not a
+    result anyone opened the page to read."""
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=3)
+    body = client.get(f"/api/sessions/{session_id}/landing").json()
+    assert body["arm"] == "baseline"
+    assert set(body["arms"]) == {CONTROL_ARM, "baseline"}
+
+
+def test_the_landing_page_states_the_contrast_and_the_conditions(
+    client: TestClient,
+) -> None:
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=3)
+    body = client.get(f"/api/sessions/{session_id}/landing").json()
+
+    assert body["facts"]["d_mean_rung"] is not None
+    assert body["facts"]["control_arm"] == CONTROL_ARM
+    assert body["summary"]["mock"] is True
+    assert any("MOCK BACKEND" in w for w in body["summary"]["warnings"])
+
+
+def test_the_landing_page_withholds_the_delta_when_no_control_was_run(
+    client: TestClient,
+) -> None:
+    """A zero would read as 'no difference' rather than as 'no comparison'."""
+    session_id = _run_session(client, ["baseline"], n=2)
+    body = client.get(f"/api/sessions/{session_id}/landing").json()
+    assert body["facts"]["d_mean_rung"] is None
+    assert body["summary"]["has_control"] is False
+
+
+def test_the_landing_page_never_calls_coa_support_influence(client: TestClient) -> None:
+    """Whose opinions the chosen option cited is a property of the Advisor's document.
+    Causal attribution comes only from the loo_* forced-exclusion arms."""
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=3)
+    support = client.get(f"/api/sessions/{session_id}/landing").json()["coa_support"]
+
+    assert "not a measure of influence" in support["note"].lower()
+    assert "loo_" in support["note"]
+    assert not any("influence" in key for key in support)
+
+
+def test_the_landing_page_carries_no_scenario_ground_truth(client: TestClient) -> None:
+    session_id = _run_session(client, ["baseline"], n=2)
+    blob = client.get(f"/api/sessions/{session_id}/landing").text
+    assert "ground_truth" not in blob
+    assert "HOST-ONLY" not in blob
+
+
+def test_an_analysis_is_absent_until_it_is_asked_for(client: TestClient) -> None:
+    """A sweep runs every arm; a reader opens one. Generating during the sweep would bill
+    for readings nobody asked for."""
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=2)
+    assert client.get(f"/api/sessions/{session_id}/landing").json()["analysis"] is None
+
+
+def test_an_analysis_is_generated_on_request_and_then_reused(client: TestClient) -> None:
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=3)
+
+    first = client.post(f"/api/sessions/{session_id}/analysis").json()
+    assert first is not None and len(first["sentences"]) == 3
+    assert "not a finding" in first["caveat"].lower()
+
+    assert client.post(f"/api/sessions/{session_id}/analysis").json() == first
+    assert client.get(f"/api/sessions/{session_id}/landing").json()["analysis"] == first
+
+
+def test_a_follow_up_question_is_answered_and_cached(client: TestClient) -> None:
+    """Each distinct question is a billed call; the same one asked twice is not."""
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=3)
+
+    asked = client.post(
+        f"/api/sessions/{session_id}/analysis/ask",
+        json={"question": "Did the advisory apparatus change the outcome?"},
+    ).json()
+    assert asked["answer"]
+    assert "not a finding" in asked["caveat"].lower()
+
+    again = client.post(
+        f"/api/sessions/{session_id}/analysis/ask",
+        json={"question": "  DID the advisory   apparatus change the outcome? "},
+    ).json()
+    assert again["answer"] == asked["answer"]
+
+
+def test_the_question_body_accepts_nothing_but_a_question(client: TestClient) -> None:
+    """The analysis endpoint is not a second route to a configuration."""
+    session_id = _run_session(client, ["baseline"], n=2)
+    response = client.post(
+        f"/api/sessions/{session_id}/analysis/ask",
+        json={"question": "why?", "arm": "loo_jervis", "panel_size": 4},
+    )
+    assert response.status_code == 422
+
+
+def test_an_empty_question_is_refused(client: TestClient) -> None:
+    session_id = _run_session(client, ["baseline"], n=2)
+    assert (
+        client.post(
+            f"/api/sessions/{session_id}/analysis/ask", json={"question": ""}
+        ).status_code
+        == 422
+    )
+
+
+def test_the_analysis_endpoints_refuse_an_arm_not_in_the_session(
+    client: TestClient,
+) -> None:
+    session_id = _run_session(client, ["baseline"], n=2)
+    assert (
+        client.post(f"/api/sessions/{session_id}/analysis?arm=small_panel").status_code == 404
+    )
+    assert client.get(f"/api/sessions/{session_id}/landing?arm=ghost").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Provenance in the representative payload.
+# ---------------------------------------------------------------------------
+
+
+def test_the_representative_payload_carries_the_provenance_chain(
+    client: TestClient,
+) -> None:
+    session_id = _run_session(client, ["baseline"], n=4)
+    flow = client.get(
+        f"/api/sessions/{session_id}/runs/baseline/representative"
+    ).json()["provenance"]
+
+    assert flow["coa_stage"] == "present"
+    kinds = {n["kind"] for n in flow["nodes"]}
+    assert {"opinion", "coa", "decision"} <= kinds
+
+    ids = {n["id"] for n in flow["nodes"]}
+    for link in flow["links"]:
+        assert link["source"] in ids and link["target"] in ids
+
+
+def test_the_control_arms_chain_stops_at_the_opinions_and_says_why(
+    client: TestClient,
+) -> None:
+    """It has no panel to ground an option in. The stage is absent, not empty."""
+    session_id = _run_session(client, [CONTROL_ARM, "baseline"], n=2)
+    flow = client.get(
+        f"/api/sessions/{session_id}/runs/{CONTROL_ARM}/representative"
+    ).json()["provenance"]
+
+    assert flow["coa_stage"] == "absent"
+    assert "ADR 0006" in flow["coa_note"]
+    assert not [n for n in flow["nodes"] if n["kind"] == "coa"]
+
+
+def test_a_scenario_label_keeps_its_acronyms(client: TestClient) -> None:
+    """TEL is a transporter-erector-launcher. Title-casing the event's snake_case name
+    renders it as "Tel", which reads as a word and puts a domain error in the largest text
+    on the page."""
+    from artsoc.api import _humanise_label
+
+    assert _humanise_label("tel_dispersal") == "TEL Dispersal"
+    assert _humanise_label("c2_attack") == "C2 Attack"
+    assert _humanise_label("exercise_ambiguity") == "Exercise Ambiguity"
+
+    card = next(
+        s for s in client.get("/api/scenarios").json() if s["scenario_id"] == SCENARIO_ID
+    )
+    assert card["label"] == "TEL Dispersal"

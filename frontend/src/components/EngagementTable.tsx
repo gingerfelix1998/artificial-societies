@@ -19,7 +19,7 @@ export default function EngagementTable({ engagement }: { engagement: Engagement
   const people = [...engagement.personas].sort((a, b) => b.times_consulted - a.times_consulted)
 
   return (
-    <section className="panel">
+    <section className="section">
       <header>
         <h2>Panel engagement — {engagement.arm}</h2>
         <p className="subtitle">{engagement.note}</p>

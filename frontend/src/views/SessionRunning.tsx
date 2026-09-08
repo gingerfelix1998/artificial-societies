@@ -38,7 +38,7 @@ export default function SessionRunning() {
   if (activeId !== sessionId) {
     const known = sessions.find((s) => s.spec.session_id === sessionId)
     return (
-      <section className="panel">
+      <section className="section">
         <h2>Not streaming this session</h2>
         <p className="muted">
           Progress is streamed to the tab that started the session. This one is not
@@ -79,8 +79,8 @@ export default function SessionRunning() {
       </p>
 
       {failures.length > 0 && (
-        <div className="banner warn">
-          <strong>{failures.length} REPLICATION(S) FAILED</strong>
+        <div className="notice warn">
+          <strong>{failures.length} replication(s) failed</strong>
           They are excluded from the output and listed here rather than dropped silently: a
           replication may fail for reasons correlated with its outcome, so a distribution over
           the survivors would be biased with nothing to show it.
@@ -96,7 +96,7 @@ export default function SessionRunning() {
         {arms.map((arm) => {
           const seen = Object.values(arm.rungs).reduce((a, b) => a + b, 0)
           return (
-            <section className="panel" key={arm.arm}>
+            <section className="section" key={arm.arm}>
               <header>
                 <div className="row">
                   <h2 style={{ margin: 0 }}>{arm.arm}</h2>
@@ -119,8 +119,7 @@ export default function SessionRunning() {
                     Object.entries(arm.rungs).map(([k, v]) => [k, v]),
                   )}
                   n={seen}
-                  height={180}
-                  compact
+                  height={150}
                 />
               ) : (
                 <p className="empty">waiting for the first replication</p>

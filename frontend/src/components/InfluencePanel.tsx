@@ -25,7 +25,7 @@ export default function InfluencePanel({ arms }: { arms: ArmSummary[] }) {
 
   if (exclusion.length < 2) {
     return (
-      <section className="panel" style={{ opacity: 0.6 }}>
+      <section className="section">
         <header>
           <h2>Per-theorist attribution</h2>
           <p className="subtitle">
@@ -49,7 +49,7 @@ export default function InfluencePanel({ arms }: { arms: ArmSummary[] }) {
   const ranked = [...exclusion].sort((a, b) => a.mean_rung - b.mean_rung)
 
   return (
-    <section className="panel">
+    <section className="section">
       <header>
         <h2>Per-theorist attribution (forced exclusion)</h2>
         <p className="subtitle">

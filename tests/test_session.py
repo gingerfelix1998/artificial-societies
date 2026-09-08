@@ -23,10 +23,15 @@ from artsoc.session import (
     ProgressEvent,
     SessionError,
     SessionSpec,
+    analysis_path,
+    analysis_payload,
     arm_records,
+    ask_analysis,
     create_session,
+    ensure_analysis,
     estimate_calls,
     list_sessions,
+    load_analysis,
     load_session,
     resolve_arms,
     run_session,
@@ -393,3 +398,145 @@ def test_no_summary_carries_a_prompt(tmp_path: Path) -> None:
     blob = summarise_session(spec.session_id, tmp_path).model_dump_json()
     assert "[[ROLE:" not in blob
     assert "[[WHO:" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Session-level interpretation. The figures are the finding; this reads them and adds
+# nothing, so what it is allowed to see matters more than what it says.
+# ---------------------------------------------------------------------------
+
+
+def _analysed(tmp_path: Path, arms: list[str] | None = None) -> tuple[str, Path]:
+    spec = _spec(arms or [CONTROL_ARM, "baseline"], n=3)
+    run_session(spec, root=tmp_path)
+    return spec.session_id, tmp_path
+
+
+def test_the_analysis_payload_carries_figures_and_nothing_else(tmp_path: Path) -> None:
+    """It is assembled from computed views, none of which holds a record, a prompt or the
+    host's truth — so it cannot carry one by accident. Scanned anyway, because the point of
+    the access-matrix suite is that a path nobody anticipated is the one that leaks."""
+    session_id, root = _analysed(tmp_path)
+    blob = json.dumps(analysis_payload(session_id, "baseline", root))
+
+    assert "host_ground_truth" not in blob
+    assert "[[ROLE:" not in blob and "[[WHO:" not in blob
+    assert "call_log" not in blob
+    # The record's own free text is absent: the payload is summary statistics, so a
+    # justification or a theorist's position appearing in it would mean a view leaked one.
+    assert "justification" not in blob
+    assert "reasoning" not in blob
+
+
+def test_the_analysis_payload_states_whether_a_control_was_run(tmp_path: Path) -> None:
+    """Without the control there is no interpretable quantity, and the reader has to be
+    told rather than left to infer it from a missing key."""
+    with_control, root = _analysed(tmp_path)
+    payload = analysis_payload(with_control, "baseline", root)
+    assert payload["control_arm_was_run"] is True
+    assert payload["contrast_against_control"]["control"] == CONTROL_ARM
+
+    alone = _spec(["baseline"], n=2)
+    run_session(alone, root=root)
+    solo = analysis_payload(alone.session_id, "baseline", root)
+    assert solo["control_arm_was_run"] is False
+    assert solo["contrast_against_control"] is None
+
+
+def test_the_analysis_payload_carries_every_diagnostic(tmp_path: Path) -> None:
+    """Each warning gates how the numbers may be read, so the reader must see them all."""
+    session_id, root = _analysed(tmp_path)
+    payload = analysis_payload(session_id, "baseline", root)
+    assert any("MOCK BACKEND" in w for w in payload["diagnostics"])
+
+
+def test_an_analysis_is_generated_once_and_then_served_from_disk(tmp_path: Path) -> None:
+    """A reading that changed on refresh would not be a record, and would be billed twice."""
+    session_id, root = _analysed(tmp_path)
+
+    first = ensure_analysis(session_id, "baseline", root)
+    assert first is not None and first.sentences
+    assert analysis_path(session_id, "baseline", root).exists()
+
+    second = ensure_analysis(session_id, "baseline", root)
+    assert second == first
+
+
+def test_an_analysis_is_labelled_interpretation_rather_than_a_finding(
+    tmp_path: Path,
+) -> None:
+    session_id, root = _analysed(tmp_path)
+    analysis = ensure_analysis(session_id, "baseline", root)
+    assert analysis is not None
+    assert "not a finding" in analysis.caveat.lower()
+    assert "control" in analysis.caveat.lower()
+
+
+def test_no_analysis_is_generated_by_running_a_session(tmp_path: Path) -> None:
+    """A sweep runs every arm; a reader opens one. Summarising during the sweep would bill
+    for readings nobody asked for."""
+    session_id, root = _analysed(tmp_path)
+    for arm in (CONTROL_ARM, "baseline"):
+        assert not analysis_path(session_id, arm, root).exists()
+        assert load_analysis(session_id, arm, root).analysis is None
+
+
+def test_asking_the_same_question_twice_is_answered_from_disk(tmp_path: Path) -> None:
+    """Each question is a billed call. Charging twice for a difference in capitalisation
+    would be charging for a capitalisation."""
+    session_id, root = _analysed(tmp_path)
+
+    first = ask_analysis(session_id, "baseline", "Did the panel change the outcome?", root)
+    assert first is not None and first.answer
+
+    again = ask_analysis(session_id, "baseline", "  did THE panel   change the outcome? ", root)
+    assert again is not None
+    assert again.answer == first.answer
+    assert len(load_analysis(session_id, "baseline", root).answers) == 1
+
+
+def test_a_different_question_is_stored_separately(tmp_path: Path) -> None:
+    session_id, root = _analysed(tmp_path)
+    ask_analysis(session_id, "baseline", "Did the panel change the outcome?", root)
+    ask_analysis(session_id, "baseline", "Which theorists grounded the chosen option?", root)
+    assert len(load_analysis(session_id, "baseline", root).answers) == 2
+
+
+def test_an_empty_question_is_refused_before_anything_is_spent(tmp_path: Path) -> None:
+    session_id, root = _analysed(tmp_path)
+    with pytest.raises(SessionError, match="cannot be empty"):
+        ask_analysis(session_id, "baseline", "   ", root)
+
+
+def test_an_analysis_answer_carries_its_caveat(tmp_path: Path) -> None:
+    session_id, root = _analysed(tmp_path)
+    answer = ask_analysis(session_id, "baseline", "What drove the distribution?", root)
+    assert answer is not None
+    assert "not a finding" in answer.caveat.lower()
+    assert "feeds" in answer.caveat.lower()
+
+
+def test_the_analysis_prompt_forbids_reading_an_absolute_rate_as_a_result() -> None:
+    """The constraint most likely to be forgotten between reading a number and writing it
+    down is stated in the instructions the model is given, not only in the UI around it."""
+    from artsoc.narrative import ANALYSIS_INSTRUCTION, ANSWER_INSTRUCTION
+
+    for instruction in (ANALYSIS_INSTRUCTION, ANSWER_INSTRUCTION):
+        assert "ONLY THE DELTA AGAINST THE CONTROL IS INTERPRETABLE" in instruction
+        assert "not influence" in instruction
+        assert "did not determine the action" in instruction
+
+
+def test_the_analysis_never_acquires_a_role_of_its_own() -> None:
+    """A host-side call made after every run has finished is not a participant. Giving it a
+    role would put it in the access matrix and imply an agent that never existed."""
+    import inspect
+
+    from artsoc import narrative as narrative_module
+
+    source = inspect.getsource(narrative_module)
+    assert "Role.THEORIST" in source
+    assert not any(
+        f"Role.{name}" in source
+        for name in ("ANALYST", "INTERPRETER", "JUDGE", "SUMMARISER")
+    )

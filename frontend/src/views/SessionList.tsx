@@ -22,13 +22,13 @@ export default function SessionList() {
       </div>
 
       {error && (
-        <div className="banner danger" style={{ marginTop: '1rem' }}>
-          <strong>COULD NOT LIST SESSIONS</strong>
+        <div className="notice stop" style={{ marginTop: '1rem' }}>
+          <strong>Could not list sessions</strong>
           {error}
         </div>
       )}
 
-      <section className="panel" style={{ marginTop: '1rem' }}>
+      <section className="section" style={{ marginTop: '1rem' }}>
         {sessions.length === 0 ? (
           <p className="empty">
             No sessions yet. Start one, or run <code>make demo-fixture</code> for a free

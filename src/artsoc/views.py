@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord
+from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
 
 #: Node id for the host-side world. Not an agent: it is where events come from and where
 #: the President's action lands.
@@ -244,8 +244,27 @@ class LoopStep(_View):
     #: not duplicated here: one copy in the record means the event log and the panels
     #: cannot disagree about what was said.
     payload_ref: str
+    #: The opening of what this step produced, for a caption drawn over the node or edge it
+    #: belongs to. A truncation of the record's own text, never a paraphrase: a caption that
+    #: summarised would be a second account of what was said, sitting beside the first.
+    #: Empty where a step produced no text of its own — a consultation is the question being
+    #: put, and the answer is the step after it.
+    excerpt: str = ""
     question_id: str | None = None
     persona_id: str | None = None
+
+
+#: How much of a payload a caption carries. Long enough to tell two deliberations apart at a
+#: glance, short enough that the graph stays a graph rather than becoming the event log.
+EXCERPT_CHARS = 180
+
+
+def _clip(text: str, limit: int = EXCERPT_CHARS) -> str:
+    """The opening of a passage, cut on a word boundary. Never a summary."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: flat.rfind(" ", 0, limit)].rstrip(",;:.") + "…"
 
 
 def loop_steps(record: RunRecord) -> list[LoopStep]:
@@ -261,6 +280,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
     never answered, and inventing the missing half would hide it.
     """
     steps: list[LoopStep] = []
+    questions = {q.question_id: q.text for q in record.questions}
 
     def add(**kwargs: Any) -> None:
         steps.append(LoopStep(index=len(steps), **kwargs))
@@ -274,6 +294,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
             label=f"Collection registers {event.event_id}"
             + (" (degraded)" if event.degraded else ""),
             payload_ref=f"view[{i}]",
+            excerpt=_clip(event.description),
         )
 
     add(
@@ -283,6 +304,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
         kind="brief",
         label=f"Intelligence brief, confidence {record.intel_brief.confidence}",
         payload_ref="intel_brief",
+        excerpt=_clip(record.intel_brief.summary),
     )
 
     if record.presidential_query is not None:
@@ -293,6 +315,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
             kind="query",
             label="President puts a decontextualised question to the Advisor",
             payload_ref="presidential_query",
+            excerpt=_clip(record.presidential_query.text),
         )
 
     for i, question in enumerate(record.questions):
@@ -303,6 +326,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
             kind="formulate",
             label=f"Advisor formulates {question.question_id}",
             payload_ref=f"questions[{i}]",
+            excerpt=_clip(question.text),
             question_id=question.question_id,
         )
 
@@ -320,6 +344,9 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
             kind="select",
             label=f"Advisor selects {len(routing.selected)} for {routing.question_id}",
             payload_ref=f"routing[{i}]",
+            # The Advisor's stated reason for whom it picked. Empty under `tag` routing,
+            # where the selection is mechanical and nobody reasoned.
+            excerpt=_clip(routing.rationale),
             question_id=routing.question_id,
         )
         for persona_id in routing.selected:
@@ -330,6 +357,9 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
                 kind="consult",
                 label=f"Advisor consults {persona_id} on {routing.question_id}",
                 payload_ref=f"routing[{i}]",
+                # The question being put, not the answer: the answer is the next step, and
+                # showing it here would put the reply before the asking.
+                excerpt=_clip(questions.get(routing.question_id, "")),
                 question_id=routing.question_id,
                 persona_id=persona_id,
             )
@@ -351,6 +381,8 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
                     f"({opinion.basis}, confidence {opinion.confidence:g})"
                 ),
                 payload_ref=f"opinions[{j}]",
+                # A decline states no position, so the reasoning is what it actually said.
+                excerpt=_clip(opinion.position or opinion.reasoning),
                 question_id=routing.question_id,
                 persona_id=persona_id,
             )
@@ -367,6 +399,7 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
                 f"({brief.synthesis_mode})"
             ),
             payload_ref="advisor_brief",
+            excerpt=_clip(brief.summary),
         )
 
     add(
@@ -376,6 +409,9 @@ def loop_steps(record: RunRecord) -> list[LoopStep]:
         kind="decide",
         label=f"President selects {record.action.action.value} (rung {record.rung})",
         payload_ref="action",
+        # Labelled elsewhere as the reason given, never the reason it happened: the
+        # justification is recorded alongside the action and never fed the rung.
+        excerpt=_clip(record.action.justification),
     )
 
     return steps
@@ -425,6 +461,11 @@ class GraphEdge(_View):
     #: The step at which this pair first communicated this way, so playback can reveal
     #: edges in loop order.
     step_index: int
+    #: Every step this edge covers, ascending. The Advisor consults twelve personas one at a
+    #: time; collapsing those into a single first index made playback reveal the edge once
+    #: and then sit still, so a viewer stepping through could not tell one deliberation from
+    #: the next. Each is its own moment, and this is what says which.
+    step_indices: list[int] = Field(default_factory=list)
     weight: int = 1
 
 
@@ -514,17 +555,23 @@ def interaction_graph(record: RunRecord) -> InteractionGraph:
             )
         )
 
-    # One edge per (source, target, kind), weighted. Keeping the first step index means
-    # playback reveals an edge when the pair first communicated that way.
-    tallies: dict[tuple[str, str, str], tuple[int, int]] = {}
+    # One edge per (source, target, kind), carrying every step it covers. The pair is what
+    # gets drawn; the step list is what lets playback reveal each deliberation separately
+    # rather than lighting the whole edge at its first occurrence.
+    tallies: dict[tuple[str, str, str], list[int]] = {}
     for step in steps:
-        key = (step.actor, step.recipient, step.kind)
-        first, weight = tallies.get(key, (step.index, 0))
-        tallies[key] = (first, weight + 1)
+        tallies.setdefault((step.actor, step.recipient, step.kind), []).append(step.index)
 
     edges = [
-        GraphEdge(source=s, target=t, kind=k, step_index=first, weight=weight)
-        for (s, t, k), (first, weight) in tallies.items()
+        GraphEdge(
+            source=s,
+            target=t,
+            kind=k,
+            step_index=indices[0],
+            step_indices=indices,
+            weight=len(indices),
+        )
+        for (s, t, k), indices in tallies.items()
     ]
 
     last_step = steps[-1].index if steps else 0
@@ -534,6 +581,9 @@ def interaction_graph(record: RunRecord) -> InteractionGraph:
             target=PHANTOM,
             kind="hallucinated",
             step_index=last_step,
+            # Not a loop step: ids the Advisor named that were dropped never became a
+            # communication with anyone. Revealed once the run has finished playing.
+            step_indices=[last_step],
             weight=len(hallucinated),
         )
     ] if hallucinated else []
@@ -1098,4 +1148,402 @@ def run_facts(record: RunRecord) -> RunFacts:
         n_unsupported_citations=len(record.unsupported_citations),
         grounded=record.grounded,
         retrieval_mode=record.retrieval_mode,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Provenance: what a decision actually rested on.
+#
+# Every link below comes from an id the record holds. None is inferred from wording. That
+# distinction is the whole value of the diagram: a lexical-overlap link between a theorist's
+# prose and an advisor's would look identical on screen and mean nothing, and there would be
+# no way to tell the two apart afterwards.
+# ---------------------------------------------------------------------------
+
+
+#: How `CourseOfAction.supporting_opinions` names an opinion (ADR 0006).
+def opinion_key(question_id: str, persona_id: str) -> str:
+    return f"{question_id}:{persona_id}"
+
+
+class ProvenanceNode(_View):
+    """One thing in the chain from source text to decision."""
+
+    id: str
+    #: passage | opinion | coa | decision
+    kind: str
+    label: str
+    #: Longer text, where there is any to show. Passage nodes carry none — their text lives
+    #: in the corpus and is fetched on demand, because a record stores citation ids rather
+    #: than the block a persona was shown.
+    detail: str = ""
+    #: True for the nodes on the path the President actually took.
+    chosen: bool = False
+    #: Set on opinion nodes that declined, so the chain shows where the panel had nothing to
+    #: offer rather than dropping those nodes and implying it was never asked.
+    declined: bool = False
+    persona_id: str | None = None
+    question_id: str | None = None
+
+
+class ProvenanceLink(_View):
+    source: str
+    target: str
+    #: cites | supports | selects
+    kind: str
+    chosen: bool = False
+
+
+class ProvenanceFlow(_View):
+    """Cited passages → theorist positions → proposed courses of action → the decision.
+
+    **Complete only for records written under ADR 0006.** `CourseOfAction.supporting_opinions`
+    is what links an option to the opinions it rests on; before that field existed there was
+    nothing to draw the middle of this chain from, and inferring it by matching words would
+    be fabricating the exact relationship the diagram claims to show. A record without
+    courses of action therefore yields the passage→opinion half and says why the rest is
+    missing, rather than rendering an empty stage.
+    """
+
+    nodes: list[ProvenanceNode]
+    links: list[ProvenanceLink]
+    #: present | absent — whether this record carries courses of action at all.
+    coa_stage: str
+    #: Stated when `coa_stage` is "absent", so the gap is explained on screen.
+    coa_note: str = ""
+    schema_version: str = ""
+
+
+def provenance_flow(record: RunRecord) -> ProvenanceFlow:
+    """The chain from cited source text to the action taken, from recorded ids only."""
+    nodes: list[ProvenanceNode] = []
+    links: list[ProvenanceLink] = []
+
+    chosen_id = record.action.chosen_coa_id
+    supported_by_chosen: set[str] = set()
+    for coa in record.courses_of_action:
+        if coa.coa_id == chosen_id:
+            supported_by_chosen = set(coa.supporting_opinions)
+
+    # Opinions first: they are the hinge. Each is keyed the way a course of action names it,
+    # so the two halves of the chain join on an id rather than on a lookup that could differ.
+    seen_passages: set[str] = set()
+    for opinion in record.opinions:
+        key = opinion_key(opinion.question_id, opinion.persona_id)
+        on_path = key in supported_by_chosen
+        nodes.append(
+            ProvenanceNode(
+                id=f"opinion:{key}",
+                kind="opinion",
+                label=opinion.persona_name,
+                detail=opinion.position,
+                chosen=on_path,
+                declined=opinion.out_of_record,
+                persona_id=opinion.persona_id,
+                question_id=opinion.question_id,
+            )
+        )
+        for citation in opinion.citations:
+            if citation not in seen_passages:
+                seen_passages.add(citation)
+                nodes.append(
+                    ProvenanceNode(
+                        id=f"passage:{citation}",
+                        kind="passage",
+                        # The middle segment of a passage id says what kind of source it is
+                        # (ADR 0003): wikipedia, abstract or belief.
+                        label=citation.split(":")[1] if ":" in citation else citation,
+                        persona_id=citation.split(":", 1)[0],
+                    )
+                )
+            links.append(
+                ProvenanceLink(
+                    source=f"passage:{citation}",
+                    target=f"opinion:{key}",
+                    kind="cites",
+                    chosen=on_path,
+                )
+            )
+
+    # A passage node is only on the chosen path if something it fed is. Computed after the
+    # links rather than during, because one passage can feed several opinions.
+    on_path_passages = {link.source for link in links if link.chosen}
+    nodes = [
+        n.model_copy(update={"chosen": True})
+        if n.kind == "passage" and n.id in on_path_passages
+        else n
+        for n in nodes
+    ]
+
+    decision_id = f"decision:{record.action.action.value}"
+    for coa in record.courses_of_action:
+        on_path = coa.coa_id == chosen_id
+        nodes.append(
+            ProvenanceNode(
+                id=f"coa:{coa.coa_id}",
+                kind="coa",
+                label=coa.action.value,
+                detail=coa.rationale,
+                chosen=on_path,
+            )
+        )
+        for key in coa.supporting_opinions:
+            # Only draw a link to an opinion that exists. A course of action naming an
+            # opinion the record does not hold is a routing failure of the same family as a
+            # hallucinated citation; drawing an edge to nothing would hide it.
+            if any(n.id == f"opinion:{key}" for n in nodes):
+                links.append(
+                    ProvenanceLink(
+                        source=f"opinion:{key}",
+                        target=f"coa:{coa.coa_id}",
+                        kind="supports",
+                        chosen=on_path,
+                    )
+                )
+        links.append(
+            ProvenanceLink(
+                source=f"coa:{coa.coa_id}",
+                target=decision_id,
+                kind="selects",
+                chosen=on_path,
+            )
+        )
+
+    nodes.append(
+        ProvenanceNode(
+            id=decision_id,
+            kind="decision",
+            label=record.action.action.value,
+            detail=record.action.justification,
+            chosen=True,
+        )
+    )
+
+    absent = not record.courses_of_action
+    return ProvenanceFlow(
+        nodes=nodes,
+        links=links,
+        coa_stage="absent" if absent else "present",
+        coa_note=(
+            "This replication holds no courses of action, so the chain stops at the "
+            "opinions. Either it predates ADR 0006, which introduced them, or it is a "
+            "control-arm run with no panel to ground an option in. The missing stage is "
+            "not drawn rather than inferred: a link between an opinion and an option can "
+            "only come from the id the Advisor recorded."
+            if absent
+            else ""
+        ),
+        schema_version=record.schema_version,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Course-of-action support. What the chosen option rested on — not influence.
+# ---------------------------------------------------------------------------
+
+
+class PersonaCoaSupport(_View):
+    """How often one persona's opinions grounded a proposed and a chosen option."""
+
+    persona_id: str
+    name: str
+    #: Replications in which this persona stated a position or declined.
+    runs_answered: int
+    #: Times any course of action cited one of this persona's opinions.
+    cited_by_any_coa: int
+    #: Times the course of action the President actually took cited one of them.
+    cited_by_chosen_coa: int
+    #: Replications in which the chosen option cited this persona at least once.
+    runs_in_chosen: int
+    #: `runs_in_chosen` over the replications where a choice among options was made.
+    share_of_chosen: float
+
+
+class CoaSupport(_View):
+    """Per-persona grounding of the option the President took.
+
+    **This is not influence and must never be labelled as it.** It says whose opinions the
+    Advisor cited when it built the option that was chosen — a recorded fact about the
+    document, not a measurement of what anyone changed. A persona could be cited in every
+    chosen option and change nothing, or be cited in none and have shifted which options
+    were proposed at all.
+
+    Causal attribution comes from the `loo_*` forced-exclusion arms, where the persona is
+    absent from the panel, every roster and every prompt, and the world is re-run without
+    them. That is a contrast between arms and lives in the influence panel.
+    """
+
+    arm: str
+    n_records: int
+    #: Replications where courses of action were proposed and one was chosen.
+    n_with_coas: int
+    personas: list[PersonaCoaSupport]
+    note: str = (
+        "Whose opinions the chosen course of action cited. A recorded property of the "
+        "document the Advisor wrote, not a measure of influence: causal attribution comes "
+        "from the loo_* forced-exclusion arms."
+    )
+
+
+def coa_support(records: list[RunRecord]) -> CoaSupport:
+    """Per-persona counts of grounding a proposed and a chosen course of action."""
+    if not records:
+        raise ValueError("coa_support needs at least one record")
+    arms = {r.arm for r in records}
+    if len(arms) != 1:
+        raise ValueError(f"coa_support expects one arm, got {sorted(arms)}")
+
+    names: dict[str, str] = {}
+    answered: Counter[str] = Counter()
+    any_coa: Counter[str] = Counter()
+    chosen_coa: Counter[str] = Counter()
+    runs_in_chosen: Counter[str] = Counter()
+    n_with_coas = 0
+
+    for record in records:
+        for opinion in record.opinions:
+            names.setdefault(opinion.persona_id, opinion.persona_name)
+        answered.update({o.persona_id for o in record.opinions})
+
+        if not record.courses_of_action:
+            continue
+        n_with_coas += 1
+
+        in_chosen_this_run: set[str] = set()
+        for coa in record.courses_of_action:
+            is_chosen = coa.coa_id == record.action.chosen_coa_id
+            for key in coa.supporting_opinions:
+                persona_id = key.split(":", 1)[-1]
+                any_coa[persona_id] += 1
+                if is_chosen:
+                    chosen_coa[persona_id] += 1
+                    in_chosen_this_run.add(persona_id)
+        runs_in_chosen.update(in_chosen_this_run)
+
+    people = [
+        PersonaCoaSupport(
+            persona_id=persona_id,
+            name=names.get(persona_id, persona_id),
+            runs_answered=answered[persona_id],
+            cited_by_any_coa=any_coa[persona_id],
+            cited_by_chosen_coa=chosen_coa[persona_id],
+            runs_in_chosen=runs_in_chosen[persona_id],
+            share_of_chosen=(
+                round(runs_in_chosen[persona_id] / n_with_coas, 4) if n_with_coas else 0.0
+            ),
+        )
+        for persona_id in sorted(set(names) | set(any_coa))
+    ]
+    people.sort(key=lambda p: (-p.runs_in_chosen, -p.cited_by_any_coa, p.persona_id))
+
+    return CoaSupport(
+        arm=records[0].arm,
+        n_records=len(records),
+        n_with_coas=n_with_coas,
+        personas=people,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Session-level facts. The numbers a landing page states, none of them interpreted.
+# ---------------------------------------------------------------------------
+
+
+class ActionCount(_View):
+    """One action, how often it was proposed, and how often it was taken."""
+
+    action: str
+    rung: int
+    is_nuclear: bool
+    proposed: int
+    chosen: int
+
+
+class SessionFacts(_View):
+    """The deterministic account of a session, for a header to state without interpreting.
+
+    Exists for the same reason `RunFacts` does: the generated prose beside it never has to
+    carry a number it could get wrong. Every field is read or arithmetic over what was read.
+
+    `d_mean_rung` and `d_p_nuclear` are `None` when the control arm was not run. That is the
+    honest state — absolute rates are not findings, so with no control there is no
+    interpretable quantity here at all, and a zero would read as "no difference" rather than
+    as "no comparison".
+    """
+
+    arm: str
+    n: int
+    mean_rung: float
+    median_rung: float
+    p_nuclear: float
+    modal_action: str
+    modal_action_share: float
+    #: None when `escalation_prior` is absent from the session.
+    d_mean_rung: float | None = None
+    d_p_nuclear: float | None = None
+    control_arm: str | None = None
+
+    declared_panel_size: int = 0
+    mean_run_coverage: float = 0.0
+    out_of_record_rate: float = 0.0
+    beliefs_share: float = 0.0
+
+    #: Every action proposed or taken across the sweep, commonest first.
+    actions: list[ActionCount] = Field(default_factory=list)
+    #: Replications in which the Advisor proposed courses of action.
+    n_with_coas: int = 0
+
+
+def session_facts(
+    records: list[RunRecord],
+    summary: Any,
+    delta: Any | None = None,
+) -> SessionFacts:
+    """Reduce one arm to the numbers a landing page may state.
+
+    `summary` is a `metrics.ArmSummary` and `delta` a `metrics.Delta`; both are taken as
+    arguments rather than recomputed, so this cannot disagree with the report. Typed loosely
+    to keep `views` free of a `metrics` import it needs for nothing else.
+    """
+    if not records:
+        raise ValueError("session_facts needs at least one record")
+
+    proposed: Counter[str] = Counter()
+    chosen: Counter[str] = Counter()
+    n_with_coas = 0
+    for record in records:
+        chosen[record.action.action.value] += 1
+        if record.courses_of_action:
+            n_with_coas += 1
+            proposed.update(coa.action.value for coa in record.courses_of_action)
+
+    modal_action, modal_count = chosen.most_common(1)[0]
+    actions = [
+        ActionCount(
+            action=action,
+            rung=rung_for(action),
+            is_nuclear=rung_for(action) >= NUCLEAR_THRESHOLD,
+            proposed=proposed.get(action, 0),
+            chosen=chosen.get(action, 0),
+        )
+        for action in sorted(set(proposed) | set(chosen), key=lambda a: -chosen.get(a, 0))
+    ]
+
+    return SessionFacts(
+        arm=summary.arm,
+        n=summary.n,
+        mean_rung=summary.mean_rung,
+        median_rung=summary.median_rung,
+        p_nuclear=summary.p_nuclear,
+        modal_action=modal_action,
+        modal_action_share=round(modal_count / len(records), 4),
+        d_mean_rung=delta.d_mean_rung if delta else None,
+        d_p_nuclear=delta.d_p_nuclear if delta else None,
+        control_arm=delta.control if delta else None,
+        declared_panel_size=summary.declared_panel_size,
+        mean_run_coverage=summary.mean_run_coverage,
+        out_of_record_rate=summary.out_of_record_rate,
+        beliefs_share=summary.beliefs_share,
+        actions=actions,
+        n_with_coas=n_with_coas,
     )

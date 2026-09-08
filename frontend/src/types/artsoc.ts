@@ -25,6 +25,19 @@ export interface AdvisorBrief {
 }
 
 /**
+ * One answered follow-up question, stored so re-asking it costs nothing.
+ */
+
+export interface AnalysisAnswer {
+  session_id: string
+  arm: string
+  question: string
+  answer?: string
+  model?: string
+  caveat?: string
+}
+
+/**
  * One decontextualised question the Advisor puts to the panel.
  *
  * No scenario, no nation, no date, no capability. That keeps the elicitation analytical
@@ -136,6 +149,41 @@ export interface RoleCost {
 }
 
 /**
+ * Per-persona grounding of the option the President took.
+ *
+ * **This is not influence and must never be labelled as it.** It says whose opinions the
+ * Advisor cited when it built the option that was chosen — a recorded fact about the
+ * document, not a measurement of what anyone changed. A persona could be cited in every
+ * chosen option and change nothing, or be cited in none and have shifted which options
+ * were proposed at all.
+ *
+ * Causal attribution comes from the `loo_*` forced-exclusion arms, where the persona is
+ * absent from the panel, every roster and every prompt, and the world is re-run without
+ * them. That is a contrast between arms and lives in the influence panel.
+ */
+
+export interface CoaSupport {
+  arm: string
+  n_records: number
+  n_with_coas: number
+  personas: PersonaCoaSupport[]
+  note?: string
+}
+/**
+ * How often one persona's opinions grounded a proposed and a chosen option.
+ */
+
+export interface PersonaCoaSupport {
+  persona_id: string
+  name: string
+  runs_answered: number
+  cited_by_any_coa: number
+  cited_by_chosen_coa: number
+  runs_in_chosen: number
+  share_of_chosen: number
+}
+
+/**
  * One arm's contrast against the control. The only interpretable quantity here.
  */
 
@@ -241,16 +289,143 @@ export interface GraphEdge {
   target: string
   kind: string
   step_index: number
+  step_indices?: number[]
   weight?: number
 }
 
 /**
- * One logical step of the orchestration loop.
+ * What the simulation landing page states, and the caveats that gate reading it.
  *
- * `index` is a position in the loop, not a time. Nothing in `RunRecord` carries a
- * timestamp and nothing should: per-call timing would mean persisting `call_log`, which
- * holds every system and user prompt and is precisely what the access-matrix tests scan
- * (invariant 10).
+ * One arm — the one the reader is looking at — plus the contrast against the control.
+ * `facts` carries every number, so the generated prose beside it never has to state one.
+ */
+
+export interface LandingView {
+  session_id: string
+  label: string
+  scenario: ScenarioInfo | null
+  arm: string
+  arms: string[]
+  facts: SessionFacts
+  coa_support: CoaSupport
+  analysis?: SessionAnalysis | null
+  summary: SessionSummary
+}
+/**
+ * One committed scenario, as a client may see it.
+ *
+ * Two things are absent on purpose. `ground_truth_detail` is host-only and exists so
+ * misperception can be scored, not so anyone reading a scenario card can know the answer.
+ * `Scenario.notes` are the host's *design* commentary — what the ambiguity is meant to do
+ * and why the ground truth is withheld — and describing the mechanism to a viewer is a
+ * softer version of the same leak.
+ *
+ * What is shown instead is `observable_signature`: exactly what a collection apparatus
+ * could in principle see. It is the agent-visible half of the event by definition, and it
+ * is what makes the ambiguity legible without narrating it.
+ */
+
+export interface ScenarioInfo {
+  scenario_id: string
+  label: string
+  description: string
+  self_nation: string
+  adversary_nation: string
+  n_events: number
+  observable_signature?: string[]
+}
+/**
+ * The deterministic account of a session, for a header to state without interpreting.
+ *
+ * Exists for the same reason `RunFacts` does: the generated prose beside it never has to
+ * carry a number it could get wrong. Every field is read or arithmetic over what was read.
+ *
+ * `d_mean_rung` and `d_p_nuclear` are `None` when the control arm was not run. That is the
+ * honest state — absolute rates are not findings, so with no control there is no
+ * interpretable quantity here at all, and a zero would read as "no difference" rather than
+ * as "no comparison".
+ */
+
+export interface SessionFacts {
+  arm: string
+  n: number
+  mean_rung: number
+  median_rung: number
+  p_nuclear: number
+  modal_action: string
+  modal_action_share: number
+  d_mean_rung?: number | null
+  d_p_nuclear?: number | null
+  control_arm?: string | null
+  declared_panel_size?: number
+  mean_run_coverage?: number
+  out_of_record_rate?: number
+  beliefs_share?: number
+  actions?: ActionCount[]
+  n_with_coas?: number
+}
+/**
+ * One action, how often it was proposed, and how often it was taken.
+ */
+
+export interface ActionCount {
+  action: string
+  rung: number
+  is_nuclear: boolean
+  proposed: number
+  chosen: number
+}
+/**
+ * Per-persona grounding of the option the President took.
+ *
+ * **This is not influence and must never be labelled as it.** It says whose opinions the
+ * Advisor cited when it built the option that was chosen — a recorded fact about the
+ * document, not a measurement of what anyone changed. A persona could be cited in every
+ * chosen option and change nothing, or be cited in none and have shifted which options
+ * were proposed at all.
+ *
+ * Causal attribution comes from the `loo_*` forced-exclusion arms, where the persona is
+ * absent from the panel, every roster and every prompt, and the world is re-run without
+ * them. That is a contrast between arms and lives in the influence panel.
+ */
+
+export interface SessionAnalysis {
+  session_id: string
+  arm: string
+  sentences?: string[]
+  model?: string
+  caveat?: string
+}
+/**
+ * Per-arm distributions, contrasts against the control, and the caveats.
+ *
+ * The caveats are fields rather than prose because a client has to be able to render them
+ * above the charts. A number that travels without them is how an absolute escalation rate
+ * becomes a finding about nuclear strategists, which it is not.
+ */
+
+export interface SessionSummary {
+  session_id: string
+  label: string
+  scenario_id: string
+  arms: ArmSummary[]
+  deltas: Delta[]
+  control_arm?: string
+  has_control?: boolean
+  warnings?: string[]
+  backend?: string
+  models?: {
+    [k: string]: string
+  }
+  grounded?: boolean
+  cache_enabled?: boolean
+  retrieval_mode?: string
+  est_cost_usd?: number
+  smoke_test?: boolean
+  mock?: boolean
+}
+/**
+ * One arm's distribution and diagnostics, with the conditions that produced them.
  */
 
 export interface LoopStep {
@@ -261,6 +436,7 @@ export interface LoopStep {
   kind: string
   label: string
   payload_ref: string
+  excerpt?: string
   question_id?: string | null
   persona_id?: string | null
 }
@@ -378,6 +554,7 @@ export interface PresidentialAction {
    * Qualitative data only. Never an input to the rung.
    */
   justification: string
+  chosen_coa_id?: string | null
   rung: number
   is_nuclear: boolean
 }
@@ -409,6 +586,46 @@ export interface ProgressEvent {
   est_cost_usd?: number
   cumulative_cost_usd?: number
   failure?: string | null
+}
+
+/**
+ * Cited passages → theorist positions → proposed courses of action → the decision.
+ *
+ * **Complete only for records written under ADR 0006.** `CourseOfAction.supporting_opinions`
+ * is what links an option to the opinions it rests on; before that field existed there was
+ * nothing to draw the middle of this chain from, and inferring it by matching words would
+ * be fabricating the exact relationship the diagram claims to show. A record without
+ * courses of action therefore yields the passage→opinion half and says why the rest is
+ * missing, rather than rendering an empty stage.
+ */
+
+export interface ProvenanceFlow {
+  nodes: ProvenanceNode[]
+  links: ProvenanceLink[]
+  coa_stage: string
+  coa_note?: string
+  schema_version?: string
+}
+/**
+ * One thing in the chain from source text to decision.
+ */
+
+export interface ProvenanceNode {
+  id: string
+  kind: string
+  label: string
+  detail?: string
+  chosen?: boolean
+  declined?: boolean
+  persona_id?: string | null
+  question_id?: string | null
+}
+
+export interface ProvenanceLink {
+  source: string
+  target: string
+  kind: string
+  chosen?: boolean
 }
 
 /**
@@ -464,6 +681,7 @@ export interface RunRecord {
   routing?: RoutingRecord[]
   opinions?: TheoristOpinion[]
   advisor_brief?: AdvisorBrief | null
+  courses_of_action?: CourseOfAction[]
   unsupported_citations?: string[]
   action: PresidentialAction
   rung: number
@@ -525,6 +743,19 @@ export interface TheoristOpinion {
  * isolates.
  */
 
+export interface CourseOfAction {
+  coa_id: string
+  action: ActionType
+  /**
+   * The Advisor's own case for this action, grounded in citations.
+   */
+  rationale: string
+  supporting_opinions?: string[]
+}
+/**
+ * Exactly one typed action, plus the justification that did not produce it.
+ */
+
 export interface RepresentativeView {
   arm: string
   representative: RepresentativeRun
@@ -536,6 +767,7 @@ export interface RepresentativeView {
   narrative?: RunNarrative | null
   engagement: EngagementSummary
   flow: PipelineFlow
+  provenance: ProvenanceFlow
   host_ground_truth?: {
     [k: string]: string
   } | null
@@ -653,18 +885,8 @@ export interface RunConfig {
 }
 
 /**
- * The closed set of actions available to the President.
+ * A stored three-sentence summary, tied to the run it describes.
  */
-
-export interface ScenarioInfo {
-  scenario_id: string
-  label: string
-  description: string
-  self_nation: string
-  adversary_nation: string
-  n_events: number
-  observable_signature?: string[]
-}
 
 export interface SessionCreated {
   session_id: string
@@ -716,28 +938,4 @@ export interface ArmProgress {
  * order of magnitude across roles and are not known until something has run; quoting one
  * would be inventing the most quotable number in the response. Actual spend is metered
  * from each record's `est_cost_usd` as the session runs.
- */
-
-export interface SessionSummary {
-  session_id: string
-  label: string
-  scenario_id: string
-  arms: ArmSummary[]
-  deltas: Delta[]
-  control_arm?: string
-  has_control?: boolean
-  warnings?: string[]
-  backend?: string
-  models?: {
-    [k: string]: string
-  }
-  grounded?: boolean
-  cache_enabled?: boolean
-  retrieval_mode?: string
-  est_cost_usd?: number
-  smoke_test?: boolean
-  mock?: boolean
-}
-/**
- * One arm's distribution and diagnostics, with the conditions that produced them.
  */

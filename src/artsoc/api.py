@@ -41,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from artsoc.config import base_defaults, list_arms, load_arm, varied_fields
 from artsoc.metrics import CONTROL_ARM
-from artsoc.narrative import RunNarrative
+from artsoc.narrative import AnalysisAnswer, RunNarrative, SessionAnalysis
 from artsoc.retrieval import resolve_passages
 from artsoc.schema import RunRecord
 from artsoc.session import (
@@ -52,10 +52,13 @@ from artsoc.session import (
     SessionState,
     SessionSummary,
     arm_records,
+    ask_analysis,
     create_session,
+    ensure_analysis,
     ensure_narrative,
     estimate_calls,
     list_sessions,
+    load_analysis,
     load_narrative,
     load_session,
     run_session,
@@ -63,20 +66,26 @@ from artsoc.session import (
 )
 from artsoc.views import (
     AgentDetail,
+    CoaSupport,
     EngagementSummary,
     InteractionGraph,
     LoopStep,
     PipelineFlow,
+    ProvenanceFlow,
     RepresentativeRun,
     RunFacts,
+    SessionFacts,
     agent_details,
+    coa_support,
     engagement_stats,
     interaction_graph,
     loop_steps,
     panel_for,
     pipeline_flow,
+    provenance_flow,
     representative_run,
     run_facts,
+    session_facts,
 )
 from artsoc.world import SCENARIO_DIR, load_scenario
 
@@ -186,6 +195,39 @@ class PassageLookup(BaseModel):
     )
 
 
+class LandingView(BaseModel):
+    """What the simulation landing page states, and the caveats that gate reading it.
+
+    One arm — the one the reader is looking at — plus the contrast against the control.
+    `facts` carries every number, so the generated prose beside it never has to state one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    label: str
+    scenario: ScenarioInfo | None
+    #: The arm this page is about. Defaults to a full-loop arm rather than the control,
+    #: whose distribution is the base rate and not what anyone opened the page to read.
+    arm: str
+    arms: list[str]
+    facts: SessionFacts
+    #: Whose opinions the chosen course of action cited. NOT influence — the model carries
+    #: its own note saying so, and the UI renders it.
+    coa_support: CoaSupport
+    #: Present once generated. Null until someone asks, the same as `RunNarrative`.
+    analysis: SessionAnalysis | None = None
+    summary: SessionSummary
+
+
+class AnalysisQuestion(BaseModel):
+    """One follow-up. The only thing a client may send to the analysis endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=1000)
+
+
 class RepresentativeView(BaseModel):
     """The representative run, its derived views, and its provenance in one payload.
 
@@ -214,6 +256,9 @@ class RepresentativeView(BaseModel):
     narrative: RunNarrative | None = None
     engagement: EngagementSummary
     flow: PipelineFlow
+    #: Cited passages → theorist positions → proposed courses of action → the decision.
+    #: Every link comes from an id the record holds; none is inferred from wording.
+    provenance: ProvenanceFlow
     #: Present only when explicitly requested. Host-only: it is in the record so an analyst
     #: can score misperception, and no agent in the run ever saw it.
     host_ground_truth: dict[str, str] | None = None
@@ -259,24 +304,10 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/scenarios", response_model=list[ScenarioInfo])
     def get_scenarios() -> list[ScenarioInfo]:
-        out: list[ScenarioInfo] = []
-        for path in sorted(SCENARIO_DIR.glob("*.json")):
-            scenario = load_scenario(path.stem)
-            event = scenario.events[0] if scenario.events else None
-            out.append(
-                ScenarioInfo(
-                    scenario_id=scenario.scenario_id,
-                    label=(event.label.replace("_", " ").title() if event else path.stem),
-                    description=event.description if event else "",
-                    self_nation=scenario.self_nation,
-                    adversary_nation=scenario.adversary_nation,
-                    n_events=len(scenario.events),
-                    observable_signature=(
-                        list(event.observable_signature) if event else []
-                    ),
-                )
-            )
-        return out
+        return [
+            _scenario_info(load_scenario(path.stem), path.stem)
+            for path in sorted(SCENARIO_DIR.glob("*.json"))
+        ]
 
     @app.get("/api/arms", response_model=list[ArmInfo])
     def get_arms(scenario_id: str | None = None) -> list[ArmInfo]:
@@ -410,6 +441,87 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
         except (SessionError, FileNotFoundError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/api/sessions/{session_id}/landing", response_model=LandingView)
+    def get_landing(session_id: str, arm: str | None = None) -> LandingView:
+        """The simulation landing page: scenario, figures, and who grounded the choice."""
+        state = _session_or_404(session_id)
+        chosen_arm = arm or _default_arm(state)
+        if chosen_arm not in state.spec.arms:
+            raise HTTPException(status_code=404, detail=f"session has no arm {chosen_arm!r}")
+
+        try:
+            records = arm_records(session_id, chosen_arm)
+            summary = summarise_session(session_id)
+        except (SessionError, FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        arm_summary = next((s for s in summary.arms if s.arm == chosen_arm), None)
+        if arm_summary is None:
+            raise HTTPException(status_code=404, detail=f"no records for arm {chosen_arm!r}")
+        contrast = next((d for d in summary.deltas if d.arm == chosen_arm), None)
+
+        scenario = None
+        try:
+            loaded = load_scenario(state.spec.scenario_id)
+            scenario = _scenario_info(loaded, state.spec.scenario_id)
+        except FileNotFoundError:
+            # A session whose scenario file has since been renamed still has figures worth
+            # reading. The card is omitted rather than the page refused.
+            scenario = None
+
+        return LandingView(
+            session_id=session_id,
+            label=state.spec.label,
+            scenario=scenario,
+            arm=chosen_arm,
+            arms=list(state.spec.arms),
+            facts=session_facts(records, arm_summary, contrast),
+            coa_support=coa_support(records),
+            analysis=load_analysis(session_id, chosen_arm).analysis,
+            summary=summary,
+        )
+
+    @app.post(
+        "/api/sessions/{session_id}/analysis",
+        response_model=SessionAnalysis | None,
+    )
+    def post_analysis(
+        session_id: str, arm: str | None = None, regenerate: bool = Query(default=False)
+    ) -> SessionAnalysis | None:
+        """Generate this arm's interpretation, or return the one already stored.
+
+        A POST because the first call costs a model call. Idempotent after that: written to
+        disk and served from there, so a reader who revisits pays nothing and sees the same
+        text. A reading that changed on refresh would not be a record.
+        """
+        state = _session_or_404(session_id)
+        chosen_arm = arm or _default_arm(state)
+        if chosen_arm not in state.spec.arms:
+            raise HTTPException(status_code=404, detail=f"session has no arm {chosen_arm!r}")
+        return ensure_analysis(session_id, chosen_arm, regenerate=regenerate)
+
+    @app.post(
+        "/api/sessions/{session_id}/analysis/ask",
+        response_model=AnalysisAnswer | None,
+    )
+    def post_analysis_question(
+        session_id: str, body: AnalysisQuestion, arm: str | None = None
+    ) -> AnalysisAnswer | None:
+        """Answer one follow-up from the figures on the page, and nothing else.
+
+        Billed per distinct question and cached by it, so re-asking the same thing — in any
+        capitalisation — is free. The model is given summary statistics only: no record, no
+        prompt, and no `host_ground_truth`.
+        """
+        state = _session_or_404(session_id)
+        chosen_arm = arm or _default_arm(state)
+        if chosen_arm not in state.spec.arms:
+            raise HTTPException(status_code=404, detail=f"session has no arm {chosen_arm!r}")
+        try:
+            return ask_analysis(session_id, chosen_arm, body.question)
+        except SessionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/api/passages/{persona_id}", response_model=PassageLookup)
     def get_passages(persona_id: str, ids: str = Query(default="")) -> PassageLookup:
         """Resolve cited passage ids to the text behind them.
@@ -464,6 +576,7 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
             narrative=load_narrative(session_id, arm),
             engagement=engagement_stats(records),
             flow=pipeline_flow(records),
+            provenance=provenance_flow(record),
             host_ground_truth=dict(record.host_ground_truth) if reveal_ground_truth else None,
         ).model_dump(mode="json")
 
@@ -531,6 +644,53 @@ def _serve_frontend(app: FastAPI, static_dir: Path) -> None:
         ):
             return FileResponse(candidate)
         return FileResponse(index)
+
+
+#: Terms in scenario labels that are acronyms rather than words. Title-casing turns
+#: "tel_dispersal" into "Tel Dispersal", which reads as a name; TEL is a
+#: transporter-erector-launcher, and a page heading that misreads it is the most visible
+#: place to get the domain wrong.
+LABEL_ACRONYMS: frozenset[str] = frozenset({"tel", "icbm", "slbm", "c2", "nato", "eez", "sam"})
+
+
+def _humanise_label(label: str) -> str:
+    return " ".join(
+        part.upper() if part.lower() in LABEL_ACRONYMS else part.capitalize()
+        for part in label.split("_")
+    )
+
+
+def _scenario_info(scenario: Any, fallback_id: str) -> ScenarioInfo:
+    """A scenario as a client may see it. One definition, used by both routes that need it.
+
+    Neither `ground_truth_detail` nor `Scenario.notes` appears: the first is the host's
+    truth, and the second is the host's design commentary explaining what the ambiguity is
+    meant to do — describing the mechanism to a viewer is a softer version of the same leak.
+    `observable_signature` is shown instead, being the agent-visible half by definition.
+    """
+    event = scenario.events[0] if scenario.events else None
+    return ScenarioInfo(
+        scenario_id=scenario.scenario_id,
+        label=(_humanise_label(event.label) if event else fallback_id),
+        description=event.description if event else "",
+        self_nation=scenario.self_nation,
+        adversary_nation=scenario.adversary_nation,
+        n_events=len(scenario.events),
+        observable_signature=list(event.observable_signature) if event else [],
+    )
+
+
+def _default_arm(state: SessionState) -> str:
+    """The arm a page opens on: a full-loop one, not the control.
+
+    The control's distribution is the base rate the others are measured against, not a
+    result anyone opened the page to read. Opening on it would put the least interpretable
+    figures in front of the reader first.
+    """
+    for arm in state.spec.arms:
+        if arm != CONTROL_ARM:
+            return arm
+    return state.spec.arms[0]
 
 
 def _session_or_404(session_id: str) -> SessionState:

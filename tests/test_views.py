@@ -13,6 +13,7 @@ from one who was never there).
 from __future__ import annotations
 
 import json
+from collections import Counter
 
 import pytest
 
@@ -22,16 +23,21 @@ from artsoc.narrative import INSTRUCTION, build_prompt, summarise_run
 from artsoc.schema import RunRecord
 from artsoc.sim import run_once
 from artsoc.views import (
+    EXCERPT_CHARS,
     PHANTOM,
     WORLD,
+    LoopStep,
     agent_details,
+    coa_support,
     engagement_stats,
     interaction_graph,
     loop_steps,
     panel_for,
     pipeline_flow,
+    provenance_flow,
     representative_run,
     run_facts,
+    session_facts,
 )
 
 
@@ -601,3 +607,344 @@ def test_the_narrative_instruction_forbids_causal_language() -> None:
     assert "gave as its reason" in INSTRUCTION
     assert "because" in INSTRUCTION, "the prohibition names the word it forbids"
     assert "did not determine it" in INSTRUCTION
+
+
+# ---------------------------------------------------------------------------
+# Provenance. Every link comes from a recorded id. A link inferred from wording would look
+# identical on screen and mean nothing, and nothing downstream could tell the two apart.
+# ---------------------------------------------------------------------------
+
+
+def test_the_chain_runs_from_cited_passages_to_the_action_taken(
+    baseline_record: RunRecord,
+) -> None:
+    flow = provenance_flow(baseline_record)
+    kinds = {n.kind for n in flow.nodes}
+    assert {"opinion", "coa", "decision"} <= kinds
+    assert flow.coa_stage == "present"
+
+    decision = [n for n in flow.nodes if n.kind == "decision"]
+    assert len(decision) == 1
+    assert decision[0].label == baseline_record.action.action.value
+
+
+def test_every_link_joins_two_declared_nodes(baseline_record: RunRecord) -> None:
+    """A dangling edge draws a relationship between something and nothing."""
+    flow = provenance_flow(baseline_record)
+    ids = {n.id for n in flow.nodes}
+    for link in flow.links:
+        assert link.source in ids and link.target in ids
+
+
+def test_a_supporting_link_exists_only_where_the_advisor_recorded_one(
+    baseline_record: RunRecord,
+) -> None:
+    """`CourseOfAction.supporting_opinions` is the only source for this stage (ADR 0006)."""
+    recorded = {
+        (coa.coa_id, key)
+        for coa in baseline_record.courses_of_action
+        for key in coa.supporting_opinions
+    }
+    drawn = {
+        (link.target.removeprefix("coa:"), link.source.removeprefix("opinion:"))
+        for link in provenance_flow(baseline_record).links
+        if link.kind == "supports"
+    }
+    assert drawn <= recorded, "a supporting link was drawn that the record does not hold"
+
+
+def test_the_chosen_path_is_the_one_the_president_took(
+    baseline_record: RunRecord,
+) -> None:
+    flow = provenance_flow(baseline_record)
+    chosen_coas = [n for n in flow.nodes if n.kind == "coa" and n.chosen]
+    assert len(chosen_coas) == 1
+    assert chosen_coas[0].id == f"coa:{baseline_record.action.chosen_coa_id}"
+
+    # An opinion is on the path exactly when the chosen option cited it.
+    chosen = next(
+        c
+        for c in baseline_record.courses_of_action
+        if c.coa_id == baseline_record.action.chosen_coa_id
+    )
+    on_path = {
+        n.id.removeprefix("opinion:") for n in flow.nodes if n.kind == "opinion" and n.chosen
+    }
+    assert on_path <= set(chosen.supporting_opinions)
+
+
+def test_a_passage_is_on_the_path_only_through_an_opinion_that_is(
+    baseline_records: list[RunRecord],
+) -> None:
+    """Provenance is transitive through recorded links, never asserted directly."""
+    for record in baseline_records:
+        flow = provenance_flow(record)
+        opinions_on_path = {n.id for n in flow.nodes if n.kind == "opinion" and n.chosen}
+        for node in flow.nodes:
+            if node.kind != "passage" or not node.chosen:
+                continue
+            feeds = {
+                link.target
+                for link in flow.links
+                if link.kind == "cites" and link.source == node.id
+            }
+            assert feeds & opinions_on_path, f"{node.id} is on the path via nothing"
+
+
+def test_a_declining_opinion_stays_in_the_chain(baseline_records: list[RunRecord]) -> None:
+    """Dropping declines would show a panel that was never asked rather than one that was
+    asked and had nothing in its record to offer."""
+    declined = [
+        n
+        for record in baseline_records
+        for n in provenance_flow(record).nodes
+        if n.kind == "opinion" and n.declined
+    ]
+    assert declined, "this fixture is only useful if someone declined"
+
+
+def test_a_record_without_courses_of_action_says_so_rather_than_drawing_nothing() -> None:
+    """The control arm has no panel to ground an option in, and records written before ADR
+    0006 have no such field. Either way the stage is absent, not empty."""
+    flow = provenance_flow(_run("escalation_prior", 1))
+    assert flow.coa_stage == "absent"
+    assert "ADR 0006" in flow.coa_note
+    assert not [n for n in flow.nodes if n.kind == "coa"]
+    assert [n for n in flow.nodes if n.kind == "decision"]
+
+
+def test_provenance_is_deterministic(baseline_record: RunRecord) -> None:
+    assert provenance_flow(baseline_record) == provenance_flow(baseline_record)
+
+
+# ---------------------------------------------------------------------------
+# Course-of-action support. A recorded property of the Advisor's document — not influence.
+# ---------------------------------------------------------------------------
+
+
+def test_coa_support_counts_only_what_the_chosen_option_cited(
+    baseline_records: list[RunRecord],
+) -> None:
+    support = coa_support(baseline_records)
+    expected: Counter[str] = Counter()
+    for record in baseline_records:
+        chosen = [
+            c for c in record.courses_of_action if c.coa_id == record.action.chosen_coa_id
+        ]
+        if not chosen:
+            continue
+        expected.update({k.split(":", 1)[-1] for k in chosen[0].supporting_opinions})
+
+    for person in support.personas:
+        assert person.runs_in_chosen == expected[person.persona_id]
+
+
+def test_coa_support_refuses_to_call_itself_influence(
+    baseline_records: list[RunRecord],
+) -> None:
+    """Whose opinions an option cited is a fact about the document, not a measure of what
+    anyone changed. Causal attribution comes from the loo_* arms."""
+    note = coa_support(baseline_records).note.lower()
+    assert "not a measure of influence" in note
+    assert "loo_" in note
+    dumped = coa_support(baseline_records).model_dump()
+    assert not any("influence" in key for key in dumped)
+
+
+def test_coa_support_is_empty_but_valid_for_an_arm_with_no_options() -> None:
+    """The control arm proposes none, so every count is zero and none is missing."""
+    support = coa_support(_sweep("escalation_prior", 3))
+    assert support.n_with_coas == 0
+    assert all(p.runs_in_chosen == 0 and p.share_of_chosen == 0.0 for p in support.personas)
+
+
+def test_coa_support_is_deterministic(baseline_records: list[RunRecord]) -> None:
+    assert coa_support(baseline_records) == coa_support(baseline_records)
+
+
+def test_coa_support_refuses_to_mix_arms(baseline_records: list[RunRecord]) -> None:
+    with pytest.raises(ValueError, match="one arm"):
+        coa_support([baseline_records[0], _run("small_panel", 1)])
+
+
+# ---------------------------------------------------------------------------
+# Session facts. The numbers a landing page states, so the prose beside it states none.
+# ---------------------------------------------------------------------------
+
+
+def test_session_facts_reports_the_delta_only_when_a_control_was_run(
+    baseline_records: list[RunRecord],
+) -> None:
+    """Absolute rates are not findings. With no control there is no interpretable quantity,
+    and a zero would read as 'no difference' rather than as 'no comparison'."""
+    from artsoc.metrics import delta, summarise
+
+    arm = summarise(baseline_records)
+    control = summarise(_sweep("escalation_prior", 6))
+
+    assert session_facts(baseline_records, arm).d_mean_rung is None
+    assert session_facts(baseline_records, arm).control_arm is None
+
+    with_control = session_facts(baseline_records, arm, delta(arm, control))
+    assert with_control.d_mean_rung == round(arm.mean_rung - control.mean_rung, 3)
+    assert with_control.control_arm == "escalation_prior"
+
+
+def test_session_facts_never_disagrees_with_the_arm_summary(
+    baseline_records: list[RunRecord],
+) -> None:
+    """It takes the summary rather than recomputing, so the landing page and the report
+    cannot state different numbers for the same sweep."""
+    from artsoc.metrics import summarise
+
+    arm = summarise(baseline_records)
+    facts = session_facts(baseline_records, arm)
+    assert (facts.mean_rung, facts.p_nuclear, facts.n) == (arm.mean_rung, arm.p_nuclear, arm.n)
+
+
+def test_session_facts_separates_actions_proposed_from_actions_taken(
+    baseline_records: list[RunRecord],
+) -> None:
+    """Three options are offered and one is taken, so the two counts differ and conflating
+    them would overstate what the President did."""
+    from artsoc.metrics import summarise
+
+    facts = session_facts(baseline_records, summarise(baseline_records))
+    assert sum(a.chosen for a in facts.actions) == len(baseline_records)
+    assert sum(a.proposed for a in facts.actions) > sum(a.chosen for a in facts.actions)
+    for action in facts.actions:
+        assert action.is_nuclear == (action.rung >= 6)
+
+
+# ---------------------------------------------------------------------------
+# Step excerpts, and the per-step edges that let playback distinguish one deliberation
+# from the next.
+# ---------------------------------------------------------------------------
+
+
+def test_every_edge_names_every_step_it_covers(baseline_record: RunRecord) -> None:
+    """The Advisor consults twelve personas one at a time. Collapsing those to a single
+    first index made playback light the edge once and then sit still, so a viewer stepping
+    through could not tell one consultation from the next."""
+    steps = loop_steps(baseline_record)
+    graph = interaction_graph(baseline_record)
+
+    covered = sorted(
+        index
+        for edge in graph.edges
+        if edge.kind != "hallucinated"
+        for index in edge.step_indices
+    )
+    assert covered == list(range(len(steps))), "every step belongs to exactly one edge"
+
+
+def test_an_edges_step_indices_agree_with_its_weight(baseline_record: RunRecord) -> None:
+    for edge in interaction_graph(baseline_record).edges:
+        assert edge.weight == len(edge.step_indices)
+        assert edge.step_index == edge.step_indices[0]
+        assert edge.step_indices == sorted(edge.step_indices)
+
+
+def test_each_step_index_maps_back_to_the_pair_that_made_it(
+    baseline_record: RunRecord,
+) -> None:
+    steps = {s.index: s for s in loop_steps(baseline_record)}
+    for edge in interaction_graph(baseline_record).edges:
+        if edge.kind == "hallucinated":
+            continue
+        for index in edge.step_indices:
+            step = steps[index]
+            assert (step.actor, step.recipient, step.kind) == (
+                edge.source,
+                edge.target,
+                edge.kind,
+            )
+
+
+def test_every_step_that_produced_text_carries_an_excerpt(
+    baseline_record: RunRecord,
+) -> None:
+    for step in loop_steps(baseline_record):
+        if step.kind == "select" and not baseline_record.routing[0].rationale:
+            continue  # tag routing states no reason, because nobody reasoned
+        assert step.excerpt, f"step {step.index} ({step.kind}) has no excerpt"
+
+
+def test_an_excerpt_is_a_truncation_of_the_record_never_a_paraphrase(
+    baseline_record: RunRecord,
+) -> None:
+    """A caption that summarised would be a second account of what was said, sitting beside
+    the first and free to disagree with it."""
+    for step in loop_steps(baseline_record):
+        if not step.excerpt:
+            continue
+        source = " ".join(_source_text(baseline_record, step).split())
+        opening = step.excerpt.rstrip("…")
+        assert source.startswith(opening), f"step {step.index} was not a prefix of its source"
+
+
+def test_an_excerpt_is_bounded_and_cut_on_a_word(baseline_record: RunRecord) -> None:
+    for step in loop_steps(baseline_record):
+        assert len(step.excerpt) <= EXCERPT_CHARS + 1
+        assert "\n" not in step.excerpt
+        if step.excerpt.endswith("…"):
+            assert not step.excerpt.rstrip("…").endswith(" ")
+
+
+def test_a_consultation_shows_the_question_not_the_answer(
+    baseline_record: RunRecord,
+) -> None:
+    """The answer is the step after it. Showing it on the consultation would put the reply
+    before the asking."""
+    questions = {q.question_id: q.text for q in baseline_record.questions}
+    for step in loop_steps(baseline_record):
+        if step.kind != "consult":
+            continue
+        expected = " ".join(questions[step.question_id or ""].split())
+        assert expected.startswith(step.excerpt.rstrip("…"))
+
+
+def test_a_declining_step_still_says_what_the_persona_said(
+    baseline_records: list[RunRecord],
+) -> None:
+    """A decline states no position, so the excerpt falls back to the reasoning. An empty
+    caption would render the escape hatch firing as nothing having happened."""
+    declines = [
+        step
+        for record in baseline_records
+        for step in loop_steps(record)
+        if step.kind == "decline"
+    ]
+    assert declines, "this fixture is only useful if someone declined"
+    assert all(step.excerpt for step in declines)
+
+
+def test_excerpts_carry_no_prompt(baseline_records: list[RunRecord]) -> None:
+    """Invariant 10. These are drawn onto a graph in a browser, which is a new surface."""
+    for record in baseline_records:
+        for step in loop_steps(record):
+            assert "[[ROLE:" not in step.excerpt
+            assert "[[WHO:" not in step.excerpt
+
+
+def _source_text(record: RunRecord, step: LoopStep) -> str:
+    """The record field an excerpt is taken from, resolved the way `loop_steps` does."""
+    target = _deref(record, step.payload_ref)
+    if step.kind == "perception":
+        return target.description
+    if step.kind == "brief":
+        return target.summary
+    if step.kind in {"query", "formulate"}:
+        return target.text
+    if step.kind == "select":
+        return target.rationale
+    if step.kind == "consult":
+        question = next(
+            q for q in record.questions if q.question_id == step.question_id
+        )
+        return question.text
+    if step.kind in {"opine", "decline"}:
+        return target.position or target.reasoning
+    if step.kind == "synthesise":
+        return target.summary
+    return target.justification

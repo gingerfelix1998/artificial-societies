@@ -16,7 +16,14 @@ import type {
   SessionCreated,
   SessionSpecRequest,
 } from '../types/api'
-import type { RunNarrative, SessionState, SessionSummary } from '../types/artsoc'
+import type {
+  AnalysisAnswer,
+  LandingView,
+  RunNarrative,
+  SessionAnalysis,
+  SessionState,
+  SessionSummary,
+} from '../types/artsoc'
 
 export class ApiError extends Error {
   constructor(
@@ -91,6 +98,35 @@ export const api = {
   session: (id: string) => request<SessionState>(`/api/sessions/${id}`),
 
   summary: (id: string) => request<SessionSummary>(`/api/sessions/${id}/summary`),
+
+  landing: (id: string, arm?: string) =>
+    request<LandingView>(
+      `/api/sessions/${id}/landing` + (arm ? `?arm=${encodeURIComponent(arm)}` : ''),
+    ),
+
+  /**
+   * Generate this arm's interpretation, or fetch the one already stored.
+   *
+   * A POST because the first call costs a model call; idempotent after that, so a reader
+   * who revisits pays nothing and sees the same text. A reading that changed on refresh
+   * would not be a record.
+   */
+  analysis: (id: string, arm?: string, regenerate = false) =>
+    request<SessionAnalysis | null>(
+      `/api/sessions/${id}/analysis?` +
+        new URLSearchParams({
+          ...(arm ? { arm } : {}),
+          ...(regenerate ? { regenerate: 'true' } : {}),
+        }).toString(),
+      { method: 'POST' },
+    ),
+
+  /** Ask one follow-up. Billed per distinct question and cached by it. */
+  ask: (id: string, question: string, arm?: string) =>
+    request<AnalysisAnswer | null>(
+      `/api/sessions/${id}/analysis/ask` + (arm ? `?arm=${encodeURIComponent(arm)}` : ''),
+      { method: 'POST', body: JSON.stringify({ question }) },
+    ),
 
   /**
    * Ask what a session would cost without starting it. The server refuses an unconfirmed

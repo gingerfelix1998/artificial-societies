@@ -53,7 +53,7 @@ export default function LoopGantt({
   const stepWidth = Math.max(2, trackWidth / total)
 
   return (
-    <div className="scroll-x">
+    <div className="scroll-x chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img">
         <title>Agent activity by loop step</title>
 
@@ -64,7 +64,8 @@ export default function LoopGantt({
             y={0}
             width={Math.max(0, width - PADDING - x(cursor) - stepWidth)}
             height={height - 24}
-            fill="rgba(18,20,26,0.72)"
+            fill="var(--paper)"
+            opacity={0.72}
           />
         )}
 
@@ -80,10 +81,10 @@ export default function LoopGantt({
                 fontSize={11}
                 fill={
                   selectedAgent === row.id
-                    ? '#f2c14e'
+                    ? 'var(--accent)'
                     : row.state === 'unconsulted' || row.state === 'excluded'
-                      ? '#4a5160'
-                      : '#9aa3b2'
+                      ? 'var(--ink-4)'
+                      : 'var(--ink-2)'
                 }
                 opacity={row.state === 'unconsulted' ? 0.5 : 1}
                 onClick={onSelectAgent ? () => onSelectAgent(row.id) : undefined}
@@ -97,7 +98,7 @@ export default function LoopGantt({
                 y={y + 4}
                 width={trackWidth}
                 height={ROW_HEIGHT - 10}
-                fill="#1a1d26"
+                fill="var(--paper-3)"
                 rx={2}
               />
 
@@ -128,14 +129,14 @@ export default function LoopGantt({
           x2={width - PADDING}
           y1={height - 22}
           y2={height - 22}
-          stroke="#2e3440"
+          stroke="var(--rule-2)"
         />
         {tickIndices(total).map((tick) => (
-          <text key={tick} x={x(tick)} y={height - 8} fontSize={10} fill="#6b7383">
+          <text key={tick} x={x(tick)} y={height - 8} fontSize={10} fill="var(--ink-4)">
             {tick}
           </text>
         ))}
-        <text x={LABEL_WIDTH} y={height - 8} textAnchor="end" fontSize={10} fill="#6b7383">
+        <text x={LABEL_WIDTH} y={height - 8} textAnchor="end" fontSize={10} fill="var(--ink-4)">
           Loop step
         </text>
       </svg>
@@ -207,19 +208,19 @@ function buildRows(steps: LoopStep[], nodes: GraphNode[]): Row[] {
 }
 
 function colourFor(kind: string, state: string): string {
-  if (state === 'excluded') return '#8b5a8f'
+  if (state === 'excluded') return 'var(--excluded)'
   switch (kind) {
     case 'perception':
-      return '#4a5160'
+      return 'var(--ink-4)'
     case 'decline':
-      return '#e0a355'
+      return 'var(--declined)'
     case 'decide':
-      return '#d05a5a'
+      return 'var(--nuclear)'
     case 'consult':
     case 'select':
-      return '#3d5a8a'
+      return 'var(--rule-2)'
     default:
-      return '#6ea8fe'
+      return 'var(--accent)'
   }
 }
 

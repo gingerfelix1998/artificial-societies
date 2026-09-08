@@ -185,6 +185,7 @@ where a claim is currently false or unsupportable.
 | Outcome metrics, diagnostics, report rendering | `src/artsoc/metrics.py` |
 | CLI surface and the flag invariant | `src/artsoc/cli.py` |
 | Derived views a client consumes, all tested here | `src/artsoc/views.py` |
+| Model-written summaries, and what they may see | `src/artsoc/narrative.py` |
 | Sessions, the cost gate, provenance flags | `src/artsoc/session.py` |
 | Local read-only API (optional `api` extra) | `src/artsoc/api.py` |
 | The localhost viewer | `frontend/`, and `frontend/README.md` first |

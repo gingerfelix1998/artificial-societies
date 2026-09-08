@@ -1,12 +1,11 @@
-# `artsoc` local frontend
+# `artsoc` local viewer
 
-A localhost-only React + TypeScript viewer for creating simulation sessions, running them,
-and inspecting one representative run in detail. Demoware: it shows the instrument working.
-It is not a way to configure an experiment.
+A localhost-only React + TypeScript reader for simulation sessions. Three pages: a
+simulation, the sweep it produced, and one replication in full.
 
-Built to `docs/prompts/02-frontend.md`. Read that first, then `CLAUDE.md`,
-`docs/framework/measurement.md` and `docs/framework/access-matrix.md`. This document covers
-only what running it needs and where it departed from the spec.
+Read `CLAUDE.md`, `docs/framework/measurement.md` and `docs/framework/access-matrix.md`
+first. This document covers only what running it needs, what it may and may not show, and
+where it departed from `docs/prompts/02-frontend.md`.
 
 ## Running it
 
@@ -20,98 +19,114 @@ make demo             # build the UI and serve it with the API on http://127.0.0
 For development, two processes instead: `make api` (port 8000) and `make ui` (port 5173,
 proxying `/api`).
 
-**Every session started from this UI spends money.** `configs/base.yaml` names the backend
-and currently declares a live one. `make demo-fixture` produces a free mock-backed session
-to develop and demo against; it is banner-marked as mock and nothing it produces is a
-finding.
+**Every session started from this UI spends money**, and so does every distinct question
+asked of the interpretation panel. `configs/base.yaml` names the backend and currently
+declares a live one. `make demo-fixture` produces a free mock-backed session to develop and
+demo against; it is banner-marked as mock and nothing it produces is a finding.
+
+## The three pages
+
+**A simulation** (`/sessions/:id`) — the scenario, a three-line account of how the society
+responded, the headline figures, and whose positions the chosen course of action cited. Two
+entry cards lead to the sub-pages.
+
+**Across all runs** (`/sessions/:id/macro`) — diagnostics first, because they gate whether
+anything below may be read; then the rung distributions, because the distribution is the
+result; then the contrasts, because they are the only interpretable quantity. Then the
+course-of-action spread, panel engagement, per-theorist attribution, and a written
+interpretation with follow-up questions.
+
+**One run in full** (`/sessions/:id/run/:arm`) — the panel as an interactive graph, any
+participant openable for what they were asked and what they answered, the provenance chain
+from cited source text to the decision, the activity timeline and the event log. All four
+share one playback cursor, pinned to the bottom of the viewport.
+
+Each deliberation is its own step. An edge is revealed once any step it covers has
+happened, not at the first — the Advisor consults each persona in turn, and lighting the
+whole edge at the first consultation made every one after it invisible to someone stepping
+through. The step at the cursor is drawn in ink while the rest recede, and its opening
+words are captioned over the edge it travelled or, for a step with no counterpart, over the
+participant that took it. The caption is `LoopStep.excerpt` — a truncation of the record's
+own words produced in `views.py`, never a paraphrase, which would be a second account of
+what was said sitting beside the first.
 
 ## What it may and may not do
 
-The guardrails are not conventions — several of them are the difference between a defensible
-result and an undefendable one.
+Several of these are the difference between a defensible result and an undefendable one.
 
 - **It selects among committed configs. It cannot define one.** The request body is a
-  `SessionSpec`: a scenario id, arm *names*, `n` and `seed0`. Arm names are resolved against
-  `configs/arms/`, so a UI control cannot construct a configuration no file describes
+  `SessionSpec`: a scenario id, arm *names*, `n` and `seed0`. Arm names resolve against
+  `configs/arms/`, so no control can construct a configuration no file describes
   (invariants 5 and 11).
 - **`escalation_prior` is locked on.** Absolute escalation rates are not findings; only the
-  delta against the control is interpretable. A session without it is offered nowhere.
-- **Provenance and warnings render above the charts**, because `docs/framework/measurement.md`
-  treats them as gates on interpretation rather than footnotes.
-- **Term frequency is never called theme coding.** There is no theme coder in this project.
+  delta against the control is interpretable.
+- **Diagnostics render above the figures**, because `docs/framework/measurement.md` treats
+  them as gates on interpretation rather than footnotes.
+- **Course-of-action support is never called influence.** It records whose opinions the
+  Advisor cited when writing the option that was chosen — a property of that document, not
+  a measure of what anyone changed. Causal attribution comes from the `loo_*` arms only.
+- **A provenance link is drawn only from a recorded id.** Never from lexical overlap: such a
+  link would look identical on screen and mean nothing.
 - **The representative run is never called the result**, and its arm's distribution stays on
   the same screen.
 - **`host_ground_truth` needs the reveal toggle** and is labelled host-only.
-- **No prompt reaches the browser.** `RunRecord` carries none, because `call_log` is never
-  persisted into it (invariant 10). The analytical question *is* shown — it is recorded
-  output written by the Advisor, not the prompt a theorist was sent.
-- **A cited passage can be read, and an invented one is marked as invented.**
-  `GET /api/passages/{persona}` resolves ids from a record against that persona's own store.
-  It is analyst-facing and outside the retrieval path: it never selects, ranks or assembles
-  a block, and an id the store does not contain comes back as `unresolved` rather than being
-  filled in — that rate is the citation-integrity finding.
+- **No prompt reaches the browser.** `RunRecord` carries none (invariant 10). The analytical
+  question *is* shown — it is recorded output written by the Advisor, not a prompt.
+- **The written interpretation is labelled interpretation.** It is given summary statistics
+  and diagnostics only — no transcript, no prompt, no ground truth — and it adds nothing to
+  the figures it describes. It cannot touch the rung (invariant 2).
+
+## Design
+
+Editorial rather than dashboard: paper ground, serif display against a clean sans body,
+hairline rules, whitespace instead of boxes. Colour is scarce on purpose and each signal
+colour has exactly one meaning — the nuclear threshold, the chosen path through a decision,
+a declined answer, a warning that gates interpretation. When everything is coloured nothing
+reads as a signal, and the diagnostics here are what must never become easy to skip past.
+
+Charts are hand-rolled SVG. They are bar charts over a fixed nine-value scale plus a
+four-stage flow; a chart library brings a default idiom that has to be fought and, in the
+case of the one previously used here, weighed more than the rest of the application. The
+force layout for the panel graph is the only remaining chart dependency (`d3-force`), and it
+is layout maths rather than styling — run to a fixed tick count so the same run always draws
+the same picture.
 
 ## Types are generated
 
 `src/types/artsoc.ts` is produced by `make types` from `RunRecord`, the `views.py` models,
-`session.py` and — via `TypeAdapter` — the `metrics` dataclasses. Do not hand-edit it. A
-hand-maintained copy drifts from the schema the moment a field moves, and the drift surfaces
-as a blank panel rather than a compile error.
+`session.py`, `narrative.py`, the `api.py` response models and — via `TypeAdapter` — the
+`metrics` dataclasses. Do not hand-edit it. A hand-maintained copy drifts from the schema the
+moment a field moves, and the drift surfaces as a blank panel rather than a compile error.
 
-It is committed so the UI builds without a Python environment; the JSON Schema it is built
-from is an intermediate and is not.
+It is dumped in **serialization** mode, not the default validation mode: computed fields like
+`RoutingRecord.selected` and `PresidentialAction.rung` are written into records but are not
+inputs, so a validation schema omits them and a client typed from it cannot see a field the
+record plainly contains.
 
 ## Where this departed from the build spec
 
-Four places. Each is a case where the codebase did not match what the spec assumed, in the
-same spirit as the spec's own Part 0.
+Five places, each a case where the codebase did not match what `docs/prompts/02-frontend.md`
+assumed — in the same spirit as that document's own Part 0.
 
-**The Sankey's middle stage is the panel's basis mix, not the synthesis mode.**
-`synthesis_mode` is set by config, so within one arm it is a single node and the stage would
-carry no information. Basis mix — sources-led, belief-led, mostly declined — varies per
-replication and is the ADR 0004 diagnostic.
+**There is now a real provenance chain.** The spec was written before ADR 0006, when
+`CourseOfAction.supporting_opinions` did not exist and the middle of this chain could only
+have been inferred by matching words. It is now drawn from recorded ids end to end.
 
 **The cost gate quotes calls, not dollars.** Tokens per call vary by an order of magnitude
 across roles and are not known before a run, so a pre-run USD total would be the most
-quotable invented number on the page. The gate shows exact call counts per arm per role with
-each model's published rate; spend is then metered from each record's `est_cost_usd` as the
-session runs, and projected from what has actually billed.
+quotable invented number on the page. Spend is metered from each record's `est_cost_usd`.
 
-**Call counts are computed per arm.** The spec's flat
-`n × arms × (5 + n_questions × (1 + k_per_question))` over-counts `escalation_prior` tenfold:
-with `consult_panel: false` a replication makes two calls, not twenty.
+**Call counts are computed per arm.** The spec's flat formula over-counts `escalation_prior`
+tenfold: with `consult_panel: false` a replication makes two calls, not twenty.
 
-**Only one scenario ships.** `data/scenarios/` holds one file, and adding more means adding
-arm configs per scenario plus a Make variable, because `tests/test_configs.py` asserts the
-Makefile and `configs/arms/` cannot drift. The scenario picker is built for several and
-currently shows one.
+**The pipeline Sankey and the term cloud were dropped** in the redesign. The Sankey's middle
+stage carried no information within an arm, and term frequency over model output was a
+weaker version of what the provenance chain now shows properly. `views.pipeline_flow`
+remains in Python and tested; nothing renders it.
 
-## Reading the advisory exchange
-
-The run-detail view has two ways in, for two different questions.
-
-**Panel responses** is for reading. One block per analytical question: the question the
-Advisor wrote, its stated reason for choosing whom to ask, then each theorist's answer with
-position and reasoning separated, and the passages it cited expandable to their full text.
-
-**The event log** is chronological and drives playback, alongside the Gantt and the graph.
-
-Both present the loop as **fan-out and gather, not a conversation.** Each theorist is asked
-once and answers once; none can see another's answer. That is invariant 1, and the reason is
-in `docs/framework/access-matrix.md` — peer visibility would make apparent consensus a
-herding artifact of call ordering. Laying it out as a dialogue would imply deliberation that
-did not happen.
-
-A decline is rendered as prominently as a position, because "this falls outside my record"
-is the escape hatch working, and it is the answer that separates "X held this" from "a model
-impersonating X generated this".
-
-## Playback
-
-Pace is **seconds per step**, not a multiplier: the question is how long you get to read one
-step, and a theorist's position plus reasoning is a paragraph. Default 1s, down to 20s.
-The controls stick below the topbar, because the panels they drive are taller than a screen
-and controls that scroll away leave no way to pause what you are reading.
+**Only one scenario ships.** Adding more means adding arm configs per scenario plus a Make
+variable, because `tests/test_configs.py` asserts the Makefile and `configs/arms/` cannot
+drift. The scenario picker is built for several and currently shows one.
 
 ## Layout
 
@@ -119,14 +134,13 @@ and controls that scroll away leave no way to pause what you are reading.
 src/
 ├── api/client.ts              fetch wrappers and the SSE subscription. No derivations.
 ├── context/SessionContext.tsx the session store: what is running and what it has cost
-├── lib/                       playback cursor, term frequency, passage lookup, formatting
-├── views/                     SessionCreate · SessionList · SessionRunning ·
-│                              SessionResults · RunDetail
-└── components/                charts, tables, banners, PanelResponses, and the three
-                               playback-driven run-detail panels
+├── lib/                       playback cursor, passage lookup, formatting
+├── views/                     SessionList · SessionCreate · SessionRunning ·
+│                              SimulationLanding · MacroAnalysis · RepresentativeRun
+└── components/                charts, tables, notices, and the playback-driven panels
 ```
 
 Derivations live in `src/artsoc/views.py`, not here. Anything a UI needs computed belongs
-where `pytest` can reach it — the selection rule for the representative run, the loop-step
-ordering and the graph construction are all tested in Python, and the browser only draws
-them.
+where `pytest` can reach it — the representative-run selection rule, the loop-step ordering,
+the graph, the provenance chain and the course-of-action support are all tested in Python,
+and the browser only draws them.

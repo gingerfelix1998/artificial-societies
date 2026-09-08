@@ -118,13 +118,13 @@ export default function SessionCreate() {
       </p>
 
       {error && (
-        <div className="banner danger">
-          <strong>REQUEST FAILED</strong>
+        <div className="notice stop">
+          <strong>Request failed</strong>
           {error}
         </div>
       )}
 
-      <section className="panel">
+      <section className="section">
         <header>
           <h2>Scenario</h2>
           <p className="subtitle">
@@ -140,7 +140,7 @@ export default function SessionCreate() {
               onClick={() => setScenarioId(s.scenario_id)}
             >
               <h3>{s.label}</h3>
-              <span className="pill">
+              <span className="tag">
                 {s.self_nation} vs {s.adversary_nation}
               </span>
               <p className="why">{s.description}</p>
@@ -165,7 +165,7 @@ export default function SessionCreate() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="section">
         <header>
           <h2>Arms</h2>
           <p className="subtitle">
@@ -187,7 +187,7 @@ export default function SessionCreate() {
             >
               <div className="row">
                 <h3 style={{ margin: 0 }}>{arm.arm}</h3>
-                {arm.is_control && <span className="pill control">control · locked</span>}
+                {arm.is_control && <span className="tag accent">control · locked</span>}
               </div>
               <p className="why">{arm.notes}</p>
               <p className="varies">
@@ -223,7 +223,7 @@ export default function SessionCreate() {
                   >
                     <div className="row">
                       <h3 style={{ margin: 0 }}>{arm.arm}</h3>
-                      <span className="pill loo">exclusion</span>
+                      <span className="tag excluded">exclusion</span>
                     </div>
                     <p className="varies">
                       excludes {String(arm.varies.excluded_personas ?? '')}
@@ -236,7 +236,7 @@ export default function SessionCreate() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="section">
         <header>
           <h2>Replications</h2>
         </header>
@@ -310,7 +310,7 @@ export default function SessionCreate() {
 function CostGate({ estimate }: { estimate: CallEstimate | null }) {
   if (!estimate) {
     return (
-      <section className="panel">
+      <section className="section">
         <p className="empty">Pricing this session…</p>
       </section>
     )
@@ -327,20 +327,20 @@ function CostGate({ estimate }: { estimate: CallEstimate | null }) {
   const overridden = live && models.size === 1 && roleCount > 1
 
   return (
-    <section className="panel">
+    <section className="section">
       <header>
         <h2>What this will cost</h2>
       </header>
 
-      <div className={`banner ${live ? 'warn' : 'info'}`}>
-        <strong>{live ? 'THIS SPENDS REAL MONEY' : 'MOCK BACKEND — FREE'}</strong>
+      <div className={`notice ${live ? 'warn' : 'info'}`}>
+        <strong>{live ? 'This spends real money' : 'Mock backend — free'}</strong>
         Backend <code>{estimate.backend}</code>, from <code>configs/base.yaml</code>. Up to{' '}
         {estimate.total_calls.toLocaleString()} provider calls. {estimate.note}
       </div>
 
       {overridden && (
-        <div className="banner danger">
-          <strong>THIS WILL PRODUCE A SMOKE TEST, NOT A RESULT</strong>
+        <div className="notice stop">
+          <strong>This will produce a smoke test, not a result</strong>
           Every role resolves to <code>{[...models][0]}</code>, which means{' '}
           <code>models_override</code> is set in <code>configs/base.yaml</code>. It pins the
           presidential decision — the primary metric — to the same cheap model as everything
