@@ -30,8 +30,10 @@ from artsoc.ingest import (
     parse_markdown,
     source_documents,
 )
-from artsoc.llm import PASSAGE_ID
-from artsoc.personas import Persona
+from artsoc.llm import NO_RECORD_MARKER, PASSAGE_ID
+from artsoc.personas import Persona, build_question_prompt
+from artsoc.retrieval import CorpusRetriever, resolve_passages, verify_citations
+from artsoc.schema import AnalyticalQuestion
 
 # ---------------------------------------------------------------------------
 # Fixture documents. Deliberately hard-wrapped, because that is what a hand-written
@@ -594,3 +596,185 @@ def test_the_content_key_is_shared_with_the_wikipedia_path() -> None:
     """ADR 0003's derivation is not reopened: one hash, one normalisation, one rendering."""
     assert content_key("one   two\n\nthree") == content_key("one two three")
     assert str(content_key("anything")).isdigit(), "the final segment must be decimal"
+
+
+# ---------------------------------------------------------------------------
+# Retrieval over the claim index. `basis` becomes "claims", and never "beliefs".
+# ---------------------------------------------------------------------------
+
+ON_TOPIC = "what is the purpose of a military establishment under deterrence"
+OFF_TOPIC = "how should fishing quotas be allocated between coastal provinces"
+
+
+def _retriever(tmp_path, **kwargs):
+    _ingest(tmp_path)
+    return CorpusRetriever(tmp_path / "corpora", claim_min_terms=2, **kwargs)
+
+
+def test_a_matched_claim_arrives_with_the_prose_that_argues_it(tmp_path) -> None:
+    """The two-stage design: match on positions, answer from evidence.
+
+    Questions are position-shaped and prose passages are argument-shaped. Matching the
+    first and hydrating the second is what this change is for — ADR 0004 recorded a
+    grounded run declining every question with retrieval working perfectly, because what
+    it retrieved was biography.
+    """
+    block, basis = _retriever(tmp_path).retrieve(_persona(), ON_TOPIC)
+
+    assert basis == "claims"
+    assert "The purpose of a military establishment" in block
+    assert "EVIDENCE" in block, "a claim is never shown without the prose behind it"
+    assert "The arrival of a weapon of this destructive scale" in block
+
+
+def test_declining_now_means_the_theorist_argued_nothing_relevant(tmp_path) -> None:
+    """The escape hatch ADR 0004 was reaching for.
+
+    It stops meaning "no passage shared enough terms with the question" and starts meaning
+    what it should have meant all along. The claim index is what makes the difference
+    legible, not a lower threshold.
+    """
+    assert _retriever(tmp_path).retrieve(_persona(), OFF_TOPIC) == ("", "none")
+
+
+def test_a_markdown_persona_never_falls_back_to_beliefs(tmp_path) -> None:
+    """No silent fallback of any kind — including to the store ADR 0004 added.
+
+    A belief file is planted beside the claim index and made trivially matchable. It must
+    still never be reached: `basis` is `claims` or `none` for these personas, and a run
+    resting on generated beliefs while reporting a hand-authored claim index would be
+    indistinguishable afterwards from one that did not.
+    """
+    retriever = _retriever(tmp_path)
+    (tmp_path / "corpora" / "brodie" / "beliefs.jsonl").write_text(
+        json.dumps(
+            {
+                "passage_id": "brodie:belief:12345",
+                "section": "belief",
+                "text": "fishing quotas coastal provinces allocated between deterrence",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    block, basis = retriever.retrieve(_persona(), OFF_TOPIC)
+    assert (block, basis) == ("", "none")
+
+    block, basis = retriever.retrieve(_persona(), ON_TOPIC)
+    assert basis == "claims"
+    assert ":belief:" not in block
+
+
+def test_a_markdown_store_with_no_claim_index_raises(tmp_path) -> None:
+    """Not a fallback to a bare passage search. A claim-indexed run and a passage-indexed
+    one answer different questions, and the record could not tell them apart."""
+    _ingest(tmp_path)
+    (tmp_path / "corpora" / "brodie" / "claims.jsonl").unlink()
+    retriever = CorpusRetriever(tmp_path / "corpora")
+    with pytest.raises(FileNotFoundError, match="claims.jsonl"):
+        retriever.retrieve(_persona(), ON_TOPIC)
+
+
+def test_a_position_argued_twice_is_shown_as_one_group(tmp_path) -> None:
+    """Corroboration has to be visible to the persona, not merely counted by the host.
+
+    Selection is over groups rather than claims, so the same position stated in two works
+    is one hit and both statements are shown — each with its own id, so either can be
+    cited and the citation still verifies.
+    """
+    block, _ = _retriever(tmp_path, claim_top_k=1).retrieve(_persona(), ON_TOPIC)
+    slugs = {pid.split(":")[1] for pid in PASSAGE_ID.findall(block)}
+    assert slugs == {"fixture_work_one_1946", "fixture_work_two_1959"}, (
+        "one group, both publications"
+    )
+
+
+def test_both_a_claim_and_its_evidence_are_citable(tmp_path) -> None:
+    """A persona may cite either. Verification checks against exactly what it was shown, so
+    both must parse as ids in the block."""
+    block, _ = _retriever(tmp_path).retrieve(_persona(), ON_TOPIC)
+    ids = PASSAGE_ID.findall(block)
+    claims = {c["passage_id"] for c in _records(tmp_path, "claims.jsonl")}
+    passages = {c["passage_id"] for c in _records(tmp_path, "chunks.jsonl")}
+
+    assert set(ids) & claims, "claim ids must be citable"
+    assert set(ids) & passages, "evidence ids must be citable"
+    assert verify_citations(sorted(set(ids)), block) == []
+    assert verify_citations(["brodie:fixture_work_one_1946:999999999"], block)
+
+
+def test_a_cited_claim_resolves_for_an_analyst(tmp_path) -> None:
+    """`_STORE_FILES` has to reach `claims.jsonl`, or a real citation renders as an
+    unresolvable one and reads as evidence of hallucination."""
+    _ingest(tmp_path)
+    claim = _records(tmp_path, "claims.jsonl")[0]
+    passage = _records(tmp_path, "chunks.jsonl")[0]
+
+    found = resolve_passages(
+        "brodie", [claim["passage_id"], passage["passage_id"]], tmp_path / "corpora"
+    )
+    assert set(found) == {claim["passage_id"], passage["passage_id"]}
+    assert found[claim["passage_id"]]["text"] == claim["text"]
+    assert found[claim["passage_id"]]["section"] == "claim"
+
+
+def test_an_invented_claim_id_is_not_filled_in(tmp_path) -> None:
+    """Unresolvable means invented, and that is the finding. Returning a placeholder would
+    erase exactly what `unsupported_citations` records."""
+    _ingest(tmp_path)
+    invented = ["brodie:fixture_work_one_1946:1"]
+    assert resolve_passages("brodie", invented, tmp_path / "corpora") == {}
+
+
+def test_the_claim_block_is_framed_as_positions_with_their_evidence(tmp_path) -> None:
+    """Neither of the two existing framings fits.
+
+    A belief was a position with nothing behind it and a source passage was prose with no
+    position attached. Telling a persona to "answer from your written record" when it has
+    been shown stated positions is what made three of twenty-four decline under ADR 0004.
+    """
+    block, basis = _retriever(tmp_path).retrieve(_persona(), ON_TOPIC)
+    prompt = build_question_prompt(
+        AnalyticalQuestion(question_id="q0", text=ON_TOPIC, tags=["deterrence"]),
+        block,
+        "m2",
+        basis,
+    )
+    assert "POSITIONS FROM YOUR RECORD" in prompt
+    assert "Cite the position's id, the ids of the passages beneath it, or both" in prompt
+    assert "RECORD:" not in prompt
+    assert "YOUR STATED POSITIONS:" not in prompt, "not the belief framing"
+
+
+def test_an_empty_claim_block_still_signals_the_escape_hatch(tmp_path) -> None:
+    """ADR 0001: the marker has to reach the user prompt or the hatch never fires."""
+    prompt = build_question_prompt(
+        AnalyticalQuestion(question_id="q0", text=OFF_TOPIC, tags=["deterrence"]),
+        "",
+        "m2",
+        "none",
+    )
+    assert NO_RECORD_MARKER in prompt
+
+
+def test_the_claim_threshold_moves_the_decline_rate(tmp_path) -> None:
+    """The threshold is what decides declines, so it has to be demonstrably load-bearing —
+    a knob that changes nothing is a knob nobody can calibrate."""
+    _ingest(tmp_path)
+    lenient = CorpusRetriever(tmp_path / "corpora", claim_min_terms=1)
+    strict = CorpusRetriever(tmp_path / "corpora", claim_min_terms=12)
+
+    assert lenient.retrieve(_persona(), ON_TOPIC)[1] == "claims"
+    assert strict.retrieve(_persona(), ON_TOPIC) == ("", "none")
+
+
+def test_one_store_per_persona_holds_for_claims_too(tmp_path) -> None:
+    """Structural, and it must not weaken because a new store was added: a persona
+    retrieving another's claims and citing them as its own would destroy the design."""
+    _ingest(tmp_path, "brodie")
+    _ingest(tmp_path, "schelling")
+    block, _ = CorpusRetriever(tmp_path / "corpora", claim_min_terms=2).retrieve(
+        _persona("brodie"), ON_TOPIC
+    )
+    assert all(pid.startswith("brodie:") for pid in PASSAGE_ID.findall(block))

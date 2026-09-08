@@ -219,6 +219,8 @@ class CorpusRetriever:
         top_k: int = 3,
         min_terms: int = 1,
         belief_min_terms: int | None = None,
+        claim_min_terms: int = 3,
+        claim_top_k: int = 2,
     ) -> None:
         self.root = corpus_root or CORPUS_ROOT
         if not self.root.is_dir():
@@ -236,6 +238,11 @@ class CorpusRetriever:
         self.belief_min_terms = (
             belief_min_terms if belief_min_terms is not None else max(1, min_terms - 1)
         )
+        # Claims are single sentences, so they take a lower bar than 150-word passages for
+        # the same reason beliefs do — but it is stated rather than derived, because the two
+        # stores are not the same test and tying them together hid a dead fallback once.
+        self.claim_min_terms = claim_min_terms
+        self.claim_top_k = claim_top_k
         self._cache: dict[str, list[dict[str, Any]]] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
 
@@ -319,19 +326,90 @@ class CorpusRetriever:
         """BM25 scores over one persona's store, highest first."""
         return bm25_rank([tokenise(c["text"]) for c in chunks], query)
 
-    def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
-        """Return `(block, basis)` — sources first, beliefs only as a fallback.
+    def _retrieve_claims(self, persona_id: str, query: list[str]) -> str:
+        """The claim path: match positions, then hydrate each with the prose arguing it.
 
-        The order is the whole design (ADR 0004). A persona whose corpus covers the
-        question reasons from the corpus; beliefs are what it falls back on when the corpus
-        does not. And beliefs are filtered by the *same* relevance test, so a question that
-        overlaps none of them retrieves nothing and the persona declines — which is what
-        stops the out-of-record rate collapsing to zero.
+        **The decline this produces means something different.** For a passage store it
+        means no passage shared enough terms with the question. Here it means the theorist
+        argued nothing relevant — which is the escape hatch ADR 0004 was reaching for when
+        it added a second store instead (ADR 0007).
+
+        Ranking is over claims and selection is over *groups*, so a position argued in two
+        publications is one hit rather than two, and every member of a selected group is
+        shown. That is what makes corroboration visible to the persona and citable by it:
+        both statements carry their own id, and both are in the block verification checks
+        against.
         """
-        self._confirmed_source(persona)
+        claims = self._load(persona_id, "claims.jsonl")
+        if not claims:
+            raise FileNotFoundError(
+                f"{persona_id} is declared corpus_source='markdown' but its store holds no "
+                f"claims.jsonl at {self.root / persona_id}. This raises rather than falling "
+                "back to a bare passage search: a claim-indexed run and a passage-indexed "
+                "one answer different questions, and the record could not tell them apart."
+            )
+
+        wanted = set(query)
+        eligible = [
+            c
+            for c in claims
+            if len(wanted & set(tokenise(c["text"]))) >= self.claim_min_terms
+        ]
+        if not eligible:
+            return ""
+
+        ranked = bm25_rank([tokenise(c["text"]) for c in eligible], query)
+        # Best score wins the group, and groups are taken in that order. Ties fall back to
+        # claim id, so the same corpus and question produce the same block every time.
+        best: dict[str, float] = {}
+        for score, i in ranked:
+            if score <= 0:
+                continue
+            group = eligible[i].get("group", eligible[i]["passage_id"])
+            best[group] = max(best.get(group, 0.0), score)
+        if not best:
+            return ""
+
+        chosen = sorted(best, key=lambda g: (-best[g], g))[: self.claim_top_k]
+        by_id = {c["passage_id"]: c for c in self._load(persona_id)}
+
+        lines: list[str] = []
+        for group in chosen:
+            members = sorted(
+                (c for c in claims if c.get("group", c["passage_id"]) == group),
+                key=lambda c: c["passage_id"],
+            )
+            for claim in members:
+                lines.append(f"[{claim['passage_id']}] {claim['text']}")
+                for passage_id in claim.get("supported_by", []):
+                    passage = by_id.get(passage_id)
+                    if passage is not None:
+                        lines.append(f"  EVIDENCE [{passage_id}] {passage['text']}")
+        return "\n\n".join(lines)
+
+    def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
+        """Return `(block, basis)`, by whichever path this persona's store was built for.
+
+        For a markdown store: claims, or nothing. The belief fallback is not consulted and
+        `basis` is never `beliefs` — the claims list is hand-authored, inspectable without
+        running the system, and already proposition-shaped, so a generated belief store
+        would be worse on every axis that matters (ADR 0007 §7).
+
+        For a Wikipedia store: sources first, beliefs only as a fallback. The order is the
+        whole design (ADR 0004). A persona whose corpus covers the question reasons from the
+        corpus; beliefs are what it falls back on when the corpus does not. And beliefs are
+        filtered by the *same* relevance test, so a question that overlaps none of them
+        retrieves nothing and the persona declines — which is what stops the out-of-record
+        rate collapsing to zero.
+        """
+        source = self._confirmed_source(persona)
         query = tokenise(question_text)
         if not query:
             return "", "none"
+
+        if source == "markdown":
+            block = self._retrieve_claims(persona.persona_id, query)
+            return (block, "claims") if block else ("", "none")
 
         block = self._select(self._load(persona.persona_id), query)
         if block:
@@ -378,10 +456,13 @@ def verify_citations(citations: list[str], record_block: str) -> list[str]:
 
 #: The stores a persona's passages can live in, and what each one is.
 #:
-#: `wikipedia` and `abstract` ids are in `chunks.jsonl`; `belief` ids are in
-#: `beliefs.jsonl`. Both are read here because a citation names a passage without saying
-#: which file it came from, and an analyst reading a citation should not have to know.
-_STORE_FILES = ("chunks.jsonl", "beliefs.jsonl")
+#: `wikipedia` and `abstract` ids are in `chunks.jsonl`, as are a markdown store's evidence
+#: passages; claim ids are in `claims.jsonl`; `belief` ids are in `beliefs.jsonl`. All three
+#: are read here because a citation names a passage without saying which file it came from,
+#: and an analyst reading a citation should not have to know. A persona may cite either a
+#: claim or the evidence beneath it, so leaving `claims.jsonl` out would make a real
+#: citation read as an unresolvable one.
+_STORE_FILES = ("chunks.jsonl", "claims.jsonl", "beliefs.jsonl")
 
 
 def resolve_passages(

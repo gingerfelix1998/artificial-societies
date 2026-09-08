@@ -96,6 +96,15 @@ retrieval_top_k: 3
 retrieval_min_terms: 4
 retrieval_belief_min_terms: 2
 
+# The claim index (ADR 0007), which markdown personas retrieve on instead of the two above.
+# NOT CALIBRATED. The numbers above come from a live sweep over the real corpora; these are
+# reasoned from the shape of the store — a claim is a single sentence, so it takes the same
+# lower bar a belief does, and two groups is roughly the token budget three passages had.
+# They must be calibrated the same way once the markdown documents are in place, and until
+# then no decline rate from this path is comparable with the table above.
+retrieval_claim_min_terms: 3
+retrieval_claim_top_k: 2
+
 # The full loop: intelligence brief, presidential query, panel, advisory brief, decision.
 consult_panel: true
 

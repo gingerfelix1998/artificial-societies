@@ -240,6 +240,20 @@ _BELIEF_FRAMING = (
     "genuinely unrelated to the positions below."
 )
 
+#: How a claim block is framed. Distinct from both of the above, because it is neither.
+#:
+#: A belief was a position with nothing behind it; a source passage was prose with no
+#: position attached. A claim is a stated position shown together with the prose that
+#: argues it, so the instruction has to say that both are citable — otherwise a persona
+#: cites only the evidence, and the position it actually answered from goes unrecorded
+#: (ADR 0007).
+_CLAIM_FRAMING = (
+    "Each position below is one you argued, followed by the passages from that work which "
+    "argue it. Answer from these. Cite the position's id, the ids of the passages beneath "
+    "it, or both. Where the same position appears more than once, it is one you argued in "
+    "more than one work. Decline if the positions below do not address the question."
+)
+
 
 def build_question_prompt(
     question: AnalyticalQuestion,
@@ -268,6 +282,12 @@ def build_question_prompt(
         return (
             f"QUESTION:\n{question.text}\n\n"
             f"YOUR STATED POSITIONS:\n{block}\n\n{_BELIEF_FRAMING}"
+        )
+    if basis == "claims" and record_block.strip():
+        return (
+            f"QUESTION:\n{question.text}\n\n"
+            f"POSITIONS FROM YOUR RECORD, WITH THE PASSAGES THAT ARGUE THEM:\n{block}"
+            f"\n\n{_CLAIM_FRAMING}"
         )
     return f"QUESTION:\n{question.text}\n\nRECORD:\n{block}"
 

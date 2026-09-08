@@ -120,6 +120,17 @@ class RunConfig(BaseModel):
     #: fired. None derives it as `retrieval_min_terms - 1`.
     retrieval_belief_min_terms: int | None = Field(default=None, ge=0)
 
+    #: The same bar again for the claim index, which markdown personas retrieve on. Stated
+    #: rather than derived from `retrieval_min_terms`: a claim is a single sentence like a
+    #: belief, but the two stores answer different questions, and tying one number to
+    #: another is what left the belief fallback dead for 84 persona-question pairs.
+    retrieval_claim_min_terms: int = Field(default=3, ge=0)
+
+    #: How many claim *groups* a theorist is shown. Groups, not claims: a position argued
+    #: in two publications is one hit, and every member of it is shown so the corroboration
+    #: is visible and citable rather than merely counted.
+    retrieval_claim_top_k: int = Field(default=2, ge=1)
+
     #: False for the control arm: President and intelligence brief, no advisor, no panel.
     consult_panel: bool = True
 

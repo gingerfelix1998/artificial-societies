@@ -80,6 +80,8 @@ def _retriever_for(config: RunConfig):
             top_k=config.retrieval_top_k,
             min_terms=config.retrieval_min_terms,
             belief_min_terms=config.retrieval_belief_min_terms,
+            claim_min_terms=config.retrieval_claim_min_terms,
+            claim_top_k=config.retrieval_claim_top_k,
         )
     return get_retriever(config.retrieval_mode)
 
