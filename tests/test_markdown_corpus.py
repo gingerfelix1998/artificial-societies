@@ -18,6 +18,7 @@ import pytest
 
 from artsoc import ingest as ingest_module
 from artsoc import retrieval as retrieval_module
+from artsoc import sim as sim_module
 from artsoc import views as views_module
 from artsoc.agents import Theorist
 from artsoc.ingest import (
@@ -880,6 +881,22 @@ def test_a_panel_drawing_on_two_kinds_of_source_reports_mixed(tmp_path) -> None:
     assert retriever.corpus_tier == "summary"
     assert retriever.retrieve(_persona("jervis", "wikipedia"), "deterrence")[1] == "sources"
     assert retriever.corpus_tier == "mixed"
+
+
+def test_one_retriever_serves_a_replication_and_reports_on_it() -> None:
+    """The object that answered the panel is the object the record reads provenance off.
+
+    `_consult` used to build its own retriever while `run_once` read `grounded` off a
+    second one. That was invisible while `mode` and `grounded` were class attributes,
+    identical on any instance — and silently wrong the moment `corpus_tier` reported what a
+    retriever had actually served, which came back `none` for a panel that had just
+    answered from a corpus. Constructed once, passed down.
+    """
+    source = inspect.getsource(sim_module)
+    assert source.count("_retriever_for(config)") == 1, (
+        "a second retriever would report on retrievals it never performed"
+    )
+    assert "retriever" in inspect.signature(sim_module._consult).parameters
 
 
 def test_corroboration_counts_publications_not_claims(tmp_path) -> None:

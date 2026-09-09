@@ -129,19 +129,25 @@ def _consult(
     intel,
     rng: random.Random,
     panel: list[Persona],
+    retriever,
 ) -> tuple[PresidentialQuery, list[AnalyticalQuestion], list[RoutingRecord],
            list[TheoristOpinion], AdvisorBrief, list[CourseOfAction], list[str]]:
     """The advisory half of the loop: query, panel, brief.
 
     Split out so `run_once` reads as the sequence it is, and so the control arm's absence
     of all this is one `if` rather than a scatter of them.
+
+    **The retriever is passed in, never built here.** `run_once` reads provenance off the
+    object that did the retrieving, so a second instance would leave it reporting on a
+    retriever that never served anything. That went unnoticed while `mode` and `grounded`
+    were class attributes — identical on any instance — and became wrong the moment
+    `corpus_tier` recorded what actually happened.
     """
     president = President(client, scenario.doctrine_card)
     query = president.query(intel, forbidden_tokens(scenario))
 
     advisor = Advisor(client)
     questions = advisor.formulate(query, config.n_questions)
-    retriever = _retriever_for(config)
 
     routing: list[RoutingRecord] = []
     by_id = {p.persona_id: p for p in panel}
@@ -236,7 +242,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
 
     if config.consult_panel:
         query, questions, routing, opinions, brief, coas, unsupported = _consult(
-            config, client, scenario, intel, rng, panel
+            config, client, scenario, intel, rng, panel, retriever
         )
 
     # `coas` stays [] under the control arm, and President.decide's free-choice path is
