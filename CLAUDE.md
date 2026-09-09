@@ -138,14 +138,23 @@ not — is confounded and is not used here. Any influence figure must state whic
 - `registry.yaml` `corpus_notes` are one-line paraphrases written to make the loop run. Not
   evidence.
 - `prominence` values are invented and weight nothing.
-- Real corpus retrieval is unimplemented; `StubRetriever` is in use.
+- No persona has primary text. Wikipedia personas rest on a **tertiary** source: an article
+  *about* the theorist. `corpora-src` documents are **secondary**: project-written summaries
+  of specific publications, each carrying an accurate `confidence` field. Neither supports
+  the held-out-writings check. `corpus_tier` on the record says which a run used.
+- Corroboration depth is a diagnostic about corpus breadth, not evidence of agreement.
+  Grouping is negation-blind, and on a thin corpus almost every group is a singleton.
+- Claim-retrieval thresholds (`retrieval_claim_*`) are reasoned, not calibrated against a
+  live sweep the way the passage thresholds were.
 - `schema.RUNG` has not been validated against a published escalation ladder.
 - Reasoning-theme coding does not exist.
 - Arm contrasts have no confidence intervals and no multiple-comparisons correction.
 
-Never report the project as producing grounded results while `StubRetriever` is in use. If
-asked to "finish phase 1", `docs/prompts/improvements-log.md` is the ordered backlog — P0 are
-where a claim is currently false or unsupportable.
+Never report a run as grounded in more than what actually served it: `StubRetriever` is
+never grounded at all, and `grounded: true` alone does not say whether the text was a
+summary, an encyclopedia article or a generated belief. If asked to "finish phase 1",
+`docs/prompts/improvements-log.md` is the ordered backlog — P0 are where a claim is currently
+false or unsupportable.
 
 ## Working practice
 
@@ -178,6 +187,8 @@ where a claim is currently false or unsupportable.
 | Role prompts and context boundaries | `src/artsoc/agents.py` |
 | Persona construction M1–M3, tag vocabulary, routing | `src/artsoc/personas.py` |
 | Retrieval interface and the grounded boundary | `src/artsoc/retrieval.py` |
+| Corpus building, chunking, the claim index | `src/artsoc/ingest.py` |
+| The committed source of record, and what may go in it | `data/corpora-src/README.md` |
 | Model choke point, roles, backends, caching | `src/artsoc/llm.py` |
 | Orchestration loop and the Monte Carlo runner | `src/artsoc/sim.py` |
 | `RunConfig` and arm loading | `src/artsoc/config.py` |

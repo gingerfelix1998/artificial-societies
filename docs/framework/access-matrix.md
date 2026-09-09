@@ -101,6 +101,13 @@ invariant, and it is the only acceptable route.
 would produce better-reading answers and would invalidate every run in `out/`. If output
 quality is the problem, the fix is the persona's own record, not more context.
 
+That is what ADR 0007 did, and it is the worked example of this rule. Grounded runs were
+declining every question, and the fix was to change what a theorist's *own record* consists
+of — hand-authored claims shown with the passages arguing them, in place of biography — not
+to widen what a theorist may see. A claims block carries no scenario, no peer opinion and no
+intelligence reporting, so no row in the matrix above moved. `basis` gained a value; the
+boundary did not change.
+
 **A new role needs a new row here before it needs code.** Deciding what a role may see is the
 design work; implementing it is the easy part.
 

@@ -13,12 +13,26 @@ traffic. The bar is whether a hostile reviewer can dismiss the finding.
 
 ### 1. Implement corpus retrieval
 
-**Now.** `CorpusRetriever` raises on construction. Every run uses `StubRetriever`, which
-returns a one-line `corpus_notes` paraphrase from the registry and reports `grounded=false`.
-`data/corpora/` contains only `.gitkeep`.
+**Largely done, and the remaining gap has moved.** `CorpusRetriever` works, `base.yaml`
+ships `retrieval_mode: corpus`, and two pipelines now exist: Wikipedia passages with the
+ADR 0004 belief fallback, and the ADR 0007 claim index over committed markdown documents.
+`StubRetriever` is used only by `synth_only` and by the test suite.
 
-**Change.** Build per-persona indexes over each theorist's own writings and implement
-`retrieve`. See `docs/prompts/01-corpus-retrieval.md`.
+What is left is **corpus quality, not retrieval mechanism**:
+
+- No persona has primary text. Wikipedia is tertiary; `corpora-src` documents are
+  project-written summaries. `corpus_tier` on the record says which served a run.
+- The four personas the markdown pipeline was built for are still declared `wikipedia`,
+  because their documents have not been written yet. Flipping them is a registry edit plus
+  `artsoc ingest`.
+- `retrieval_claim_min_terms` / `retrieval_claim_top_k` are reasoned, not calibrated. The
+  passage thresholds have a live-sweep table in `base.yaml`; these need the same treatment
+  once there are real documents to sweep over.
+
+**Original entry, kept because the reasoning still governs.** Build per-persona indexes over
+each theorist's own writings and implement `retrieve`. See
+`docs/prompts/01-corpus-retrieval.md`, and `docs/prompts/05-claim-indexed-corpus.md` for the
+claim-index brief.
 
 **Why it is first.** The entire M1-versus-M2 contrast currently compares *a name* against *a
 name plus one sentence someone wrote by hand*. That is not a test of grounding. Until this

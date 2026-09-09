@@ -71,6 +71,28 @@ record rather than declining. **A near-zero decline rate is a warning, not a suc
 was shown. They are reported, never corrected: the rate is a finding about the method, and
 silently dropping bad citations would erase it.
 
+**What a stated position rested on.** `TheoristOpinion.basis` is `sources`, `claims`,
+`beliefs` or `none`, taken from the retriever rather than from the model. It is read
+*together with* the decline rate, and which pairing matters depends on the persona's corpus.
+
+For a `wikipedia` persona, ADR 0004's diagnostic applies: a low decline rate together with
+most positions resting on `beliefs` is a panel asserting ideology where it has no evidence,
+and that combination is what replaced "a near-zero decline rate is a warning" for these
+personas. A low decline rate over well-sourced positions is a grounded panel and is not
+warned about.
+
+For a `markdown` persona that diagnostic is meaningless, because every claim carries
+evidence by construction and `beliefs_share` is structurally zero. **Corroboration depth**
+replaces it (ADR 0007): how many distinct publications the matched claim's group spans, with
+`SINGLE-SOURCE POSITIONS` warning when most positions rest on one.
+
+Read corroboration depth as a fact about the corpus before reading it as one about the
+panel. With one or two documents per theorist almost every group is a singleton, so a depth
+near 1.0 says the corpus is thin, not that the theorists were unsupported. And grouping is
+normalised-token Jaccard, which is negation-blind — two claims differing only by a "not"
+share every content token — so depth attests to vocabulary overlap, never to agreement. It
+must not be reported as evidence that a position was corroborated.
+
 **Provenance.** `RunRecord.models` records which model actually served each role. One
 distinct value across every role means a smoke test under `models_override`, and the report
 marks it **SMOKE TEST, NOT A RESULT** — the presidential decision is the primary metric, and
@@ -119,6 +141,18 @@ paraphrases and reports `grounded=false`. `RunRecord.grounded` is taken from the
 that produced the text, so a stub run can never be read as grounded — but nothing stops a
 careless write-up saying otherwise. It is stated here so that it cannot be claimed by
 accident.
+
+**Say what it was grounded in, not only that it was.** `grounded` is a boolean and stopped
+distinguishing runs once one panel could draw on two kinds of source, so every report also
+carries `corpus_tier`: `summary` for the project-written markdown corpus, `encyclopedia` for
+Wikipedia and the abstracts alongside it, `belief`, `stub`, `mixed`, or `none`. `primary` —
+a theorist's own writing — exists as a value and nothing produces it.
+
+Two things follow that a write-up must observe. A `summary` corpus is our account of what a
+publication argued, carrying its own `confidence` field; it is a better tier than an
+encyclopedia article *about* the author, and it is still not primary text. And an arm marked
+`mixed` drew on sources of different evidential weight, so a contrast against another arm is
+clean only if that arm mixed them the same way.
 
 **Absolute rates are not findings.** Repeated because it is the constraint most likely to be
 forgotten between running a sweep and writing it up.
