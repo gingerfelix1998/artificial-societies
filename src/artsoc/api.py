@@ -169,8 +169,11 @@ class Passage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     passage_id: str
-    #: wikipedia | abstract | belief — what kind of source this came from. Wikipedia is
-    #: TERTIARY: an article about the theorist, not the theorist's own writing.
+    #: The middle segment of the passage id. For a Wikipedia store that is the source kind
+    #: — `wikipedia`, `abstract` or `belief` — and Wikipedia is TERTIARY: an article about
+    #: the theorist, not the theorist's own writing. For a markdown store it is the
+    #: publication slug instead, because ids there are per-work, and `section` says whether
+    #: the record is a stated claim or the prose arguing it (ADR 0007).
     source: str
     section: str
     text: str

@@ -79,7 +79,17 @@ export default function MacroAnalysis() {
   if (!summary || !landing) return <p className="spin">Loading…</p>
 
   const warnings = summary.warnings ?? []
-  const severe = ['NOT GROUNDED', 'SMOKE TEST', 'MOCK BACKEND', 'NO CONTROL ARM', 'NOMINAL PANEL']
+  // Matched on the warning's leading token, so a new warning that is not listed here
+  // renders quietly. `metrics._warnings` is the source of the strings.
+  const severe = [
+    'NOT GROUNDED',
+    'SMOKE TEST',
+    'MOCK BACKEND',
+    'NO CONTROL ARM',
+    'NOMINAL PANEL',
+    'MIXED CORPUS TIERS',
+    'SINGLE-SOURCE POSITIONS',
+  ]
   const focus = summary.arms.find((a) => a.arm === arm)
 
   return (

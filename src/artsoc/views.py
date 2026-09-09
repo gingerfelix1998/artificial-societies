@@ -786,15 +786,24 @@ def _confidence_band(raw: str) -> str:
 
 
 def _basis_mix(record: RunRecord) -> str:
-    """How this replication's panel answered: from sources, from belief, or not at all."""
+    """How this replication's panel answered: from evidence, from belief, or not at all.
+
+    `claims` counts as evidence, not as belief. A claim is a stated position shown together
+    with the passages arguing it, so a panel answering from the claim index is the
+    best-evidenced case this system has — labelling it "belief-led" would invert the
+    diagnostic exactly where it matters most (ADR 0007).
+    """
     if not record.opinions:
         return "no panel"
     declined = sum(1 for o in record.opinions if o.out_of_record)
     if declined / len(record.opinions) >= 0.5:
         return "mostly declined"
     stated = [o for o in record.opinions if not o.out_of_record]
-    sources = sum(1 for o in stated if o.basis == "sources")
-    return "sources-led" if sources >= len(stated) / 2 else "belief-led"
+    claims = sum(1 for o in stated if o.basis == "claims")
+    evidenced = sum(1 for o in stated if o.basis in ("sources", "claims"))
+    if evidenced < len(stated) / 2:
+        return "belief-led"
+    return "claims-led" if claims > evidenced / 2 else "sources-led"
 
 
 def pipeline_flow(records: list[RunRecord]) -> PipelineFlow:
@@ -1110,7 +1119,7 @@ class RunFacts(_View):
     personas_consulted: int
     n_opinions: int
     n_declines: int
-    #: sources | beliefs | none, over stated positions and declines alike.
+    #: sources | claims | beliefs | none, over stated positions and declines alike.
     basis_counts: dict[str, int]
     synthesis_mode: str
     n_consensus: int
@@ -1122,6 +1131,9 @@ class RunFacts(_View):
     n_citations: int
     n_unsupported_citations: int
     grounded: bool
+    #: What the grounding was: summary | encyclopedia | belief | stub | mixed | none.
+    #: `grounded` alone stopped distinguishing source kinds once a panel could mix them.
+    corpus_tier: str = "none"
     retrieval_mode: str
 
 
@@ -1147,6 +1159,7 @@ def run_facts(record: RunRecord) -> RunFacts:
         n_citations=sum(len(o.citations) for o in record.opinions),
         n_unsupported_citations=len(record.unsupported_citations),
         grounded=record.grounded,
+        corpus_tier=record.corpus_tier,
         retrieval_mode=record.retrieval_mode,
     )
 

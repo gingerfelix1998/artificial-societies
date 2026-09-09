@@ -45,7 +45,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artsoc.config import RunConfig, list_arms, load_arm
 from artsoc.llm import PRICE_PER_MTOK, DiskCache, LLMClient, get_backend
-from artsoc.metrics import CONTROL_ARM, ArmSummary, Delta, delta, load_jsonl, summarise
+from artsoc.metrics import (
+    CONTROL_ARM,
+    ArmSummary,
+    Delta,
+    delta,
+    load_jsonl,
+    reduce_tier,
+    summarise,
+)
 from artsoc.narrative import (
     AnalysisAnswer,
     RunNarrative,
@@ -228,6 +236,11 @@ class SessionSummary(BaseModel):
     backend: str = ""
     models: dict[str, str] = Field(default_factory=dict)
     grounded: bool = False
+    #: What the grounding was, reduced across every arm in the session: summary |
+    #: encyclopedia | belief | stub | mixed | none. A client renders it beside `grounded`,
+    #: which on its own stopped saying what a run was grounded in once one panel could draw
+    #: on two kinds of source (ADR 0007).
+    corpus_tier: str = "none"
     cache_enabled: bool = True
     retrieval_mode: str = ""
     est_cost_usd: float = 0.0
@@ -499,6 +512,7 @@ def analysis_payload(session_id: str, arm: str, root: Path | None = None) -> dic
             "backend": summary.backend,
             "models": summary.models,
             "grounded": summary.grounded,
+            "corpus_tier": summary.corpus_tier,
             "cache_enabled": summary.cache_enabled,
             "retrieval_mode": summary.retrieval_mode,
             "persona_method": summary.persona_method,
@@ -776,6 +790,10 @@ def summarise_session(session_id: str, root: Path | None = None) -> SessionSumma
         backend=first.backend if first else "",
         models=models,
         grounded=bool(first.grounded) if first else False,
+        # Reduced across every arm rather than read off the first record, for the reason
+        # `metrics.summarise` reduces within one: a session whose arms drew on different
+        # source kinds is mixed, and naming whichever ran first would conceal that.
+        corpus_tier=reduce_tier(s.corpus_tier for s in summaries),
         cache_enabled=bool(first.cache_enabled) if first else True,
         retrieval_mode=first.retrieval_mode if first else "",
         est_cost_usd=state.est_cost_usd,

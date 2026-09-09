@@ -98,7 +98,13 @@ export default function RunSummary({ facts, narrative, record, sessionId, arm }:
         <div>
           <dt>rested on</dt>
           <dd>
-            {basis.sources ?? 0} sources · {basis.beliefs ?? 0} beliefs
+            {/* Rendered from whatever keys are present rather than from a fixed pair.
+                Naming `sources` and `beliefs` explicitly silently dropped `claims` the
+                moment a third basis existed, which is the one this corpus is built on. */}
+            {Object.entries(basis)
+              .filter(([name]) => name !== 'none')
+              .map(([name, count]) => `${count} ${name}`)
+              .join(' · ') || '—'}
           </dd>
         </div>
         <div>

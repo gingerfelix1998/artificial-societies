@@ -27,6 +27,15 @@ export default function Conditions({ summary }: { summary: SessionSummary }) {
           <dt>grounded</dt>
           <dd className={summary.grounded ? 'good' : 'bad'}>{String(summary.grounded)}</dd>
         </div>
+        {/* Beside `grounded`, never instead of it: a reviewer reading grounded=true has to
+            be able to tell what it was grounded in without opening a manifest, and once one
+            panel can draw on two kinds of source the boolean alone no longer says. */}
+        <div>
+          <dt>corpus</dt>
+          <dd className={summary.corpus_tier === 'mixed' ? 'bad' : ''}>
+            {summary.corpus_tier || '—'}
+          </dd>
+        </div>
         <div>
           <dt>retrieval</dt>
           <dd>{summary.retrieval_mode || '—'}</dd>

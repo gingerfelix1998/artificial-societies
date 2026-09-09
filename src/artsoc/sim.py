@@ -259,8 +259,10 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         cache_enabled=config.cache_enabled,
         retrieval_mode=retriever.mode,
         # From the retriever object, not the config: only the thing that did the
-        # retrieving knows whether it was grounded.
+        # retrieving knows whether it was grounded, or what it grounded in. The tier is
+        # read after the panel has run, because it is a fact about what actually served.
         grounded=retriever.grounded,
+        corpus_tier=retriever.corpus_tier,
         scenario_id=scenario.scenario_id,
         injected_event_ids=[e.event_id for e in scenario.events],
         host_ground_truth=scenario.ground_truth(),

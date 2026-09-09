@@ -18,6 +18,8 @@ import pytest
 
 from artsoc import ingest as ingest_module
 from artsoc import retrieval as retrieval_module
+from artsoc import views as views_module
+from artsoc.agents import Theorist
 from artsoc.ingest import (
     SLUG_PATTERN,
     TARGET_WORDS,
@@ -25,15 +27,29 @@ from artsoc.ingest import (
     chunk_markdown,
     content_key,
     ingest_markdown_persona,
+    ingest_persona,
     load_manifest,
     parse_claims,
     parse_markdown,
     source_documents,
 )
-from artsoc.llm import NO_RECORD_MARKER, PASSAGE_ID
+from artsoc.llm import NO_RECORD_MARKER, PASSAGE_ID, LLMClient, MockBackend
 from artsoc.personas import Persona, build_question_prompt
-from artsoc.retrieval import CorpusRetriever, resolve_passages, verify_citations
-from artsoc.schema import AnalyticalQuestion
+from artsoc.retrieval import (
+    CorpusRetriever,
+    StubRetriever,
+    resolve_passages,
+    verify_citations,
+)
+from artsoc.schema import (
+    SCHEMA_VERSION,
+    ActionType,
+    AnalyticalQuestion,
+    IntelBrief,
+    PresidentialAction,
+    RunRecord,
+    TheoristOpinion,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture documents. Deliberately hard-wrapped, because that is what a hand-written
@@ -605,6 +621,65 @@ def test_the_content_key_is_shared_with_the_wikipedia_path() -> None:
 ON_TOPIC = "what is the purpose of a military establishment under deterrence"
 OFF_TOPIC = "how should fishing quotas be allocated between coastal provinces"
 
+#: A Wikipedia-shaped extract, so one test can build a store of the other kind and check
+#: that a panel spanning both reports `mixed`.
+WIKI_PAGE = """Fixture Theorist was a scholar of international politics.
+
+== Deterrence ==
+Deterrence in this fixture depends on what an adversary believes about retaliation.
+Signals of resolve and the credibility of a threat are the recurring subjects.
+"""
+
+
+def _wiki_fetcher():
+    def fetch(title: str) -> dict:
+        return {
+            "title": title,
+            "revision_id": 1,
+            "timestamp": "2020-01-01T00:00:00Z",
+            "text": WIKI_PAGE,
+        }
+
+    return fetch
+
+
+def _record_with_basis(basis: str) -> RunRecord:
+    """A minimal record whose panel answered on one basis. Only the fields `_basis_mix` and
+    the schema require are populated; everything else is structurally empty."""
+    opinions = [
+        TheoristOpinion(
+            persona_id=f"p{i}",
+            persona_name="MOCK: Theorist",
+            question_id="q0",
+            position="MOCK: position",
+            reasoning="MOCK: reasoning",
+            basis=basis,
+            corroboration=2 if basis == "claims" else 0,
+        )
+        for i in range(4)
+    ]
+    return RunRecord(
+        run_id="fixture-1",
+        arm="baseline",
+        seed=1,
+        started_at="2026-01-01T00:00:00Z",
+        wall_time_s=0.0,
+        config={},
+        backend="mock",
+        cache_enabled=True,
+        retrieval_mode="corpus",
+        grounded=True,
+        corpus_tier="summary",
+        scenario_id="fixture",
+        intel_brief=IntelBrief(
+            summary="MOCK:", assessed_activity="MOCK:", confidence="moderate"
+        ),
+        opinions=opinions,
+        action=PresidentialAction(action=ActionType.NO_ACTION, justification="MOCK:"),
+        rung=0,
+        panel_size=4,
+    )
+
 
 def _retriever(tmp_path, **kwargs):
     _ingest(tmp_path)
@@ -767,6 +842,109 @@ def test_the_claim_threshold_moves_the_decline_rate(tmp_path) -> None:
 
     assert lenient.retrieve(_persona(), ON_TOPIC)[1] == "claims"
     assert strict.retrieve(_persona(), ON_TOPIC) == ("", "none")
+
+
+# ---------------------------------------------------------------------------
+# Provenance: corpus_tier and corroboration depth, both from what actually retrieved.
+# ---------------------------------------------------------------------------
+
+
+def test_the_tier_comes_from_what_retrieved_not_from_the_config(tmp_path) -> None:
+    """Invariant 9. `grounded: true` covers two different kinds of source now, so the tier
+    has to say which — and it has to be a fact about what served, not a declaration."""
+    retriever = _retriever(tmp_path)
+    assert retriever.corpus_tier == "none", "nothing has been retrieved yet"
+
+    retriever.retrieve(_persona(), ON_TOPIC)
+    assert retriever.corpus_tier == "summary"
+    assert StubRetriever().corpus_tier == "stub"
+
+
+def test_a_panel_drawing_on_two_kinds_of_source_reports_mixed(tmp_path) -> None:
+    """Four markdown personas beside eight Wikipedia ones is one panel over two tiers.
+
+    Acceptable, but it must be visible: a contrast between two arms is only clean if both
+    mixed them the same way, and `grounded: true` on its own conceals the question.
+    """
+    _ingest(tmp_path, "brodie")
+    ingest_persona(
+        _persona("jervis", corpus_source="wikipedia").model_copy(
+            update={"wikipedia": "Robert Jervis"}
+        ),
+        tmp_path / "corpora",
+        _wiki_fetcher(),
+    )
+    retriever = CorpusRetriever(tmp_path / "corpora", min_terms=1, claim_min_terms=2)
+
+    assert retriever.retrieve(_persona("brodie"), ON_TOPIC)[1] == "claims"
+    assert retriever.corpus_tier == "summary"
+    assert retriever.retrieve(_persona("jervis", "wikipedia"), "deterrence")[1] == "sources"
+    assert retriever.corpus_tier == "mixed"
+
+
+def test_corroboration_counts_publications_not_claims(tmp_path) -> None:
+    """A position argued in two works is deeper than one stated twice in the same work.
+
+    Counting claims would let a document that restated itself look corroborated, which is
+    the opposite of what the number is for.
+    """
+    retriever = _retriever(tmp_path)
+    block, _ = retriever.retrieve(_persona(), ON_TOPIC)
+    assert retriever.corroboration_for(block) == 2
+
+    narrow, _ = retriever.retrieve(_persona(), "a force launched on warning and judgement")
+    assert retriever.corroboration_for(narrow) == 1, "argued in one work only"
+
+
+def test_corroboration_is_zero_where_there_is_no_claim_index() -> None:
+    """Not 1, and not absent: a stub run has no claim to have been corroborated, and a
+    default of 1 would read as a real single-source finding."""
+    assert StubRetriever().corpus_tier == "stub"
+    assert not hasattr(StubRetriever(), "corroboration_for")
+
+
+def test_the_opinion_records_corroboration_from_the_retriever(tmp_path) -> None:
+    """From the thing that did the retrieving, never from the model — the same rule
+    `basis` follows, and for the same reason."""
+    retriever = _retriever(tmp_path)
+    client = LLMClient(backend=MockBackend(), run_seed=1)
+    opinion, block = Theorist(client, _persona(), "m2", retriever).opine(
+        AnalyticalQuestion(question_id="q0", text=ON_TOPIC, tags=["deterrence"])
+    )
+
+    assert opinion.basis == "claims"
+    assert opinion.corroboration == retriever.corroboration_for(block) == 2
+
+
+def test_a_claims_panel_is_not_reported_as_belief_led(tmp_path) -> None:
+    """A claim is a stated position shown with the passages arguing it — the best-evidenced
+    case this system has. Counting only `sources` as evidence inverted the diagnostic
+    exactly where it mattered most."""
+    record = _record_with_basis("claims")
+    assert views_module._basis_mix(record) == "claims-led"
+    assert views_module._basis_mix(_record_with_basis("beliefs")) == "belief-led"
+    assert views_module._basis_mix(_record_with_basis("sources")) == "sources-led"
+
+
+def test_a_record_written_before_1_2_0_still_loads() -> None:
+    """`corpus_tier` and `corroboration` are additive and defaulted, so every file already
+    in `out/` stays readable — a schema bump that orphaned prior records would make the
+    bump itself unauditable."""
+    record = _record_with_basis("sources")
+    payload = json.loads(record.model_dump_json())
+    payload.pop("corpus_tier")
+    for opinion in payload["opinions"]:
+        opinion.pop("corroboration")
+
+    restored = RunRecord.model_validate(payload)
+    assert restored.corpus_tier == "none"
+    assert all(o.corroboration == 0 for o in restored.opinions)
+
+
+def test_the_schema_version_records_that_the_theorist_sees_something_new() -> None:
+    """Not the additive bump the two new fields look like: what a theorist is shown changed,
+    which changes its opinion, the brief, the courses of action and therefore `action`."""
+    assert SCHEMA_VERSION == "1.2.0"
 
 
 def test_one_store_per_persona_holds_for_claims_too(tmp_path) -> None:

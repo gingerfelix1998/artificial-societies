@@ -48,8 +48,17 @@ class Retriever(Protocol):
 
     mode: str
     grounded: bool
+    #: What kind of source actually served this run: `summary`, `encyclopedia`, `belief`,
+    #: `stub`, `mixed` or `none`. Read after retrieval, for the same reason `grounded` is
+    #: an attribute rather than an argument.
+    corpus_tier: str
 
     def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]: ...
+
+    # `corroboration_for(block) -> int` is optional and deliberately absent from this
+    # Protocol. It is meaningful only where a claim index exists, and adding it here would
+    # tighten every `isinstance` check against a retriever that has no claims to count.
+    # Callers reach it with `getattr`.
 
 
 def format_passage(persona_id: str, source: str, index: int, text: str) -> str:
@@ -105,6 +114,9 @@ class StubRetriever:
 
     mode = "stub"
     grounded = False
+    #: A class attribute for the same reason `grounded` is one: there is no argument that
+    #: can make a registry paraphrase report itself as anything else.
+    corpus_tier = "stub"
 
     def retrieve(self, persona: Persona, question_text: str) -> tuple[str, str]:
         # question_text is accepted and deliberately unused: the stub does no relevance
@@ -245,6 +257,13 @@ class CorpusRetriever:
         self.claim_top_k = claim_top_k
         self._cache: dict[str, list[dict[str, Any]]] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
+        # What this retriever has actually served, accumulated as it serves it. A run's tier
+        # is a fact about what happened, so it cannot be a class attribute the way
+        # `grounded` is: one panel can mix a summary corpus with an encyclopedia one.
+        # `sim.run_once` builds a retriever per replication, so nothing bleeds between
+        # records; theorist fan-out shares one within a replication, as it already does for
+        # `_cache`.
+        self._served: set[str] = set()
 
     def _manifest(self, persona_id: str) -> dict[str, Any]:
         """This persona's ingest manifest, or `{}` if it has no store."""
@@ -409,19 +428,63 @@ class CorpusRetriever:
 
         if source == "markdown":
             block = self._retrieve_claims(persona.persona_id, query)
-            return (block, "claims") if block else ("", "none")
+            if block:
+                self._served.add("summary")
+                return block, "claims"
+            return "", "none"
 
         block = self._select(self._load(persona.persona_id), query)
         if block:
+            # Abstracts live in `chunks.jsonl` beside the article and are folded in here.
+            # An abstract of the theorist's own paper is not really an encyclopedia entry;
+            # separating them needs a tier value ADR 0007 does not define, so it is recorded
+            # as a known imprecision rather than guessed at.
+            self._served.add("encyclopedia")
             return block, "sources"
 
         block = self._select(
             self._load(persona.persona_id, "beliefs.jsonl"), query, self.belief_min_terms
         )
         if block:
+            self._served.add("belief")
             return block, "beliefs"
 
         return "", "none"
+
+    @property
+    def corpus_tier(self) -> str:
+        """What actually served this run, per invariant 9.
+
+        Derived from what came back rather than from what was configured, so a panel that
+        mixed a summary corpus with an encyclopedia one says `mixed` instead of letting
+        `grounded: true` stand for both. `none` when nothing was retrieved at all, which is
+        the honest answer for a control arm that consulted nobody.
+        """
+        if not self._served:
+            return "none"
+        if len(self._served) == 1:
+            return next(iter(self._served))
+        return "mixed"
+
+    def corroboration_for(self, block: str) -> int:
+        """How many distinct publications the claims in `block` were argued across.
+
+        A pure function of the block and the index already loaded: no state, so it is safe
+        under the theorist fan-out and gives the same answer whenever it is asked.
+
+        **A diagnostic, not evidence.** The group behind the number is built by
+        normalised-token Jaccard, which is negation-blind, so it says the same position was
+        stated in more than one work — as far as vocabulary can tell — and not that the
+        theorist was right.
+        """
+        cited = set(PASSAGE_ID.findall(block))
+        if not cited:
+            return 0
+        persona_id = next(iter(cited)).split(":", 1)[0]
+        claims = self._load(persona_id, "claims.jsonl")
+        groups = {c["group"] for c in claims if c["passage_id"] in cited and "group" in c}
+        slugs = {c["source_slug"] for c in claims if c.get("group") in groups}
+        return len(slugs)
 
 
 def get_retriever(mode: str, **kwargs: Any) -> Retriever:

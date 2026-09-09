@@ -37,7 +37,12 @@ from pydantic import (
 #: produces `action` changed (advisor-curated choice of three, rather than a free choice
 #: among all fifteen, under `consult_panel: true`), so a record from before this version
 #: cannot be reproduced by re-running the same config and seed against current code.
-SCHEMA_VERSION = "1.1.0"
+#:
+#: 1.2.0: the claim-indexed markdown corpus (ADR 0007). Bumped on the same reasoning
+#: rather than treated as the additive change `corpus_tier` and `corroboration` look like:
+#: what a theorist is shown changes, which changes its opinion, which changes the brief and
+#: the courses of action, and therefore `action`. Observability alone would not warrant it.
+SCHEMA_VERSION = "1.2.0"
 
 
 class ActionType(str, Enum):
@@ -398,14 +403,26 @@ class TheoristOpinion(_Model):
     #: and for the same reason, but numeric here because this field is averaged.
     confidence: float = 0.5
     method: str = "m2"
-    #: What the position rested on: "sources", "beliefs", or "none" (ADR 0004).
+    #: What the position rested on: "sources", "claims", "beliefs", or "none".
     #:
     #: `out_of_record` still means the persona stated no position. This says whether a
-    #: position that WAS stated came from retrieved source passages or from the persona's
-    #: belief store. The pair is the diagnostic: a low decline rate with most positions
-    #: resting on beliefs is a panel asserting ideology where it has no evidence, which is
-    #: what replaced "a near-zero out-of-record rate is a warning".
+    #: position that WAS stated came from retrieved source passages, from a hand-authored
+    #: claim shown with the prose arguing it (ADR 0007), or from the persona's belief store.
+    #: The pair is the diagnostic: a low decline rate with most positions resting on beliefs
+    #: is a panel asserting ideology where it has no evidence, which is what replaced "a
+    #: near-zero out-of-record rate is a warning" (ADR 0004). `claims` never coexists with
+    #: `beliefs` for one persona — a markdown store has no belief fallback at all.
     basis: str = "none"
+
+    #: How many distinct publications the matched claim's corroboration group spans. 0 on
+    #: every path but `claims`, where 1 means the position was found in one work and 2+ that
+    #: the theorist argued it across several (ADR 0007).
+    #:
+    #: A diagnostic, not evidence. Grouping is normalised-token Jaccard, which is
+    #: negation-blind: two claims differing only by a "not" share every content token, so a
+    #: group asserts vocabulary overlap rather than agreement. From the retriever, never the
+    #: model.
+    corroboration: int = 0
 
     _coerce_citations = field_validator("citations", mode="before")(as_text_list)
 
@@ -518,6 +535,16 @@ class RunRecord(_Model):
         description="True only when a real corpus retriever produced the M2 context. "
         "False under StubRetriever, so a stub run can never be read as grounded."
     )
+    #: What kind of source the grounding actually was, taken from the retriever that
+    #: produced the text (ADR 0007). `grounded` alone stopped distinguishing runs the
+    #: moment two source kinds could serve one panel, and a reviewer reading
+    #: `grounded: true` must be able to tell what it was grounded in without opening a
+    #: manifest.
+    #:
+    #: primary (nothing produces this yet) · summary (project-written markdown) ·
+    #: encyclopedia (Wikipedia and the abstracts alongside it) · belief · stub · mixed ·
+    #: none. Defaulted so records written before 1.2.0 still load.
+    corpus_tier: str = "none"
 
     scenario_id: str
     injected_event_ids: list[str] = Field(default_factory=list)

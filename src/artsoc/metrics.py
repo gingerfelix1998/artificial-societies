@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import statistics
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,12 +109,43 @@ class ArmSummary:
     basis_counts: dict[str, int] = field(default_factory=dict)
     beliefs_share: float = 0.0
 
+    #: What the grounding actually was. `grounded` stopped distinguishing runs the moment
+    #: two source kinds could serve one panel, so the report prints this beside it (ADR
+    #: 0007). Reduced across the arm's records: one value, or `mixed`. Defaulted so that
+    #: summaries built by hand, and records written before 1.2.0, still construct.
+    corpus_tier: str = "none"
+
+    #: Corroboration depth over the positions that came from a claim index: the mean number
+    #: of publications the matched position was argued across, and the share that rested on
+    #: a single one.
+    #:
+    #: This is what replaces ADR 0004's belief diagnostic where it has become meaningless —
+    #: every claim has evidence by construction, so `beliefs_share` cannot say anything
+    #: about a markdown panel. It is a diagnostic and not evidence: grouping is
+    #: negation-blind, and on a thin corpus almost every group is a singleton, so a depth of
+    #: 1.0 says the corpus is small rather than that the theorists were unsupported.
+    mean_corroboration: float = 0.0
+    single_source_share: float = 0.0
+
     #: Which model served each role. One distinct value across every role means a smoke
     #: test: the presidential decision is the primary metric, and serving it from the same
     #: cheap model as everything else changes what was measured, not just what it cost.
     models: dict[str, str] = field(default_factory=dict)
 
     warnings: list[str] = field(default_factory=list)
+
+
+def reduce_tier(tiers: Iterable[str]) -> str:
+    """One arm's corpus tier: the single value it used, or `mixed`.
+
+    `none` is dropped before reducing, because a replication that retrieved nothing did not
+    contribute a different kind of source — it contributed no source. Without that, one
+    declining replication would make a uniformly-summary arm read as mixed.
+    """
+    seen = {tier for tier in tiers if tier and tier != "none"}
+    if not seen:
+        return "none"
+    return next(iter(seen)) if len(seen) == 1 else "mixed"
 
 
 def summarise(records: list[RunRecord]) -> ArmSummary:
@@ -131,6 +163,11 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
 
     opinions = [o for r in records for o in r.opinions]
     declined = sum(1 for o in opinions if o.out_of_record)
+    # Corroboration is only defined where a claim index produced the position, so the
+    # denominator is those positions and not every opinion — averaging a structural zero in
+    # from the eight Wikipedia personas would drag the depth toward nothing and read as a
+    # thin corpus rather than as a metric that does not apply.
+    claim_based = [o for o in opinions if o.basis == "claims" and not o.out_of_record]
     citations = sum(len(o.citations) for o in opinions)
     unsupported = sum(len(r.unsupported_citations) for r in records)
 
@@ -162,9 +199,23 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
         n_citations=citations,
         n_unsupported=unsupported,
         citation_integrity=round(1 - unsupported / citations, 4) if citations else 1.0,
+        mean_corroboration=(
+            round(statistics.fmean(c.corroboration for c in claim_based), 3)
+            if claim_based
+            else 0.0
+        ),
+        single_source_share=(
+            round(sum(1 for c in claim_based if c.corroboration <= 1) / len(claim_based), 4)
+            if claim_based
+            else 0.0
+        ),
         backend=first.backend,
         models=dict(first.models),
         grounded=first.grounded,
+        # Reduced across every record rather than read off the first: a sweep in which one
+        # replication routed to a summary corpus and another to an encyclopedia one is
+        # mixed, and reporting whichever came first would hide that.
+        corpus_tier=reduce_tier(r.corpus_tier for r in records),
         cache_enabled=first.cache_enabled,
         retrieval_mode=first.retrieval_mode,
         consulted_panel=bool(first.opinions) or first.advisor_brief is not None,
@@ -218,6 +269,26 @@ def _warnings(s: ArmSummary) -> list[str]:
             f"stated positions came from the belief store while only "
             f"{s.out_of_record_rate:.0%} declined. The panel is asserting what these "
             "theorists held rather than citing where they held it."
+        )
+    # ADR 0004's diagnostic is meaningless where every claim carries evidence by
+    # construction, so corroboration depth replaces it for those personas: a position found
+    # in one work is weaker than one a theorist argued across three. Reported as a fact
+    # about the corpus, because on a thin one it is exactly that.
+    if s.basis_counts.get("claims") and s.single_source_share > 0.5:
+        out.append(
+            f"SINGLE-SOURCE POSITIONS ({s.arm}): {s.single_source_share:.0%} of positions "
+            f"drawn from the claim index rest on one publication (mean depth "
+            f"{s.mean_corroboration:.2f}). Read this as a fact about corpus breadth first: "
+            "with few documents per theorist almost every position is single-sourced, and "
+            "grouping is negation-blind, so depth attests to vocabulary rather than to "
+            "agreement."
+        )
+    if s.corpus_tier == "mixed":
+        out.append(
+            f"MIXED CORPUS TIERS ({s.arm}): this arm's panel drew on more than one kind of "
+            "source, so `grounded: true` covers passages of different evidential weight. "
+            "A contrast against another arm is only clean if that arm mixed them the same "
+            "way."
         )
     # M1 personas are given no record, so there is nothing for them to be outside of and a
     # zero rate is correct. Warning there would train the reader to ignore the warning.
@@ -381,8 +452,8 @@ def format_report(summaries: list[ArmSummary]) -> str:
         else:
             out.append("    no panel consulted (control arm)")
         out.append(
-            f"    backend={s.backend} grounded={s.grounded} cache={s.cache_enabled} "
-            f"retrieval={s.retrieval_mode}"
+            f"    backend={s.backend} grounded={s.grounded} corpus={s.corpus_tier} "
+            f"cache={s.cache_enabled} retrieval={s.retrieval_mode}"
         )
 
     out += ["", "=" * 78, f"CONTRASTS AGAINST {CONTROL_ARM}", "=" * 78]

@@ -101,6 +101,9 @@ export interface ArmSummary {
     [k: string]: number
   }
   beliefs_share?: number
+  corpus_tier?: string
+  mean_corroboration?: number
+  single_source_share?: number
   models?: {
     [k: string]: string
   }
@@ -418,6 +421,7 @@ export interface SessionSummary {
     [k: string]: string
   }
   grounded?: boolean
+  corpus_tier?: string
   cache_enabled?: boolean
   retrieval_mode?: string
   est_cost_usd?: number
@@ -667,6 +671,7 @@ export interface RunRecord {
    * True only when a real corpus retriever produced the M2 context. False under StubRetriever, so a stub run can never be read as grounded.
    */
   grounded: boolean
+  corpus_tier?: string
   scenario_id: string
   injected_event_ids?: string[]
   host_ground_truth?: {
@@ -734,6 +739,7 @@ export interface TheoristOpinion {
   confidence?: number
   method?: string
   basis?: string
+  corroboration?: number
 }
 /**
  * The Advisor's compression of the panel into something the President reads.
@@ -838,6 +844,7 @@ export interface RunFacts {
   n_citations: number
   n_unsupported_citations: number
   grounded: boolean
+  corpus_tier?: string
   retrieval_mode: string
 }
 /**
@@ -872,6 +879,8 @@ export interface RunConfig {
   retrieval_top_k?: number
   retrieval_min_terms?: number
   retrieval_belief_min_terms?: number | null
+  retrieval_claim_min_terms?: number
+  retrieval_claim_top_k?: number
   consult_panel?: boolean
   persona_method?: string
   panel_source?: string

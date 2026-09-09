@@ -898,8 +898,20 @@ class Theorist:
             # From the retriever, not from the model: only the thing that did the
             # retrieving knows which store the text came from.
             basis=basis,
+            corroboration=self._corroboration(record_block),
         )
         return _clean(opinion, "position", "reasoning"), record_block
+
+    def _corroboration(self, record_block: str) -> int:
+        """How many publications the matched position was argued across, or 0.
+
+        Read off the retriever with `getattr` rather than through the `Retriever` Protocol:
+        the count is meaningful only where a claim index exists, and putting it on the
+        Protocol would tighten every `isinstance` check against a retriever with no claims
+        to count.
+        """
+        counter = getattr(self.retriever, "corroboration_for", None)
+        return counter(record_block) if counter and record_block else 0
 
     def unsupported_citations(self, opinion: TheoristOpinion, record_block: str) -> list[str]:
         """Ids this persona cited that were not in the block it was shown."""
