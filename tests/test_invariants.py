@@ -1012,6 +1012,43 @@ def test_a_run_record_survives_a_round_trip_through_json() -> None:
     assert restored.routing[0].selected == record.routing[0].selected
 
 
+def test_a_record_without_the_excomm_fields_still_loads() -> None:
+    """The ExComm fields (ADR 0008) are additive and defaulted, so every file already in
+    out/ stays readable — a bump that orphaned prior records would make it unauditable."""
+    record = _run("baseline", 3)
+    payload = json.loads(record.model_dump_json())
+    for field in ("secret_lean", "secret_lean_coa_id", "secret_lean_reasoning",
+                  "deliberation", "deliberation_rounds"):
+        payload.pop(field, None)
+
+    restored = RunRecord.model_validate(payload)
+    assert restored.secret_lean is None
+    assert restored.deliberation == []
+    assert restored.deliberation_rounds == 0
+
+
+def test_the_secret_lean_scores_on_the_deterministic_ladder() -> None:
+    """`rung_for(secret_lean)` is one endpoint of the lean->decision contrast, so the lean
+    must be a typed action, never free text (invariant 2)."""
+    from artsoc.schema import ExCommStatement
+
+    record = _run("baseline", 3)
+    payload = json.loads(record.model_dump_json())
+    payload["secret_lean"] = ActionType.PRIVATE_WARNING.value
+    payload["secret_lean_coa_id"] = "b"
+    payload["deliberation"] = [
+        ExCommStatement(member_id="defense_secretary", round=1, statement="MOCK:",
+                        favoured_coa_id="b").model_dump(mode="json"),
+        ExCommStatement(member_id="jcs_chairman", round=1, abstained=True).model_dump(mode="json"),
+    ]
+    payload["deliberation_rounds"] = 1
+
+    restored = RunRecord.model_validate(payload)
+    assert restored.secret_lean is ActionType.PRIVATE_WARNING
+    assert isinstance(rung_for(restored.secret_lean), int)
+    assert restored.deliberation[1].abstained and restored.deliberation[1].statement == ""
+
+
 def test_the_recorded_rung_is_always_the_deterministic_one() -> None:
     """The primary metric is derived from the typed action, never read from the file."""
     for seed in range(1, 8):

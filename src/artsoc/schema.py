@@ -42,6 +42,10 @@ from pydantic import (
 #: rather than treated as the additive change `corpus_tier` and `corroboration` look like:
 #: what a theorist is shown changes, which changes its opinion, which changes the brief and
 #: the courses of action, and therefore `action`. Observability alone would not warrant it.
+#:
+#: 1.3.0 is reserved for the ExComm deliberation (ADR 0008) and is applied in that ADR's
+#: commit, alongside the access-matrix change — not here, where the `ExCommStatement`,
+#: `secret_lean` and `deliberation` fields are added inert.
 SCHEMA_VERSION = "1.2.0"
 
 
@@ -480,6 +484,25 @@ class CourseOfAction(_Model):
     _coerce_text = field_validator("rationale", mode="before")(as_text_field)
 
 
+class ExCommStatement(_Model):
+    """One member's turn in one round of the deliberative committee (ADR 0008).
+
+    `abstained` is the panel analogue of a theorist's out-of-record decline: a member with
+    nothing to add says so and that is recorded, rather than a filler statement being
+    generated to fill the slot. An abstaining turn carries an empty `statement`.
+    """
+
+    member_id: str
+    round: int
+    abstained: bool = False
+    statement: str = ""
+    #: The course of action this member argued for this turn, by `coa_id`, or `None` if it
+    #: abstained or argued against all three.
+    favoured_coa_id: str | None = None
+
+    _coerce_text = field_validator("statement", mode="before")(as_text_field)
+
+
 class PresidentialAction(_Model):
     """Exactly one typed action, plus the justification that did not produce it."""
 
@@ -571,6 +594,30 @@ class RunRecord(_Model):
 
     action: PresidentialAction
     rung: int
+
+    #: The President's private prior over the three courses of action, captured before the
+    #: ExComm convened (ADR 0008). Typed as an `ActionType` so it scores on the
+    #: deterministic ladder — `rung_for(secret_lean)` is one endpoint of the
+    #: lean->decision contrast, `rung` is the other.
+    #:
+    #: HOST-ONLY. It never re-enters a prompt — not even the President's own later decision
+    #: prompt — so `test_access_matrix.py` scans for it the way it scans for
+    #: `ground_truth_detail`. `None` under the control arm, where there are no courses of
+    #: action to lean over; set on every other `consult_panel: true` run, including
+    #: `baseline`, so the no-debate lean->decision movement is a measurable noise floor.
+    secret_lean: ActionType | None = None
+    secret_lean_coa_id: str | None = None
+    #: The President's stated reason for the prior. Host-only, for the analyst; stripped
+    #: from every client-facing surface alongside `host_ground_truth`.
+    secret_lean_reasoning: str = ""
+
+    #: The committee's debate, flat — `round` is a field on each statement. Empty under the
+    #: control arm and whenever `convene_excomm` is false.
+    deliberation: list[ExCommStatement] = Field(default_factory=list)
+    #: How many rounds actually ran (the President concluded early, or the cap was hit).
+    #: `0` when no debate was held.
+    deliberation_rounds: int = 0
+
     panel_size: int = 0
     personas_consulted: list[str] = Field(default_factory=list)
 
