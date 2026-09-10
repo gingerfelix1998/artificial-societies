@@ -206,7 +206,17 @@ def parse_markdown(text: str) -> dict[str, Any]:
         block, sep, rest = rest.partition("\n---")
         if not sep:
             raise ValueError("the `---` header block is opened but never closed")
-        header = yaml.safe_load(block) or {}
+        try:
+            header = yaml.safe_load(block) or {}
+        except yaml.YAMLError as exc:
+            # Named rather than re-raised, because the overwhelmingly likely cause is a
+            # colon in a title — half the works in this literature are "Title: Subtitle" —
+            # and a raw scanner traceback does not say to quote the value.
+            raise ValueError(
+                f"the `---` header block is not valid YAML: {exc}. A value containing a "
+                "colon must be quoted, e.g. work: 'The Absolute Weapon: Atomic Power and "
+                "World Order'"
+            ) from exc
         body = rest.partition("\n")[2]
 
     missing = [field for field in ("work", "confidence") if not header.get(field)]

@@ -199,6 +199,20 @@ def test_a_document_that_does_not_state_its_confidence_is_not_ingested() -> None
         parse_markdown("---\nwork: Something\n---\n\n# T\n\n## Argument\n\nprose\n")
 
 
+def test_an_unquoted_colon_in_a_title_says_what_to_do() -> None:
+    """The most likely authoring mistake, and a scanner traceback does not explain it.
+
+    Half the works in this literature are "Title: Subtitle", so an unquoted `work:` value
+    is what a first document hits — as the first realistic one written against this
+    pipeline did.
+    """
+    with pytest.raises(ValueError, match="must be quoted"):
+        parse_markdown(
+            "---\nwork: The Absolute Weapon: Atomic Power and World Order\n"
+            "confidence: general\n---\n\n# T\n\n## Argument\n\nprose\n"
+        )
+
+
 def test_verify_and_source_never_become_evidence() -> None:
     """A persona retrieving "Verify: everything above" would produce nonsense and cite it.
 
