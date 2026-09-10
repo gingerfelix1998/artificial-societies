@@ -30,14 +30,17 @@ import pytest
 from artsoc.agents import (
     Advisor,
     BoundaryViolation,
+    ExCommMember,
     IntelligenceOfficer,
     President,
     Theorist,
     assert_decontextualised,
+    render_deliberation,
+    render_situation,
 )
 from artsoc.config import RunConfig
 from artsoc.llm import ROSTER_ENTRY, LLMClient, MockBackend, Role, role_marker
-from artsoc.personas import load_registry
+from artsoc.personas import load_excomm, load_registry
 from artsoc.retrieval import get_retriever
 from artsoc.schema import PresidentialQuery
 from artsoc.sim import build_panel
@@ -108,7 +111,34 @@ class LoopRun:
 
         self.brief = advisor.synthesise(self.query, self.opinions, "full_range")
         self.coas = advisor.propose_coas(self.query, self.opinions)
-        self.action = president.decide(self.intel, self.brief, self.coas)
+
+        # The ExComm deliberation (ADR 0008). Driven here so the canary suite covers the
+        # new roles however `sim.py` assembles them. Two rounds, so a round-2 prompt
+        # contains round-1 statements — the inverted assertion below checks exactly that.
+        self.lean_action, self.lean_coa_id, self.lean_reason = president.lean(
+            self.intel, self.brief, self.coas
+        )
+        self.excomm = load_excomm()
+        self.situation = render_situation(self.intel, self.view)
+        self.deliberation = []
+        self.deliberation_rounds = 0
+        for round_no in (1, 2):
+            self.deliberation_rounds = round_no
+            transcript = render_deliberation(self.deliberation, self.excomm)
+            for member in self.excomm:
+                self.deliberation.append(
+                    ExCommMember(self.client, member).contribute(
+                        round_no, self.situation, self.brief, self.coas, transcript
+                    )
+                )
+            president.chair(round_no, 3, render_deliberation(self.deliberation, self.excomm))
+
+        self.action = president.decide(
+            self.intel,
+            self.brief,
+            self.coas,
+            deliberation_transcript=render_deliberation(self.deliberation, self.excomm),
+        )
 
     def texts_for(self, role: Role) -> list[str]:
         """Every prompt this role saw, system and user concatenated."""
@@ -351,6 +381,99 @@ def test_the_president_writing_the_query_has_not_yet_seen_any_opinion(run: LoopR
 
 
 # ---------------------------------------------------------------------------
+# The ExComm deliberation (ADR 0008). The committee is the first role set permitted peer
+# visibility, and it sees the anonymised situation. Everything it may NOT see is asserted
+# explicitly here, and the one thing it MUST see — the prior rounds of its own debate — is
+# the inverted assertion that documents the exception as deliberate.
+# ---------------------------------------------------------------------------
+
+
+def test_an_excomm_member_sees_the_prior_rounds_of_debate(run: LoopRun) -> None:
+    """The exception, made explicit. Peer visibility is forbidden for theorists because it
+    turns consensus into a herding artifact; for a deliberative committee it is the point.
+    A round-2 prompt must contain round-1 statements or the debate is theatre."""
+    round_one = [s.statement for s in run.deliberation if s.round == 1 and not s.abstained]
+    assert round_one, "no round-1 statements were made; the scan proves nothing"
+    round_two_texts = [
+        t for t in run.texts_for(Role.EXCOMM_MEMBER) if "[[ROUND:2]]" in t
+    ]
+    assert round_two_texts, "no round-2 turns ran"
+    assert any(
+        stmt in t for stmt in round_one for t in round_two_texts
+    ), "a round-2 member was not shown what round 1 said"
+
+
+def test_an_excomm_member_never_sees_raw_theorist_opinions(run: LoopRun) -> None:
+    """The committee sees the Advisor's brief and the three COAs — the same compression the
+    President sees — never the opinions behind them."""
+    for text in run.texts_for(Role.EXCOMM_MEMBER):
+        for opinion in run.opinions:
+            assert opinion.position not in text
+            assert opinion.reasoning not in text
+            assert opinion.persona_name not in text
+
+
+def test_the_excomm_never_sees_ground_truth(run: LoopRun) -> None:
+    """Already covered by the all-roles sweep, asserted again because this role is newly
+    situation-aware and the boundary is the one that must never move."""
+    for text in run.texts_for(Role.EXCOMM_MEMBER) + run.texts_for(Role.PRESIDENT_CHAIR):
+        for phrase in GROUND_TRUTH_PHRASES:
+            assert phrase.lower() not in text.lower()
+
+
+def test_no_real_committee_name_reaches_any_prompt(run: LoopRun) -> None:
+    """The roster is 1962-shaped, not nominal: the real names in docs/excomm/roster-key.md
+    must not appear in any prompt of any role, the way the scenario keeps 'Cuba' out."""
+    import re as _re
+    from pathlib import Path
+
+    key = (Path(__file__).resolve().parents[1] / "docs" / "excomm" / "roster-key.md").read_text()
+    # Each figure cell is a full name; the leak indicator is the full name or the surname
+    # (last token). Bare given names — "Robert", "George" — are deliberately not checked:
+    # they collide with theorist persona names ("Robert Jervis", "Alexander George") that
+    # legitimately appear in routing prompts.
+    names: set[str] = set()
+    for line in key.splitlines():
+        if line.startswith("| `"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) >= 3 and not cells[0].startswith("---") and cells[2]:
+                full = cells[2]
+                if full.lower().startswith("figure"):
+                    continue
+                names.add(full)
+                names.add(full.replace(".", "").split()[-1])  # surname
+    assert len(names) >= 15, "anti-vacuity: full names and surnames must have been extracted"
+    for text in run.all_texts():
+        hits = sorted(n for n in names if _re.search(rf"\b{_re.escape(n)}\b", text))
+        assert hits == [], f"a real committee name reached a prompt: {hits}"
+
+
+def test_the_secret_lean_reaches_no_prompt_of_any_role(run: LoopRun) -> None:
+    """The President's private prior is recorded and never re-prompted — not even into the
+    President's own later decision prompt. Scanned the way ground truth is."""
+    assert run.lean_reason, "anti-vacuity: a lean reasoning string must have been produced"
+    for text in run.all_texts():
+        assert run.lean_reason not in text, "the secret lean's reasoning leaked into a prompt"
+    # The decision prompt shows the debate; it must not show the lean.
+    decision_texts = run.texts_for(Role.PRESIDENT_DECISION)
+    assert any(
+        s.statement and s.statement in t for s in run.deliberation for t in decision_texts
+    ), "guards against a vacuous pass: the decision prompt must show the concluded debate"
+    for text in decision_texts:
+        assert run.lean_reason not in text
+
+
+def test_the_lean_and_chair_never_see_raw_theorist_opinions(run: LoopRun) -> None:
+    """The lean sees the brief and the COAs; the chair sees only the transcript. Neither
+    sees the opinions behind the compression."""
+    for role in (Role.PRESIDENT_LEAN, Role.PRESIDENT_CHAIR):
+        for text in run.texts_for(role):
+            for opinion in run.opinions:
+                assert opinion.position not in text
+                assert opinion.reasoning not in text
+
+
+# ---------------------------------------------------------------------------
 # Role separation at the choke point.
 # ---------------------------------------------------------------------------
 
@@ -365,11 +488,17 @@ def test_every_prompt_carries_its_own_role_marker_and_no_other(run: LoopRun) -> 
                     assert role_marker(other) not in system
 
 
-def test_the_intelligence_officer_is_the_only_role_shown_collection_output(run: LoopRun) -> None:
-    """Collection output is the IO's input and nobody else's."""
+def test_only_the_io_and_the_excomm_are_shown_collection_output(run: LoopRun) -> None:
+    """Collection output is the IO's input; the ExComm is also shown it (ADR 0008).
+
+    Changed from "the IO alone" when the ExComm was added: the committee is a briefed
+    deliberative body convened over the specific crisis, so it sees the anonymised
+    situation — the intel brief and the perceived events — the same way the President does.
+    It still never sees `ground_truth_detail`. No other role is shown the signature.
+    """
     signature = run.scenario.events[0].observable_signature[0]
     seen_in = {role for role in Role if any(signature in t for t in run.texts_for(role))}
-    assert seen_in == {Role.INTEL_OFFICER}
+    assert seen_in == {Role.INTEL_OFFICER, Role.EXCOMM_MEMBER}
 
 
 # ---------------------------------------------------------------------------

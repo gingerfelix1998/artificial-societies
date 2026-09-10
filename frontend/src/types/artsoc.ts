@@ -690,6 +690,11 @@ export interface RunRecord {
   unsupported_citations?: string[]
   action: PresidentialAction
   rung: number
+  secret_lean?: ActionType | null
+  secret_lean_coa_id?: string | null
+  secret_lean_reasoning?: string
+  deliberation?: ExCommStatement[]
+  deliberation_rounds?: number
   panel_size?: number
   personas_consulted?: string[]
   llm_calls?: number
@@ -760,6 +765,18 @@ export interface CourseOfAction {
 }
 /**
  * Exactly one typed action, plus the justification that did not produce it.
+ */
+
+export interface ExCommStatement {
+  member_id: string
+  round: number
+  abstained?: boolean
+  statement?: string
+  favoured_coa_id?: string | null
+}
+
+/**
+ * The closed set of actions available to the President.
  */
 
 export interface RepresentativeView {

@@ -43,7 +43,7 @@ MOCK_PREFIX = "MOCK:"
 
 #: Bumped whenever mock output changes shape. It is part of the cache key, so old cached
 #: responses cannot be silently served against new parsing code.
-MOCK_VERSION = "mock-3"
+MOCK_VERSION = "mock-4"
 
 
 class Role(str, Enum):
@@ -56,6 +56,14 @@ class Role(str, Enum):
     THEORIST = "theorist"
     ADVISOR_SYNTHESIS = "advisor_synthesis"
     ADVISOR_COAS = "advisor_coas"
+    #: The President's private prior over the three courses of action, captured before the
+    #: ExComm convenes (ADR 0008). Its own role so the access-matrix scan can attribute it
+    #: and confirm its output reaches no later prompt.
+    PRESIDENT_LEAN = "president_lean"
+    #: One committee member's turn in one round of the deliberation.
+    EXCOMM_MEMBER = "excomm_member"
+    #: The President, as chair, deciding after each round whether to continue or conclude.
+    PRESIDENT_CHAIR = "president_chair"
     PRESIDENT_DECISION = "president_decision"
 
 
@@ -90,6 +98,10 @@ ACTION_ENTRY = re.compile(r"\[\[ACTION:([a-z_]+)\]\]")
 OPINION_ENTRY = re.compile(r"\[\[OPINION:([A-Za-z0-9_]+):([A-Za-z0-9_]+)\]\]")
 #: One course of action offered to the President, as "coa_id:action_value".
 COA_ENTRY = re.compile(r"\[\[COA:([a-z0-9]+):([a-z_]+)\]\]")
+#: The deliberation round a committee turn belongs to, and the hard cap. In the prompt so
+#: the mock and the access-matrix scan can both read the debate's shape (ADR 0008).
+ROUND_MARKER = re.compile(r"\[\[ROUND:(\d+)\]\]")
+MAXROUNDS_MARKER = re.compile(r"\[\[MAXROUNDS:(\d+)\]\]")
 #: A host-side summarisation request rather than a persona answering a question. It reuses
 #: the theorist role because it is not a participant in the loop — giving it a role of its
 #: own would place it inside the access matrix and imply an agent that never existed.
@@ -202,6 +214,9 @@ class MockBackend:
             Role.THEORIST: self._theorist,
             Role.ADVISOR_SYNTHESIS: self._synthesis,
             Role.ADVISOR_COAS: self._coas,
+            Role.PRESIDENT_LEAN: self._lean,
+            Role.EXCOMM_MEMBER: self._excomm_member,
+            Role.PRESIDENT_CHAIR: self._chair,
             Role.PRESIDENT_DECISION: self._decision,
         }[role]
         return json.dumps(handler(prompt, rng, digest))
@@ -381,6 +396,65 @@ class MockBackend:
             "courses": courses,
         }
 
+    def _lean(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # Reads the offered [[COA:...]] ids out of the prompt, never a side channel. Always
+        # a valid id: the retry-then-raise guard on an invalid one is exercised by a
+        # dedicated fake backend in test_invariants.py (the _decision precedent).
+        offered = COA_ENTRY.findall(prompt)
+        coa_id, action = rng.choice(offered) if offered else ("a", "no_action")
+        answered = f"[[COA:{coa_id}:{action}]]" if rng.random() < 0.15 else coa_id
+        return {
+            "chosen_coa_id": answered,
+            "reasoning": (
+                f"{MOCK_PREFIX} placeholder prior {digest[:6]}; recorded, not shared, and "
+                "not reasoning"
+            ),
+        }
+
+    def _excomm_member(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # The round and the offered courses are read out of the prompt. ~25% of turns
+        # abstain so the panel's out-of-record analogue is never pinned at zero.
+        offered = [f"{cid}:{act}" for cid, act in COA_ENTRY.findall(prompt)]
+        rnd = ROUND_MARKER.search(prompt)
+        round_no = int(rnd.group(1)) if rnd else 1
+        if not offered or rng.random() < 0.25:
+            # A mock abstention still carries the marker so no shape of mock output can be
+            # mistaken for real (`_coas`'s `note` field is the same idea). `agents.py`
+            # blanks the statement when `abstained` is set, so the recorded turn is empty.
+            return {
+                "abstained": True,
+                "statement": f"{MOCK_PREFIX} no contribution this round {digest[:6]}",
+                "favoured_coa_id": None,
+            }
+        favoured = rng.choice(offered).split(":")[0]
+        statement = (
+            f"{MOCK_PREFIX} placeholder committee statement, round {round_no} {digest[:6]}; "
+            "this text argues nothing real"
+        )
+        # Occasionally echo a [[COA:...]] wrapper into the prose so the shared marker guard
+        # in agents.py stays exercised on this new prompt too.
+        if rng.random() < 0.15:
+            cid, act = rng.choice(COA_ENTRY.findall(prompt))
+            statement = f"{statement}, favouring [[COA:{cid}:{act}]]"
+        return {"abstained": False, "statement": statement, "favoured_coa_id": favoured}
+
+    def _chair(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # The hard cap is enforced host-side in agents.py regardless of this answer; the
+        # mock still concludes at the cap so a cache-warm run does not loop to the cap
+        # every time, and stops early ~60% of the time so both paths are exercised.
+        rnd = ROUND_MARKER.search(prompt)
+        cap = MAXROUNDS_MARKER.search(prompt)
+        round_no = int(rnd.group(1)) if rnd else 1
+        max_rounds = int(cap.group(1)) if cap else 3
+        if round_no >= max_rounds:
+            decision = "conclude"
+        else:
+            decision = "conclude" if rng.random() < 0.6 else "continue"
+        return {
+            "decision": decision,
+            "reason": f"{MOCK_PREFIX} placeholder chair note {digest[:6]}",
+        }
+
     def _decision(self, prompt: str, rng: random.Random, digest: str) -> dict:
         # Deliberately always valid: the retry-then-raise guard on an invalid coa_id is
         # exercised by dedicated fake-backend tests (test_invariants.py), not by chance
@@ -456,6 +530,12 @@ DEFAULT_MODELS: dict[str, str] = {
     # A compression/proposal step, the same character of work as synthesis and selection —
     # not the primary metric (ADR 0006).
     Role.ADVISOR_COAS.value: "claude-sonnet-5",
+    # ADR 0008. The lean and the chair are low-volume judgement calls — Sonnet. A member's
+    # turn is many short calls, the same character as a theorist — Haiku. None is the
+    # primary metric, which stays Opus on the decision.
+    Role.PRESIDENT_LEAN.value: "claude-sonnet-5",
+    Role.EXCOMM_MEMBER.value: "claude-haiku-4-5",
+    Role.PRESIDENT_CHAIR.value: "claude-sonnet-5",
     Role.PRESIDENT_DECISION.value: "claude-opus-5",
 }
 

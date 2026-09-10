@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from artsoc import llm as llm_module
 from artsoc import metrics as metrics_module
 from artsoc import personas as personas_module
-from artsoc.agents import Advisor, President, Theorist
+from artsoc.agents import Advisor, ExCommMember, President, Theorist
 from artsoc.config import RunConfig, base_defaults, list_arms, load_arm
 from artsoc.llm import (
     ACTION_ENTRY,
@@ -46,6 +46,7 @@ from artsoc.personas import (
     Registry,
     build_identity_prompt,
     build_question_prompt,
+    load_excomm,
     load_registry,
     panel_coverage,
     route,
@@ -925,6 +926,136 @@ def test_a_consulted_arm_always_produces_exactly_three_courses() -> None:
         assert len(record.courses_of_action) == 3
         assert len({c.action for c in record.courses_of_action}) == 3
         assert record.action.chosen_coa_id in {c.coa_id for c in record.courses_of_action}
+
+
+# ---------------------------------------------------------------------------
+# The ExComm deliberation and the secret lean (ADR 0008).
+# ---------------------------------------------------------------------------
+
+
+def _brief_and_coas():
+    client = _loop_client()
+    query = PresidentialQuery(text="MOCK: decontextualised question", concerns=[])
+    opinions = _opinions_for_coas()
+    brief = Advisor(client).synthesise(query, opinions, "full_range")
+    coas = Advisor(client).propose_coas(query, opinions)
+    return client, brief, coas
+
+
+def test_the_lean_returns_a_typed_action_from_the_three_offered() -> None:
+    """The lean is one endpoint of the lean->decision contrast, so it must be a real
+    ActionType matching one of the offered courses (invariant 2 — no free-text parse)."""
+    client, brief, coas = _brief_and_coas()
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    action, coa_id, reasoning = President(client, _doctrine()).lean(intel, brief, coas)
+    assert coa_id in {c.coa_id for c in coas}
+    assert action == next(c.action for c in coas if c.coa_id == coa_id)
+    assert isinstance(rung_for(action), int)
+    assert isinstance(reasoning, str)
+
+
+def test_the_lean_retries_then_raises_on_an_uncorrectable_backend() -> None:
+    """A named id outside the three offered gets one bounded retry, then raises — the
+    decide() rule, applied to the lean."""
+
+    class BadLean:
+        name = "bad-lean"
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "bad-lean-model"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            if role is Role.PRESIDENT_LEAN:
+                return json.dumps({"chosen_coa_id": "z", "reasoning": "MOCK:"})
+            return MockBackend().complete(role, system, prompt, seed_hint)
+
+    client = LLMClient(backend=BadLean(), run_seed=1)
+    _, brief, coas = _brief_and_coas()
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    with pytest.raises(ValueError, match="initial lean"):
+        President(client, _doctrine()).lean(intel, brief, coas)
+
+
+def test_the_chair_concludes_at_the_cap_regardless_of_the_answer() -> None:
+    """The President controls the end within the cap; the host forces conclude at it."""
+
+    class AlwaysContinue:
+        name = "always-continue"
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "always-continue-model"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            if role is Role.PRESIDENT_CHAIR:
+                return json.dumps({"decision": "continue", "reason": "MOCK:"})
+            return MockBackend().complete(role, system, prompt, seed_hint)
+
+    chair = President(LLMClient(backend=AlwaysContinue(), run_seed=1), _doctrine())
+    assert chair.chair(1, 3, "transcript") == "continue"
+    assert chair.chair(3, 3, "transcript") == "conclude", "the cap is not the model's to override"
+    assert chair.chair(4, 3, "transcript") == "conclude"
+
+
+def test_an_excomm_member_can_abstain_and_the_turn_records_empty() -> None:
+    """Abstention is the panel's out-of-record analogue; the recorded statement is empty
+    whatever the backend returned in the slot."""
+
+    class AlwaysAbstain:
+        name = "always-abstain"
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "always-abstain-model"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            if role is Role.EXCOMM_MEMBER:
+                return json.dumps(
+                    {"abstained": True, "statement": "MOCK: filler", "favoured_coa_id": "a"}
+                )
+            return MockBackend().complete(role, system, prompt, seed_hint)
+
+    client = LLMClient(backend=AlwaysAbstain(), run_seed=1)
+    _, brief, coas = _brief_and_coas()
+    member = load_excomm()[0]
+    stmt = ExCommMember(client, member).contribute(1, "SITUATION", brief, coas, "(none yet)")
+    assert stmt.abstained is True
+    assert stmt.statement == ""
+    assert stmt.member_id == member.member_id and stmt.round == 1
+
+
+def test_an_excomm_member_favoured_coa_is_validated_against_the_offer() -> None:
+    """A favoured id the model invents is dropped to None, not recorded as a real choice."""
+
+    class BadFavour:
+        name = "bad-favour"
+
+        def model_for(self, role):  # noqa: ANN001, ARG002
+            return "bad-favour-model"
+
+        def complete(self, role, system, prompt, seed_hint):  # noqa: ANN001, ARG002
+            if role is Role.EXCOMM_MEMBER:
+                return json.dumps(
+                    {"abstained": False, "statement": "MOCK: view", "favoured_coa_id": "zzz"}
+                )
+            return MockBackend().complete(role, system, prompt, seed_hint)
+
+    client = LLMClient(backend=BadFavour(), run_seed=1)
+    _, brief, coas = _brief_and_coas()
+    stmt = ExCommMember(client, load_excomm()[0]).contribute(1, "S", brief, coas, "x")
+    assert stmt.favoured_coa_id is None
+
+
+def test_the_decision_prompt_can_carry_the_debate_but_never_the_lean() -> None:
+    """`decide` gains a transcript block under a deliberation; the lean is not added to it,
+    and a test would have to assert the negative to catch a regression."""
+    client, brief, coas = _brief_and_coas()
+    intel = IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate")
+    president = President(client, _doctrine())
+    transcript = "defense secretary (round 1): MOCK: argued for a blockade [favours b]"
+    action = president.decide(intel, brief, coas, deliberation_transcript=transcript)
+    assert action.chosen_coa_id in {c.coa_id for c in coas}
+    system, prompt = client.prompts_for(Role.PRESIDENT_DECISION)[-1]
+    assert transcript in prompt
+    assert "leaning toward" not in prompt.lower()
 
 
 def test_a_malformed_backend_response_raises_rather_than_being_salvaged() -> None:

@@ -38,6 +38,13 @@ models:
   theorist: claude-haiku-4-5
   advisor_synthesis: claude-sonnet-5
   advisor_coas: claude-sonnet-5
+  #   president_lean      the President's prior over the three courses, before the ExComm
+  #                       convenes (ADR 0008). Low-volume judgement, uncached.
+  #   excomm_member       one committee member's turn — many short calls, like theorist.
+  #   president_chair     continue-or-conclude after each round. Low volume.
+  president_lean: claude-sonnet-5
+  excomm_member: claude-haiku-4-5
+  president_chair: claude-sonnet-5
   president_decision: claude-opus-5
 
 # Thinking depth for models that take adaptive thinking. Thinking tokens bill as output,

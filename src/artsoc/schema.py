@@ -43,10 +43,12 @@ from pydantic import (
 #: what a theorist is shown changes, which changes its opinion, which changes the brief and
 #: the courses of action, and therefore `action`. Observability alone would not warrant it.
 #:
-#: 1.3.0 is reserved for the ExComm deliberation (ADR 0008) and is applied in that ADR's
-#: commit, alongside the access-matrix change — not here, where the `ExCommStatement`,
-#: `secret_lean` and `deliberation` fields are added inert.
-SCHEMA_VERSION = "1.2.0"
+#: 1.3.0: the ExComm deliberation and the secret lean (ADR 0008). Under
+#: `convene_excomm: true` the President's decision prompt gains a debate transcript it did
+#: not have before, so `action` cannot be reproduced from a pre-1.3.0 config and seed. The
+#: `secret_lean` and `deliberation` fields look additive but the mechanism changed — the
+#: same test ADR 0006 and 0007 applied.
+SCHEMA_VERSION = "1.3.0"
 
 
 class ActionType(str, Enum):

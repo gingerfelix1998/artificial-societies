@@ -1,4 +1,4 @@
-"""The four roles, and the context boundaries each one is held to.
+"""The roles, and the context boundaries each one is held to.
 
 This module is where invariant 1 is actually implemented. `tests/test_access_matrix.py`
 checks it from the outside by scanning every prompt these roles emit; what follows is the
@@ -11,13 +11,18 @@ The boundaries, and why each exists:
   withheld from it by care — the type it receives has no such field.
 * **The President** reads the intelligence brief and the advisory brief. Never raw
   opinions: the compression from many opinions into a few hundred tokens is a modelled
-  step, and what it drops is itself a finding.
+  step, and what it drops is itself a finding. Before deciding it records a private lean
+  over the three courses of action (ADR 0008), which then never re-enters a prompt.
 * **The Advisor** reads the President's query and the opinions it collected. Never
   intelligence reporting — otherwise the brief stops being a compression of expert opinion
   and becomes a second, unlogged analytic layer.
 * **A Theorist** reads one decontextualised question and its own record. Never the
   scenario, never another theorist. Peer visibility would make apparent consensus a
   herding artifact of call ordering.
+* **An ExComm member** (ADR 0008) is the exception to the last rule, deliberately: it is a
+  deliberative committee convened over the crisis, so it reads the anonymised situation, the
+  advisor's brief, the three courses and the running debate transcript. It never sees raw
+  theorist opinions, the President's secret lean, or the host's ground truth.
 
 The one path by which situational detail could reach the Advisor is the President's query,
 which is written *after* reading the intelligence brief. `assert_decontextualised` closes
@@ -46,7 +51,11 @@ from artsoc.llm import (
     role_marker,
 )
 from artsoc.personas import (
+    ExCommMember as ExCommPersona,
+)
+from artsoc.personas import (
     Persona,
+    build_excomm_identity_prompt,
     build_identity_prompt,
     build_question_prompt,
 )
@@ -58,6 +67,7 @@ from artsoc.schema import (
     AnalyticalQuestion,
     CourseOfAction,
     DoctrineCard,
+    ExCommStatement,
     IntelBrief,
     PerceivedEvent,
     PresidentialAction,
@@ -218,6 +228,85 @@ def _clean(model: _M, *fields: str) -> _M:
 
 
 # ---------------------------------------------------------------------------
+# Shared prompt blocks. Factored so the President's decision prompt, the President's lean
+# prompt, and every ExComm member's prompt render the same inputs identically — and so the
+# access-matrix scan is checking one renderer, not three.
+# ---------------------------------------------------------------------------
+
+
+def _intel_block(intel: IntelBrief) -> list[str]:
+    return [
+        "INTELLIGENCE BRIEF:",
+        f"  {intel.summary}",
+        f"  assessment: {intel.assessed_activity}",
+        f"  confidence: {intel.confidence}",
+        "  alternative explanations:",
+        *(f"    - {alt}" for alt in intel.alternative_explanations),
+        "  collection gaps:",
+        *(f"    - {gap}" for gap in intel.collection_gaps),
+    ]
+
+
+def _advisor_block(brief: AdvisorBrief) -> list[str]:
+    return [
+        "ADVISOR'S BRIEF:",
+        f"  {brief.summary}",
+        "  points of consensus:",
+        *(f"    - {point}" for point in brief.consensus_points),
+        "  minority positions:",
+        *(f"    - {pos}" for pos in brief.minority_positions),
+    ]
+
+
+def _coa_block(coas: list[CourseOfAction]) -> list[str]:
+    return [
+        "COURSES OF ACTION under consideration:",
+        *(
+            f"  [[COA:{coa.coa_id}:{coa.action.value}]] {coa.coa_id}: "
+            f"{coa.action.value} — {coa.rationale}"
+            for coa in coas
+        ),
+    ]
+
+
+def render_situation(intel: IntelBrief, view: list[PerceivedEvent]) -> str:
+    """The anonymised crisis, as the ExComm is shown it (ADR 0008).
+
+    Carries only what `IntelBrief` and `PerceivedEvent` expose — there is no
+    `ground_truth_detail` on either type, so the host's truth cannot reach here by
+    accident. Nation names in the perceived events are already the scenario's anonymised
+    `Nation A / Nation B`.
+    """
+    lines = list(_intel_block(intel))
+    if view:
+        lines.append("PERCEIVED EVENTS:")
+        for event in view:
+            lines.append(f"  - {event.actor_nation}: {event.description}")
+            for sig in event.observable_signature:
+                lines.append(f"      · {sig}")
+            if event.degraded:
+                lines.append("      · (this reading is degraded)")
+    return "\n".join(lines)
+
+
+def render_deliberation(deliberation: list[ExCommStatement], roster: list[ExCommPersona]) -> str:
+    """The debate so far, one line per turn. Used inside a round to show members what has
+    been said, and in the President's decision prompt to show the concluded debate."""
+    if not deliberation:
+        return "(no statements yet)"
+    seats = {m.member_id: m.role_title.split("—")[0].strip() for m in roster}
+    out: list[str] = []
+    for stmt in deliberation:
+        who = seats.get(stmt.member_id, stmt.member_id)
+        if stmt.abstained:
+            out.append(f"{who} (round {stmt.round}): [abstained]")
+        else:
+            favoured = f" [favours {stmt.favoured_coa_id}]" if stmt.favoured_coa_id else ""
+            out.append(f"{who} (round {stmt.round}): {stmt.statement}{favoured}")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Intelligence Officer
 # ---------------------------------------------------------------------------
 
@@ -260,7 +349,7 @@ class IntelligenceOfficer:
         lines.append(
             "Produce JSON with keys: summary, assessed_activity, confidence, "
             "alternative_explanations, collection_gaps. `confidence` is one of the "
-            "strings \"low\", \"moderate\" or \"high\"; the two list fields are lists of "
+            'strings "low", "moderate" or "high"; the two list fields are lists of '
             "strings. " + JSON_ONLY
         )
         payload = _parse_json(
@@ -292,7 +381,7 @@ _PRESIDENT_QUERY_SYSTEM = (
 QUERY_ATTEMPTS = 3
 
 #: How many times the President may be asked to choose again after naming a course of
-#: action id that was not among the three offered (ADR 0006).
+#: action id that was not among the three offered (ADR 0006). Reused for the lean.
 COA_ATTEMPTS = 3
 
 _PRESIDENT_DECISION_SYSTEM = (
@@ -300,6 +389,19 @@ _PRESIDENT_DECISION_SYSTEM = (
     "and an advisor's synthesis of expert opinion. Select exactly one action from the "
     "closed list you are given, and justify it. The justification is recorded but does "
     "not determine anything."
+)
+
+_PRESIDENT_LEAN_SYSTEM = (
+    "You are the head of state of a nuclear-armed nation, about to convene a committee to "
+    "deliberate a live crisis. Before you hear them, record which of the three courses of "
+    "action you are currently inclined toward and why. This is recorded for later analysis "
+    "and is not shared with the committee or with anyone else. It does not commit you."
+)
+
+_PRESIDENT_CHAIR_SYSTEM = (
+    "You are chairing a committee deliberating a crisis. After each round you decide "
+    "whether the discussion should continue or has gone as far as it usefully can and you "
+    "should conclude it and decide. Judge whether another round would add anything."
 )
 
 
@@ -327,8 +429,7 @@ class President:
             f"  confidence: {intel.confidence}",
             "",
             "Produce JSON with keys: text, concerns. `text` must be a general "
-            "analytical question about strategy, carrying no situational detail. "
-            + JSON_ONLY,
+            "analytical question about strategy, carrying no situational detail. " + JSON_ONLY,
         ]
 
         last: BoundaryViolation | None = None
@@ -376,11 +477,97 @@ class President:
             f"{QUERY_ATTEMPTS} attempts: {last}"
         )
 
+    def lean(
+        self, intel: IntelBrief, brief: AdvisorBrief, coas: list[CourseOfAction]
+    ) -> tuple[ActionType, str, str]:
+        """The President's private prior over the three courses, before the ExComm convenes.
+
+        Returns `(action, coa_id, reasoning)`. Recorded as `RunRecord.secret_lean` and
+        never returned into any later prompt — not even the President's own decision
+        prompt. `cacheable=False`: it is one endpoint of the lean->decision contrast and
+        must have the same variance treatment as the decision (which is never cached).
+        A named id outside the three offered gets one bounded retry then raises, the same
+        rule `decide` applies (ADR 0006).
+        """
+        system = _system(Role.PRESIDENT_LEAN, _PRESIDENT_LEAN_SYSTEM)
+        base = [
+            f"YOUR STANDING DOCTRINE: {self.doctrine.doctrine}",
+            f"YOUR DISPOSITION: {self.doctrine.disposition}",
+            "",
+            *_intel_block(intel),
+            "",
+            *_advisor_block(brief),
+            "",
+            *_coa_block(coas),
+            "",
+            "Produce JSON with keys: chosen_coa_id, reasoning. `chosen_coa_id` is one of "
+            "the three ids above. " + JSON_ONLY,
+        ]
+        valid = {coa.coa_id: coa.action for coa in coas}
+        last_invalid: str | None = None
+        for attempt in range(COA_ATTEMPTS):
+            lines = list(base)
+            if attempt:
+                lines += [
+                    "",
+                    f"Your previous answer {last_invalid!r} is not one of {', '.join(valid)}. "
+                    "Choose one of those ids.",
+                ]
+            payload = _parse_json(
+                self.client.complete(
+                    role=Role.PRESIDENT_LEAN,
+                    system=system,
+                    prompt="\n".join(lines),
+                    cacheable=False,
+                ),
+                Role.PRESIDENT_LEAN,
+            )
+            chosen_id = _unwrap_marker(payload.get("chosen_coa_id", ""), group=1)
+            if chosen_id in valid:
+                reasoning = _strip_inline_markers(str(payload.get("reasoning", "")))
+                return valid[chosen_id], chosen_id, reasoning
+            last_invalid = chosen_id
+        raise ValueError(
+            f"the President could not name one of the offered courses ({', '.join(valid)}) "
+            f"as an initial lean after {COA_ATTEMPTS} attempts; last: {last_invalid!r}"
+        )
+
+    def chair(self, round_no: int, max_rounds: int, transcript: str) -> str:
+        """After a deliberation round: `"continue"` or `"conclude"`.
+
+        The President controls the end *within* the cap; the host forces `"conclude"` at
+        `max_rounds` regardless of the answer, so the cap is not the model's to override.
+        `cacheable=False`: it depends on the live transcript.
+        """
+        if round_no >= max_rounds:
+            return "conclude"
+        system = _system(Role.PRESIDENT_CHAIR, _PRESIDENT_CHAIR_SYSTEM)
+        prompt = "\n".join(
+            [
+                f"[[ROUND:{round_no}]] [[MAXROUNDS:{max_rounds}]]",
+                "",
+                "DELIBERATION SO FAR:",
+                transcript,
+                "",
+                'Produce JSON with keys: decision ("continue" or "conclude"), reason. ' + JSON_ONLY,
+            ]
+        )
+        payload = _parse_json(
+            self.client.complete(
+                role=Role.PRESIDENT_CHAIR, system=system, prompt=prompt, cacheable=False
+            ),
+            Role.PRESIDENT_CHAIR,
+        )
+        decision = str(payload.get("decision", "")).strip().lower()
+        return "continue" if decision == "continue" else "conclude"
+
     def decide(
         self,
         intel: IntelBrief,
         brief: AdvisorBrief | None,
         coas: list[CourseOfAction] | None = None,
+        *,
+        deliberation_transcript: str = "",
     ) -> PresidentialAction:
         """Select one action. The rung is derived from the action afterwards, not here.
 
@@ -437,6 +624,16 @@ class President:
                     for coa in coas
                 ),
                 "",
+            ]
+            if deliberation_transcript:
+                # The committee's concluded debate (ADR 0008). The President's private lean
+                # is NOT here — it never re-enters a prompt.
+                base += [
+                    "YOUR COMMITTEE HAS DELIBERATED AND CONCLUDED:",
+                    deliberation_transcript,
+                    "",
+                ]
+            base += [
                 "Produce JSON with keys: chosen_coa_id, action, justification. `action` "
                 "must be the action of the course you chose. " + JSON_ONLY,
             ]
@@ -490,6 +687,84 @@ class President:
             f"({', '.join(valid)}) after {COA_ATTEMPTS} attempts; last invalid id: "
             f"{last_invalid!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# ExComm member (ADR 0008)
+# ---------------------------------------------------------------------------
+
+
+class ExCommMember:
+    """One seat on the deliberative committee, taking one turn in one round.
+
+    Unlike a `Theorist`, an ExComm member is shown the (anonymised) crisis and the running
+    debate — peer visibility is the point of a deliberation, and the access matrix carries
+    a new row for it. It is still never shown raw theorist opinions or the President's
+    secret lean, and never the host's ground truth.
+
+    A member with nothing to add abstains; the turn is recorded with an empty statement
+    rather than a filler one being generated.
+    """
+
+    def __init__(self, client: LLMClient, member: ExCommPersona) -> None:
+        self.client = client
+        self.member = member
+
+    def contribute(
+        self,
+        round_no: int,
+        situation_block: str,
+        brief: AdvisorBrief,
+        coas: list[CourseOfAction],
+        transcript: str,
+    ) -> ExCommStatement:
+        system = _system(Role.EXCOMM_MEMBER, build_excomm_identity_prompt(self.member))
+        prompt = "\n".join(
+            [
+                f"[[ROUND:{round_no}]]",
+                "",
+                situation_block,
+                "",
+                *_advisor_block(brief),
+                "",
+                *_coa_block(coas),
+                "",
+                "DELIBERATION SO FAR:",
+                transcript,
+                "",
+                "Give your view of which course to take and why, engaging with what has "
+                "been said, or abstain. Produce JSON with keys: abstained (boolean), "
+                "statement (string, empty if abstaining), favoured_coa_id (one of the "
+                "course ids, or null). " + JSON_ONLY,
+            ]
+        )
+        # Round 1 turns depend only on inputs fixed across replications of an arm; later
+        # rounds depend on the live transcript.
+        payload = _parse_json(
+            self.client.complete(
+                role=Role.EXCOMM_MEMBER,
+                system=system,
+                prompt=prompt,
+                cacheable=round_no == 1,
+            ),
+            Role.EXCOMM_MEMBER,
+        )
+        abstained = bool(payload.get("abstained", False))
+        favoured = payload.get("favoured_coa_id")
+        offered = {coa.coa_id for coa in coas}
+        statement = ExCommStatement(
+            member_id=self.member.member_id,
+            round=round_no,
+            abstained=abstained,
+            # An abstaining turn is recorded empty whatever the model returned in the slot.
+            statement="" if abstained else str(payload.get("statement", "")),
+            favoured_coa_id=(
+                _unwrap_marker(str(favoured), group=1)
+                if favoured and _unwrap_marker(str(favoured), group=1) in offered
+                else None
+            ),
+        )
+        return _clean(statement, "statement")
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +1046,7 @@ class Advisor:
             "opinions above. Cite by bare id in `supporting_opinions`, for example "
             '"q0:example_id", not the wrapper itself. Do not write the [[OPINION:...]] '
             "or [[ACTION:...]] brackets anywhere in your rationale text — write the "
-            "id alone if you name it in prose, e.g. \"q0:example_id shows...\".",
+            'id alone if you name it in prose, e.g. "q0:example_id shows...".',
             "  - Never quote position or reasoning text directly.",
             "  - You do not need the three to span a range of severity. If the opinions "
             "converge, three closely related options grounded in real citations is "
@@ -780,7 +1055,7 @@ class Advisor:
             "",
             "Produce JSON with key `courses`, a list of exactly three objects each with "
             "keys: action, rationale, supporting_opinions (a list of the cited bare "
-            "ids, e.g. \"q0:example_id\"). " + JSON_ONLY,
+            'ids, e.g. "q0:example_id"). ' + JSON_ONLY,
         ]
 
         last_duplicate: str | None = None
@@ -816,9 +1091,7 @@ class Advisor:
             actions = [coa.action for coa in coas]
             if len(coas) == 3 and len(set(actions)) == 3:
                 return coas
-            last_duplicate = next(
-                (a.value for a in actions if actions.count(a) > 1), None
-            )
+            last_duplicate = next((a.value for a in actions if actions.count(a) > 1), None)
 
         raise ValueError(
             f"the Advisor could not propose three distinct courses of action after "
@@ -877,9 +1150,7 @@ class Theorist:
             # Cacheable: the question is decontextualised and the record is fixed, so the
             # same persona asked the same question across replications gives the same
             # answer. That is the main cost control.
-            self.client.complete(
-                role=Role.THEORIST, system=system, prompt=prompt, cacheable=True
-            ),
+            self.client.complete(role=Role.THEORIST, system=system, prompt=prompt, cacheable=True),
             Role.THEORIST,
         )
         opinion = TheoristOpinion(

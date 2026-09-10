@@ -10,19 +10,35 @@ enforces them from the outside.
 
 ## The matrix
 
-| | Perceived events | Own doctrine | Own record | Peer opinions | Intel brief | Advisor brief | Host ground truth |
-|---|---|---|---|---|---|---|---|
-| **Intelligence Officer** | read | read | — | — | writes | — | **never** |
-| **President** (query) | — | read | — | — | read | — | **never** |
-| **Advisor** (questions) | — | — | — | — | — | — | **never** |
-| **Advisor** (selection) | — | — | — | roster only | — | — | **never** |
-| **Theorist** | — | — | read | — | — | — | **never** |
-| **Advisor** (synthesis) | — | — | — | read | — | writes | **never** |
-| **President** (decision) | — | read | — | — | read | read | **never** |
+| | Perceived events | Own doctrine | Own record | Peer opinions | Intel brief | Advisor brief | Courses of action | Debate transcript | Secret lean | Host ground truth |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Intelligence Officer** | read | read | — | — | writes | — | — | — | — | **never** |
+| **President** (query) | — | read | — | — | read | — | — | — | — | **never** |
+| **Advisor** (questions) | — | — | — | — | — | — | — | — | — | **never** |
+| **Advisor** (selection) | — | — | — | roster only | — | — | — | — | — | **never** |
+| **Theorist** | — | — | read | — | — | — | — | — | — | **never** |
+| **Advisor** (synthesis) | — | — | — | read | — | writes | — | — | — | **never** |
+| **Advisor** (COAs) | — | — | — | read | — | — | writes | — | — | **never** |
+| **President** (lean) | — | read | — | — | read | read | read | — | *writes, host-only* | **never** |
+| **ExComm member** | read | — | — | — | read | read | read | read *(the point)* | — | **never** |
+| **President** (chair) | — | — | — | — | — | — | — | read | — | **never** |
+| **President** (decision) | — | read | — | — | read | read | read | read | — | **never** |
 
-The Advisor appears three times because it is three roles in `llm.Role`, with separate
-prompts and separate model assignments. Its selection step sees persona ids and declared
-areas — the roster — not opinions, which do not exist yet at that point in the loop.
+The Advisor appears four times because it is four roles in `llm.Role`, with separate prompts
+and separate model assignments. Its selection step sees persona ids and declared areas — the
+roster — not opinions, which do not exist yet at that point in the loop.
+
+The **ExComm member** row is the first to carry a `read` in the *peer* sense — the debate
+transcript — and to see *Perceived events* / *Intel brief*. That is deliberate and is
+argued in ADR 0008: a deliberative committee convened over a specific crisis is a different
+kind of body from a decontextualised theorist panel. It still never sees raw theorist
+opinions (only the Advisor's compression), the President's secret lean, or the host's ground
+truth. The situation it sees is the same anonymised `Nation A / Nation B` the President sees.
+
+The **secret lean** (`RunRecord.secret_lean`, ADR 0008) is written by the President's lean
+step and then behaves exactly like `host_ground_truth`: recorded for the analyst, scanned
+for by `tests/test_access_matrix.py`, and never re-entered into any prompt — not even the
+President's own later decision prompt.
 
 ## Why each boundary exists
 
@@ -46,6 +62,29 @@ what the panel said.
 **The President never sees raw opinions.** The compression from many opinions into a few
 hundred tokens is a modelled step, not plumbing. What it drops — usually minority positions —
 is itself a finding, which is exactly what `consensus_only` versus `full_range` isolates.
+
+**The ExComm member is peer-visible on purpose (ADR 0008).** The theorist prohibition is a
+herding control for decontextualised elicitation, where a position should be the persona's
+own. A deliberative committee is the opposite instrument: it exists to test whether
+structured debate moves a decision-maker, and a debate whose members cannot see each other
+is not a debate. So the ExComm member row carries the transcript, and a *new*
+`test_access_matrix.py` assertion checks that round 2 actually contains round 1 — the
+inversion documents the exception. The committee is still held to every other boundary: the
+Advisor's compression rather than raw opinions, no secret lean, no ground truth.
+
+**The ExComm sees the anonymised situation, not the decontextualised nothing.** It is
+briefed the way the President is — the intel brief and the perceived events, in the same
+`Nation A / Nation B` register. `render_situation` in `agents.py` carries only `IntelBrief`
+and `PerceivedEvent` fields, neither of which has a `ground_truth_detail`. The consequence
+for the tests: `test_only_the_io_and_the_excomm_are_shown_collection_output` replaced the
+old "the IO alone" assertion, changed in the ADR 0008 commit alongside this document.
+
+**The secret lean is recorded and never prompted (ADR 0008).** The President's private prior
+over the three courses is captured before the committee convenes, typed as an `ActionType`
+so it scores on the ladder, and then withheld from the simulation entirely — including the
+President's own decision prompt. It is the first `RunRecord` field of the
+"recorded-but-never-prompted" kind other than `host_ground_truth`, and it is guarded the
+same way.
 
 **Ground truth is host-only.** `WorldEvent.ground_truth_detail` records what is actually
 happening so the analyst can score misperception. It exists so misperception is measurable,

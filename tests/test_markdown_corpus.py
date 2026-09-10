@@ -996,10 +996,13 @@ def test_a_record_written_before_1_2_0_still_loads() -> None:
     assert all(o.corroboration == 0 for o in restored.opinions)
 
 
-def test_the_schema_version_records_that_the_theorist_sees_something_new() -> None:
-    """Not the additive bump the two new fields look like: what a theorist is shown changed,
-    which changes its opinion, the brief, the courses of action and therefore `action`."""
-    assert SCHEMA_VERSION == "1.2.0"
+def test_the_schema_version_reflects_the_latest_mechanism_change() -> None:
+    """A mechanism change to what produces `action` bumps the version even when the new
+    fields look additive. ADR 0007 (the claim index) took it to 1.2.0; ADR 0008 (the
+    ExComm deliberation) took it to 1.3.0. The floor is what this test pins — a bump can
+    only go up, and it must not be forgotten when the mechanism moves again."""
+    major, minor, *_ = (int(p) for p in SCHEMA_VERSION.split("."))
+    assert (major, minor) >= (1, 3)
 
 
 def test_one_store_per_persona_holds_for_claims_too(tmp_path) -> None:
