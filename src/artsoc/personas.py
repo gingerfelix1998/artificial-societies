@@ -27,6 +27,7 @@ and it only works if M3 is genuinely anonymous.
 from __future__ import annotations
 
 import random
+import re
 from pathlib import Path
 
 import yaml
@@ -385,3 +386,135 @@ def panel_coverage(routing: list[RoutingRecord]) -> set[str]:
     for record in routing:
         consulted.update(record.selected)
     return consulted
+
+
+# ---------------------------------------------------------------------------
+# The ExComm deliberative panel (ADR 0008).
+#
+# A separate population from the theorists, sharing nothing with them but this module.
+# A theorist is defined by a published record and answers one decontextualised question in
+# isolation; an ExComm member is defined by a disposition and a standing belief system, is
+# shown the (anonymised) crisis, and argues it in a peer-visible debate.
+#
+# Members are 1962-SHAPED, not the historical individuals: a prompt carries an institutional
+# role title and an anonymised disposition, never a real name. That is the same anti-leakage
+# choice the scenario makes with 'Nation A / Nation B' — a roster of real names would let a
+# model retrieve how the real episode ended just as effectively as a real dyad would.
+# `docs/excomm/roster-key.md` maps `member_id` -> real person for the humans maintaining the
+# profiles; nothing in the code path reads it.
+# ---------------------------------------------------------------------------
+
+EXCOMM_REGISTRY_PATH = REPO_ROOT / "data" / "excomm" / "registry.yaml"
+
+_MEMBER_ID = re.compile(r"^[a-z0-9_]+$")
+
+
+class ExCommMember(BaseModel):
+    """One seat on the President's deliberative committee.
+
+    `disposition` and `beliefs` are hand-authored, anonymised, and 1962-shaped. They are
+    the member's own temperament and prior positions — not evidence in the sense a
+    theorist's cited record is, and no grounding claim rests on them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Slug, e.g. `defense_secretary`. Lowercase, underscore-separated, never a real name.
+    member_id: str
+    #: The institutional position, in prose. Never a real name.
+    role_title: str
+    #: A nuanced behavioural profile: temperament, ideology, decision style, how the member
+    #: moves under pressure. Anonymised — no real name, no dated episode.
+    disposition: str
+    #: Standing positions the member argues from, drawn from that figure's writing and
+    #: memoranda, phrased as general principle rather than dated statement.
+    beliefs: list[str]
+    #: One line naming what the beliefs are drawn from. Carried into the identity prompt so
+    #: the grounding is inspectable; not itself a citable source.
+    backing_literature: str = ""
+
+    @field_validator("member_id")
+    @classmethod
+    def _id_is_a_slug(cls, value: str) -> str:
+        if not _MEMBER_ID.match(value):
+            raise ValueError(
+                f"member_id {value!r} must match [a-z0-9_]+; it keys the deliberation "
+                "record and must not carry a real name"
+            )
+        return value
+
+    @field_validator("beliefs")
+    @classmethod
+    def _beliefs_are_present(cls, value: list[str]) -> list[str]:
+        cleaned = [b.strip() for b in value if b and b.strip()]
+        if not cleaned:
+            raise ValueError(
+                "an ExComm member with no standing positions has no voice in the debate; "
+                "give it at least one belief"
+            )
+        return cleaned
+
+
+class ExCommRoster(BaseModel):
+    """The committee as loaded from disk."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    members: list[ExCommMember]
+
+    @field_validator("members")
+    @classmethod
+    def _ids_are_unique(cls, members: list[ExCommMember]) -> list[ExCommMember]:
+        seen: set[str] = set()
+        for member in members:
+            if member.member_id in seen:
+                raise ValueError(
+                    f"duplicate member_id {member.member_id!r}; ids key the deliberation "
+                    "record, so they must be unique"
+                )
+            seen.add(member.member_id)
+        return members
+
+
+def load_excomm(path: Path | None = None) -> list[ExCommMember]:
+    """Load and validate the ExComm roster."""
+    target = path or EXCOMM_REGISTRY_PATH
+    if not target.exists():
+        raise FileNotFoundError(f"no ExComm roster at {target}")
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    return ExCommRoster.model_validate(data).members
+
+
+_EXCOMM_INSTRUCTION = (
+    "Reason about the situation exactly as it is presented to you. Do not identify it with "
+    "any named historical episode, and do not claim to know how a comparable case turned "
+    "out. You do not choose the course of action — the President does; your job is to "
+    "sharpen the choice by arguing your view and engaging with what other members have "
+    "said. If the discussion has not moved since your last turn, or another member has "
+    "already made your point, say so and abstain: abstaining is a valid contribution, not "
+    "a failure to participate. Do not claim to be any named individual — you are this "
+    "committee role."
+)
+
+
+def build_excomm_identity_prompt(member: ExCommMember) -> str:
+    """The system prompt for one ExComm member: its role, temperament and prior positions.
+
+    Carries no situation and no round, so it is stable across the whole debate. The
+    situation, the brief, the courses of action and the running transcript live in the
+    user prompt, built by `agents.py`.
+    """
+    positions = "\n".join(f"- {b}" for b in member.beliefs)
+    provenance = (
+        f"\n\nThese positions are drawn from {member.backing_literature}."
+        if member.backing_literature.strip()
+        else ""
+    )
+    return (
+        "You are a senior member of the committee the President has convened to deliberate "
+        f"a live crisis. Your seat is: {member.role_title}.\n\n"
+        f"HOW YOU THINK:\n{member.disposition}\n\n"
+        f"YOUR STANDING POSITIONS:\n{positions}{provenance}\n\n"
+        f"{_EXCOMM_INSTRUCTION}"
+    )
