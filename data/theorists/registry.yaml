@@ -32,23 +32,23 @@
 # serve a store whose manifest says it was built from something other than what is declared
 # here (invariant 9).
 #
-# `wikipedia` is the page title `artsoc ingest` fetches for this persona. WIKIPEDIA IS A
-# TERTIARY SOURCE: an encyclopedia article *about* the theorist, not the theorist's own
-# writing. It proves the retrieval pipeline and calibrates the decline threshold against
-# real text. It cannot support the held-out-writings check the approach doc claims as this
-# population's advantage, and the baseline-vs-m1_ungrounded contrast may measure little,
-# because a model has already read Wikipedia.
+# ALL TWELVE PERSONAS ARE NOW `markdown`. Wikipedia has been retired as a source of record:
+# it is a TERTIARY source (an encyclopedia article *about* the theorist, not their writing)
+# and it cannot support the held-out-writings check the approach doc claims as this
+# population's advantage. The three fields below — `wikipedia`, `semantic_scholar`,
+# `key_works` — are no longer read by ingest. They are kept for provenance and so a persona
+# could be moved back to the `wikipedia` pipeline without re-deriving them; the `wikipedia`
+# ingest code and its tests remain in place unchanged.
 #
-# `semantic_scholar` is a VERIFIED author id, or null. Each was checked against that
-# author's actual top-cited papers, not taken from a name search. Two are deliberately
-# null: "Bernard Brodie" resolves to the pharmacologist (acetaminophen hepatic necrosis,
-# h=84) and "Lawrence Freedman" to a merged author whose top works are by P.W. Singer and
-# James Mann. A wrong id fills a persona's store with another person's writing, which is
-# worse than an empty store. Those two rely on `key_works` title lookup alone.
+# `wikipedia` was the page title `artsoc ingest` fetched. Retained, unused.
 #
-# `key_works` are the titles abstracts are looked up by, which sidesteps author
-# disambiguation entirely. Coverage is patchy — most of this literature predates abstracts
-# — and a work with no abstract anywhere is recorded as a miss rather than invented.
+# `semantic_scholar` was a VERIFIED author id, or null — checked against that author's
+# actual top-cited papers, not a name search. Two are deliberately null: "Bernard Brodie"
+# resolves to the pharmacologist (acetaminophen hepatic necrosis, h=84) and "Lawrence
+# Freedman" to a merged author whose top works are by P.W. Singer and James Mann. Retained,
+# unused.
+#
+# `key_works` were the titles abstracts were looked up by. Retained, unused.
 #
 # Three personas were removed when the pages were checked: Caitlin Talmadge and
 # Keir Lieber / Daryl Press have no article, and Vipin Narang's is about 150 words. They
@@ -60,7 +60,7 @@ personas:
   - persona_id: brodie
     name: Bernard Brodie
     era: early_deterrence
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Bernard Brodie (military strategist)'
     semantic_scholar: null
     key_works:
@@ -76,7 +76,7 @@ personas:
   - persona_id: schelling
     name: Thomas Schelling
     era: early_deterrence
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Thomas Schelling'
     semantic_scholar: '5068532'
     key_works:
@@ -92,7 +92,7 @@ personas:
   - persona_id: kahn
     name: Herman Kahn
     era: early_deterrence
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Herman Kahn'
     semantic_scholar: '143603002'
     key_works:
@@ -108,7 +108,7 @@ personas:
   - persona_id: wohlstetter
     name: Albert Wohlstetter
     era: early_deterrence
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Albert Wohlstetter'
     semantic_scholar: '98481021'
     key_works:
@@ -123,7 +123,7 @@ personas:
   - persona_id: jervis
     name: Robert Jervis
     era: cold_war_theory
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Robert Jervis'
     semantic_scholar: '38456725'
     key_works:
@@ -139,7 +139,7 @@ personas:
   - persona_id: waltz
     name: Kenneth Waltz
     era: cold_war_theory
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Kenneth Waltz'
     semantic_scholar: '39402289'
     key_works:
@@ -155,7 +155,7 @@ personas:
   - persona_id: sagan
     name: Scott Sagan
     era: post_cold_war
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Scott Sagan'
     semantic_scholar: '4427745'
     key_works:
@@ -171,7 +171,7 @@ personas:
   - persona_id: posen
     name: Barry Posen
     era: cold_war_theory
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Barry Posen'
     semantic_scholar: '66949810'
     key_works:
@@ -187,7 +187,7 @@ personas:
   - persona_id: tannenwald
     name: Nina Tannenwald
     era: post_cold_war
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Nina Tannenwald'
     semantic_scholar: '66185977'
     key_works:
@@ -202,7 +202,7 @@ personas:
   - persona_id: george
     name: Alexander George
     era: cold_war_theory
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Alexander L. George'
     semantic_scholar: '97762784'
     key_works:
@@ -218,7 +218,7 @@ personas:
   - persona_id: freedman
     name: Lawrence Freedman
     era: post_cold_war
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Lawrence Freedman'
     semantic_scholar: null
     key_works:
@@ -234,7 +234,7 @@ personas:
   - persona_id: blair
     name: Bruce Blair
     era: post_cold_war
-    corpus_source: wikipedia
+    corpus_source: markdown
     wikipedia: 'Bruce G. Blair'
     semantic_scholar: '69353658'
     key_works:

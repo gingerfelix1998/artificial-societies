@@ -467,24 +467,40 @@ class CorpusRetriever:
         return "mixed"
 
     def corroboration_for(self, block: str) -> int:
-        """How many distinct publications the claims in `block` were argued across.
+        """The deepest corroboration group a claim in `block` belongs to: how many distinct
+        publications argued that one position.
+
+        **Per group, then the maximum — not the union across groups.** A block routinely
+        shows more than one claim group (`claim_top_k`), and those are *different*
+        positions. Counting distinct publications across all of them together would report
+        "two unrelated single-sourced positions both came up" as depth 2, when each rests
+        on one work. The honest number is the depth of the best-corroborated position the
+        opinion was shown: 1 when every matched position is single-sourced, higher only
+        when one position was genuinely stated across several works.
 
         A pure function of the block and the index already loaded: no state, so it is safe
         under the theorist fan-out and gives the same answer whenever it is asked.
 
-        **A diagnostic, not evidence.** The group behind the number is built by
-        normalised-token Jaccard, which is negation-blind, so it says the same position was
-        stated in more than one work — as far as vocabulary can tell — and not that the
-        theorist was right.
+        **A diagnostic, not evidence.** Groups are built by normalised-token Jaccard, which
+        is negation-blind, so a group says the same vocabulary appeared in more than one
+        work — not that the theorist was right, and not always that the position is even
+        the same.
         """
         cited = set(PASSAGE_ID.findall(block))
         if not cited:
             return 0
         persona_id = next(iter(cited)).split(":", 1)[0]
         claims = self._load(persona_id, "claims.jsonl")
-        groups = {c["group"] for c in claims if c["passage_id"] in cited and "group" in c}
-        slugs = {c["source_slug"] for c in claims if c.get("group") in groups}
-        return len(slugs)
+        matched_groups = {
+            c["group"] for c in claims if c["passage_id"] in cited and "group" in c
+        }
+        if not matched_groups:
+            return 0
+        by_group: dict[str, set[str]] = {}
+        for c in claims:
+            if c.get("group") in matched_groups:
+                by_group.setdefault(c["group"], set()).add(c["source_slug"])
+        return max(len(slugs) for slugs in by_group.values())
 
 
 def get_retriever(mode: str, **kwargs: Any) -> Retriever:

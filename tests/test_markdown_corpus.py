@@ -927,6 +927,30 @@ def test_corroboration_counts_publications_not_claims(tmp_path) -> None:
     assert retriever.corroboration_for(narrow) == 1, "argued in one work only"
 
 
+def test_two_single_sourced_positions_in_one_block_do_not_read_as_corroborated(tmp_path) -> None:
+    """Depth is per group, then the maximum — never the union across groups.
+
+    A block routinely carries more than one claim group, and those are different
+    positions. An earlier version counted distinct publications across all of them
+    together, so two unrelated single-sourced positions from two works reported depth 2
+    when each rests on one. The number must stay 1 unless one position was genuinely
+    argued across several works.
+    """
+    retriever = _retriever(tmp_path)
+    claims = {c["text"]: c for c in _records(tmp_path, "claims.jsonl")}
+    one = claims[
+        "Deterrence rests on a retaliatory force that survives the adversary's first blow."
+    ]
+    two = claims[
+        "A force that must be launched on warning rests on warning rather than on judgement."
+    ]
+    assert one["source_slug"] != two["source_slug"], "the fixture must span two works"
+    assert one["group"] != two["group"], "and they must be different (singleton) groups"
+
+    block = f"[{one['passage_id']}] {one['text']}\n\n[{two['passage_id']}] {two['text']}"
+    assert retriever.corroboration_for(block) == 1, "two singletons, not a corroborated pair"
+
+
 def test_corroboration_is_zero_where_there_is_no_claim_index() -> None:
     """Not 1, and not absent: a stub run has no claim to have been corroborated, and a
     default of 1 would read as a real single-source finding."""

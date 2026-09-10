@@ -81,6 +81,11 @@ export default function MacroAnalysis() {
   const warnings = summary.warnings ?? []
   // Matched on the warning's leading token, so a new warning that is not listed here
   // renders quietly. `metrics._warnings` is the source of the strings.
+  //
+  // SINGLE-SOURCE POSITIONS is deliberately NOT here: with a few documents per theorist
+  // every position is single-sourced, so the warning fires on every markdown run and a
+  // banner that always shows trains the reader to ignore banners. It stays in the caveat
+  // list as an ordinary note; promote it once corroboration depth actually varies.
   const severe = [
     'NOT GROUNDED',
     'SMOKE TEST',
@@ -88,7 +93,6 @@ export default function MacroAnalysis() {
     'NO CONTROL ARM',
     'NOMINAL PANEL',
     'MIXED CORPUS TIERS',
-    'SINGLE-SOURCE POSITIONS',
   ]
   const focus = summary.arms.find((a) => a.arm === arm)
 

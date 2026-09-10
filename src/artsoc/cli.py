@@ -57,12 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser(
         "ingest",
-        help="build each persona's corpus from its Wikipedia page",
+        help="build each persona's corpus from its declared source",
         description=(
-            "Fetches, chunks and indexes one page per persona into data/corpora/. "
-            "Wikipedia is a TERTIARY source — an article about each theorist, not their "
-            "writing. Re-running is safe and produces identical passage ids from identical "
-            "text (ADR 0003)."
+            "Builds one store per persona into data/corpora/, from the source its "
+            "registry entry declares. `markdown` personas are chunked and claim-indexed "
+            "from data/corpora-src/ with no network and no model call; `wikipedia` "
+            "personas are fetched, chunked, and given a generated belief store. "
+            "Re-running produces identical passage ids from identical text (ADR 0003)."
         ),
     )
 
@@ -140,27 +141,41 @@ def cmd_ingest() -> int:
     personas = load_registry()
     config = base_defaults()
 
-    # Beliefs are generated from each persona's own fetched sources, so ingestion needs a
-    # backend. It uses the same path a run does: a mock ingest produces obviously-fake
-    # beliefs and cannot be mistaken for a real corpus.
-    client = LLMClient(
-        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
-        run_seed=0,
-        cache=DiskCache(CACHE_DIR),
-        cache_enabled=True,
+    # A backend is needed only to generate belief stores for `wikipedia` personas. When
+    # every persona is `markdown` the whole ingest is offline and model-free, so no client
+    # is constructed — that also means a live backend in base.yaml is never touched by a
+    # markdown-only ingest.
+    needs_client = any(p.corpus_source == "wikipedia" for p in personas)
+    client = (
+        LLMClient(
+            backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
+            run_seed=0,
+            cache=DiskCache(CACHE_DIR),
+            cache_enabled=True,
+        )
+        if needs_client
+        else None
     )
-    print(
-        f"ingesting {len(personas)} personas: Wikipedia + publication abstracts "
-        f"(both tertiary), then beliefs via {config.backend}\n"
-    )
+
+    by_source: dict[str, int] = {}
+    for p in personas:
+        by_source[p.corpus_source] = by_source.get(p.corpus_source, 0) + 1
+    mix = ", ".join(f"{n} {src}" for src, n in sorted(by_source.items()))
+    tail = f", then beliefs via {config.backend}" if needs_client else ""
+    print(f"ingesting {len(personas)} personas ({mix}){tail}\n")
+
     manifests, failures = ingest_all(personas, client=client)
 
     for m in sorted(manifests, key=lambda x: x["persona_id"]):
-        state = "reused" if m.get("reused") else "FETCHED"
-        print(
-            f"  {m['persona_id']:<14} {state:<8} {m['n_chunks']:>3} chunks  "
-            f"{len(m.get('abstracts', [])):>2} abstracts  {m.get('n_beliefs', 0):>2} beliefs"
-        )
+        state = "reused" if m.get("reused") else "built"
+        if m.get("corpus_source") == "markdown":
+            detail = f"{m['n_chunks']:>3} chunks  {m.get('n_claims', 0):>3} claims"
+        else:
+            detail = (
+                f"{m['n_chunks']:>3} chunks  {len(m.get('abstracts', [])):>2} abstracts  "
+                f"{m.get('n_beliefs', 0):>2} beliefs"
+            )
+        print(f"  {m['persona_id']:<14} {state:<6} {m.get('corpus_source', '?'):<10} {detail}")
     for persona_id, reason in failures:
         # Reported, never swallowed: a persona with no corpus declines every question, and
         # an analyst reading a 0% contribution needs to know it was a missing page.
@@ -168,14 +183,14 @@ def cmd_ingest() -> int:
 
     reused = sum(1 for m in manifests if m.get("reused"))
     print(
-        f"\n{len(manifests) - reused} fetched, {reused} reused from disk, "
+        f"\n{len(manifests) - reused} built, {reused} reused from disk, "
         f"{len(failures)} failed -> {CORPUS_ROOT}"
     )
     if manifests:
         print(
-            "  A complete store is reused rather than refetched. To rebuild one persona, "
-            "delete\n  its directory; to rebuild everything, delete data/corpora/. "
-            "Re-ingesting rewrites\n  passage ids if any source text changed, which "
+            "  `markdown` personas are rebuilt every time (offline and free). A complete "
+            "`wikipedia`\n  store is reused rather than refetched — delete its directory to "
+            "force one. Either way,\n  a source-text change rewrites passage ids and "
             "invalidates stored citations (ADR 0003)."
         )
     return 1 if failures and not manifests else 0
