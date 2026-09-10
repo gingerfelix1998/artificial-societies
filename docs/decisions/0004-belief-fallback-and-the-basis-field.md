@@ -1,7 +1,16 @@
 # ADR 0004 — The belief fallback, and what replaces the out-of-record diagnostic
 
 Date: 2026-09-06
-Status: accepted
+Status: accepted — superseded in practice by ADR 0007
+
+> **Status update, 2026-09-10.** ADR 0007 introduced the claim index for `markdown`
+> personas, and all twelve personas have since been moved to `markdown`. The belief
+> fallback described below is therefore not exercised by any persona: `basis` is never
+> `beliefs`, `beliefs_share` is structurally zero, and the `POSITIONS REST ON BELIEF`
+> warning cannot fire. The belief-store code, `_BELIEF_FRAMING`,
+> `retrieval_belief_min_terms` and this diagnostic all remain in place for a persona moved
+> back to the `wikipedia` pipeline. The live diagnostic is now corroboration depth (ADR
+> 0007). The `basis` field and its provenance-from-the-retriever rule are unchanged.
 
 ## Context
 

@@ -135,24 +135,32 @@ not — is confounded and is not used here. Any influence figure must state whic
 
 ## Placeholders that must not be described as finished
 
-- `registry.yaml` `corpus_notes` are one-line paraphrases written to make the loop run. Not
-  evidence.
+- `registry.yaml` `corpus_notes` are one-line paraphrases. Still used by `StubRetriever`
+  (the `synth_only` arm) and as the M3 identity text; not evidence, and no grounding claim
+  rests on them.
 - `prominence` values are invented and weight nothing.
-- No persona has primary text. Wikipedia personas rest on a **tertiary** source: an article
-  *about* the theorist. `corpora-src` documents are **secondary**: project-written summaries
-  of specific publications, each carrying an accurate `confidence` field. Neither supports
-  the held-out-writings check. `corpus_tier` on the record says which a run used.
+- **No persona has primary text.** Every persona is `corpus_source: markdown` (ADR 0007):
+  `data/corpora-src/<persona_id>/*.md` are project-written **summaries** of specific
+  publications, claim-indexed, each carrying an accurate `confidence` field. Better than an
+  encyclopedia article *about* the author; still secondary, and it does not support the
+  held-out-writings check. Wikipedia is retired — its ingest code and tests remain for a
+  persona moved back, and `registry.yaml`'s `wikipedia` / `semantic_scholar` / `key_works`
+  fields are kept but unread.
 - Corroboration depth is a diagnostic about corpus breadth, not evidence of agreement.
-  Grouping is negation-blind, and on a thin corpus almost every group is a singleton.
-- Claim-retrieval thresholds (`retrieval_claim_*`) are reasoned, not calibrated against a
-  live sweep the way the passage thresholds were.
+  Grouping is negation-blind, and with a few documents per theorist almost every group is a
+  singleton — depth reads ≈1 everywhere, so `SINGLE-SOURCE POSITIONS` fires on every run and
+  is a note, not a severe banner.
+- Claim-retrieval thresholds (`retrieval_claim_min_terms`, `retrieval_claim_top_k`) are
+  reasoned, not calibrated against a live sweep the way the passage thresholds were. At the
+  committed default (`retrieval_claim_min_terms: 3`) a mock run's panel declines every
+  question — the mock question bank shares too few terms with any claim.
 - `schema.RUNG` has not been validated against a published escalation ladder.
 - Reasoning-theme coding does not exist.
 - Arm contrasts have no confidence intervals and no multiple-comparisons correction.
 
 Never report a run as grounded in more than what actually served it: `StubRetriever` is
 never grounded at all, and `grounded: true` alone does not say whether the text was a
-summary, an encyclopedia article or a generated belief. If asked to "finish phase 1",
+summary or a generated belief — read `corpus_tier`. If asked to "finish phase 1",
 `docs/prompts/improvements-log.md` is the ordered backlog — P0 are where a claim is currently
 false or unsupportable.
 

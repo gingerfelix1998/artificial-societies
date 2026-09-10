@@ -13,21 +13,28 @@ traffic. The bar is whether a hostile reviewer can dismiss the finding.
 
 ### 1. Implement corpus retrieval
 
-**Largely done, and the remaining gap has moved.** `CorpusRetriever` works, `base.yaml`
-ships `retrieval_mode: corpus`, and two pipelines now exist: Wikipedia passages with the
-ADR 0004 belief fallback, and the ADR 0007 claim index over committed markdown documents.
-`StubRetriever` is used only by `synth_only` and by the test suite.
+**Mechanism done; corpus quality and calibration are what remain.** Every persona is
+`corpus_source: markdown` (ADR 0007): `CorpusRetriever` retrieves from a committed claim
+index over `data/corpora-src/<id>/*.md` — project-written summaries of each theorist's
+publications, chunked and claim-indexed by `ingest.py`, all offline. `base.yaml` ships
+`retrieval_mode: corpus`. Wikipedia is retired; its ingest code and tests stay for a persona
+moved back. `StubRetriever` is used only by `synth_only` and the test suite. The end-to-end
+citation path is exercised in `tests/test_markdown_corpus.py`.
 
-What is left is **corpus quality, not retrieval mechanism**:
+What is left:
 
-- No persona has primary text. Wikipedia is tertiary; `corpora-src` documents are
-  project-written summaries. `corpus_tier` on the record says which served a run.
-- The four personas the markdown pipeline was built for are still declared `wikipedia`,
-  because their documents have not been written yet. Flipping them is a registry edit plus
-  `artsoc ingest`.
-- `retrieval_claim_min_terms` / `retrieval_claim_top_k` are reasoned, not calibrated. The
-  passage thresholds have a live-sweep table in `base.yaml`; these need the same treatment
-  once there are real documents to sweep over.
+- **No persona has primary text.** `corpora-src` documents are secondary — our account of
+  what a publication argued, each with a `confidence` field. Better than an encyclopedia
+  article; still not the held-out-writings check.
+- **The claim-match thresholds are not calibrated.** `retrieval_claim_min_terms` and
+  `retrieval_claim_top_k` are reasoned from the shape of the store, not measured against a
+  live sweep the way the Wikipedia passage thresholds were. At the committed default
+  (`retrieval_claim_min_terms: 3`) the mock question bank matches nothing, so a mock panel
+  declines every question.
+- **Corroboration depth does not discriminate.** The claims lists do not restate positions
+  across an author's works, so every claim is its own group and depth reads ≈1 everywhere.
+  Needs claims written to corroborate deliberately, or a model-assisted merge pass (ADR
+  0007 flags it as future work).
 
 **Original entry, kept because the reasoning still governs.** Build per-persona indexes over
 each theorist's own writings and implement `retrieve`. See
@@ -80,17 +87,10 @@ own money and gets output the config itself says is not a result. The warnings m
 default that should not exist. Committed config is the state a stranger should start in, not
 the state the last session ended in.
 
-### 4. Fix the empty-docs / prompt mismatch
+### 4. Fix the empty-docs / prompt mismatch — DONE
 
-**Now.** Resolved by this change — `design.md`, `access-matrix.md` and `measurement.md` were
-0 bytes while `docs/prompts/01-corpus-retrieval.md` instructed an agent to read all three first, and `CLAUDE.md` line 95 acknowledged the gap.
-
-**Remaining.** Delete the closing paragraph of `CLAUDE.md` that says those documents are not
-yet written, and re-check the read-first list in the corpus-retrieval prompt now that they
-exist.
-
-**Why.** An agent that reads three empty files proceeds believing it has context it does not
-have, which is worse than being told nothing.
+`docs/framework/design.md`, `access-matrix.md` and `measurement.md` are written and current.
+`CLAUDE.md` no longer claims they are missing. Nothing outstanding.
 
 ### 5. Separate the task brief from the README, and check its ownership
 
@@ -178,18 +178,26 @@ that yourself.
 
 ## P2 — engineering and cost, needed before scaling up
 
-### 11. Concurrency in the theorist fan-out
+### 11. Concurrency above the theorist fan-out
 
-**Now.** `_consult` iterates serially. With `n_questions: 3` and `k_per_question: 4` that is
-twelve sequential calls per replication before the decision.
+**Now.** The theorist fan-out inside one replication is already parallel — a bounded
+`ThreadPoolExecutor` at `config.max_concurrency`, with `test_the_record_is_identical_at_any_concurrency`
+pinning that completion order cannot reach the output. What is still serial is everything
+above it: `run_many` yields replications one at a time and `run_session` iterates arms one
+at a time. The six framing calls per replication (intel → query → questions → brief → COAs →
+decision) are a genuine dependency chain and advisor routing is serial by design (each
+selection consumes the run rng).
 
-**Change.** Fan out with `asyncio` or a thread pool, bounded and with jitter, respecting rate
-limits.
+**Change.** Parallelise `run_many` at a bounded width, re-sorting by seed. Replications
+share no mutable state — each builds its own client, retriever and rng — and the disk cache
+writes atomically. Care needed in `run_session` on the three things currently in the
+sequential loop: cumulative cost, progress events, and the cancellation check.
 
-**Why.** Wall-clock per replication is dominated by this loop. At n=100 across 23 arms it is
-the difference between an overnight sweep and a week. The theorist calls are independent by
-construction — they cannot see each other — so this is safe in a way most parallelisation is
-not.
+**Why.** Once the response cache is warm a sweep is already fast (≈95% of theorist calls are
+disk reads — the seed is deliberately absent from the cache key for cacheable calls). The
+win is a cold sweep: replications parallelised from cold all miss the same keys at once, so
+the honest shape is a short sequential warm-up until the hit rate saturates, then a wide
+fan-out over the now cache-dominated remainder.
 
 ### 12. Retry, backoff and partial-failure policy
 

@@ -54,9 +54,12 @@ produces.
 that declining is a correct answer and that it must not construct a position it did not hold
 in order to fill the slot. Without it a persona confabulates to fill the slot, and the
 distinction between "X held this" and "a model impersonating X generated this" is lost. The
-mechanism that fires it is an empty retrieval: `StubRetriever.retrieve` returns `""` when a
-persona has no note, and `build_question_prompt` substitutes `NO_RECORD_MARKER`. Empty
-retrieval is a feature to be tested, not an error to be fixed.
+mechanism that fires it is an empty retrieval: the retriever returns `""` — no claim group
+matched the question (`CorpusRetriever._retrieve_claims`), or no note exists
+(`StubRetriever`) — and `build_question_prompt` substitutes `NO_RECORD_MARKER`. On the claim
+path an empty return now means "this theorist argued nothing relevant" rather than "no
+passage shared enough terms" (ADR 0007). Empty retrieval is a feature to be tested, not an
+error to be fixed.
 
 **M3 must stay genuinely anonymous.** `synthetic_panel` builds personas with ids prefixed
 `synth_`, names of the form "Anonymous theorist 003", and positions drawn from the tag
@@ -202,7 +205,10 @@ purpose.
 ## Roadmap
 
 **Phase 1 (current).** One nation, one injected event, one closed loop, Monte Carlo over
-seeds. Complete except for real corpus retrieval.
+seeds. Corpus retrieval is in place: every persona retrieves from a committed claim index
+over project-written summaries of its publications (ADR 0007). What remains is calibrating
+the claim-match thresholds against a live sweep, reconciling `RUNG` with a published ladder,
+and reasoning-theme coding — see `docs/prompts/improvements-log.md`.
 
 **Phase 2.** Multiple nations signalling, asymmetric perception filters, reciprocity and
 arms-race metrics measured against the phase 1 single-nation baseline.

@@ -7,6 +7,20 @@ carried supersession metadata; this one does because the change it records is co
 one class of persona and it would otherwise be impossible to tell which of 0004's rules
 still apply to which run.
 
+> **Update, 2026-09-10.** The migration this ADR framed as "separate work" is done: all
+> twelve personas are now `corpus_source: markdown`, with 34 committed documents under
+> `data/corpora-src/` (2–3 per author). Wikipedia is retired — its ingest code and tests
+> stay in place for a persona moved back, and `registry.yaml`'s `wikipedia` /
+> `semantic_scholar` / `key_works` fields are kept but unread. So "the eight `wikipedia`
+> personas" below is now zero, `corpus_tier` is `summary` for every grounded run, and
+> `mixed` / `encyclopedia` / `belief` are reachable only by moving a persona back. Also
+> fixed in the same change: `corroboration_for` combined source-slugs across every cited
+> claim group, over-reporting depth; it is now per-group, then the maximum. With the
+> committed corpus exactly one group (Schelling's leave-something-to-chance position,
+> across two books) has depth 2; every other position is single-sourced, so
+> `SINGLE-SOURCE POSITIONS` fires on every run and was moved out of the frontend's
+> severe-banner list.
+
 ## Context
 
 Two problems motivated this change, and they are the same problem seen from opposite ends.

@@ -73,25 +73,27 @@ silently dropping bad citations would erase it.
 
 **What a stated position rested on.** `TheoristOpinion.basis` is `sources`, `claims`,
 `beliefs` or `none`, taken from the retriever rather than from the model. It is read
-*together with* the decline rate, and which pairing matters depends on the persona's corpus.
+*together with* the decline rate.
 
-For a `wikipedia` persona, ADR 0004's diagnostic applies: a low decline rate together with
-most positions resting on `beliefs` is a panel asserting ideology where it has no evidence,
-and that combination is what replaced "a near-zero decline rate is a warning" for these
-personas. A low decline rate over well-sourced positions is a grounded panel and is not
-warned about.
-
-For a `markdown` persona that diagnostic is meaningless, because every claim carries
-evidence by construction and `beliefs_share` is structurally zero. **Corroboration depth**
-replaces it (ADR 0007): how many distinct publications the matched claim's group spans, with
-`SINGLE-SOURCE POSITIONS` warning when most positions rest on one.
+Every persona is now `corpus_source: markdown` (ADR 0007), so in practice `basis` is
+`claims` or `none` and the live diagnostic is **corroboration depth** — `corroboration` on
+each opinion, the number of distinct publications the *deepest* matched claim group spans
+(per group, then the maximum, never the union across the groups a block shows). `metrics`
+raises `SINGLE-SOURCE POSITIONS` when most claims-basis positions rest on one publication.
 
 Read corroboration depth as a fact about the corpus before reading it as one about the
-panel. With one or two documents per theorist almost every group is a singleton, so a depth
-near 1.0 says the corpus is thin, not that the theorists were unsupported. And grouping is
-normalised-token Jaccard, which is negation-blind — two claims differing only by a "not"
-share every content token — so depth attests to vocabulary overlap, never to agreement. It
-must not be reported as evidence that a position was corroborated.
+panel. With two or three documents per theorist almost every group is a singleton — depth
+is ≈1 everywhere and the warning fires on every run, which is why it is a note rather than a
+banner. And grouping is normalised-token Jaccard, which is negation-blind — two claims
+differing only by a "not" share every content token — so depth attests to vocabulary
+overlap, never to agreement. It must not be reported as evidence that a position was
+corroborated.
+
+ADR 0004's diagnostic — a low decline rate together with most positions resting on
+`beliefs`, the sign of a panel asserting ideology where it has no evidence — no longer
+applies: no persona uses the belief fallback, so `beliefs_share` is structurally zero. The
+`POSITIONS REST ON BELIEF` warning and the belief-store code remain for a persona moved back
+to the `wikipedia` pipeline.
 
 **Provenance.** `RunRecord.models` records which model actually served each role. One
 distinct value across every role means a smoke test under `models_override`, and the report
@@ -143,16 +145,18 @@ careless write-up saying otherwise. It is stated here so that it cannot be claim
 accident.
 
 **Say what it was grounded in, not only that it was.** `grounded` is a boolean and stopped
-distinguishing runs once one panel could draw on two kinds of source, so every report also
-carries `corpus_tier`: `summary` for the project-written markdown corpus, `encyclopedia` for
-Wikipedia and the abstracts alongside it, `belief`, `stub`, `mixed`, or `none`. `primary` —
-a theorist's own writing — exists as a value and nothing produces it.
+distinguishing runs once a panel could draw on more than one kind of source, so every report
+also carries `corpus_tier`: `summary` for the project-written markdown corpus, `encyclopedia`
+for Wikipedia and the abstracts alongside it, `belief`, `stub`, `mixed`, or `none`.
+`primary` — a theorist's own writing — exists as a value and nothing produces it.
 
-Two things follow that a write-up must observe. A `summary` corpus is our account of what a
-publication argued, carrying its own `confidence` field; it is a better tier than an
-encyclopedia article *about* the author, and it is still not primary text. And an arm marked
-`mixed` drew on sources of different evidential weight, so a contrast against another arm is
-clean only if that arm mixed them the same way.
+Every persona is `markdown`, so a grounded run reports `summary` (or `none` for a
+replication whose panel declined everything). `encyclopedia`, `belief` and `mixed` are
+reachable only if a persona is moved back to the `wikipedia` pipeline. A `summary` corpus is
+our account of what a publication argued, carrying its own `confidence` field; it is a
+better tier than an encyclopedia article *about* the author, and it is still not primary
+text. An arm marked `mixed` drew on sources of different evidential weight, so a contrast
+against another arm is clean only if that arm mixed them the same way.
 
 **Absolute rates are not findings.** Repeated because it is the constraint most likely to be
 forgotten between running a sweep and writing it up.
@@ -167,11 +171,16 @@ In rough order of value:
 
 1. Reconcile `RUNG` with a published escalation ladder and cross-score against an established
    framework, so the numbers are comparable to prior work.
-2. Implement corpus retrieval, so the M1-versus-M2 contrast tests grounding rather than
-   testing one paraphrase against no paraphrase.
-3. Add process-level metrics beyond the terminal rung — which options were raised and
+2. Calibrate `retrieval_claim_min_terms` and `retrieval_claim_top_k` against a live sweep,
+   the way the Wikipedia passage thresholds were. The claim index is in place (ADR 0007) but
+   its thresholds are reasoned rather than measured, and at the committed default a mock
+   panel declines everything.
+3. Deepen corpus corroboration: write claims that deliberately restate a shared position
+   across an author's works, or add a model-assisted merge pass, so corroboration depth
+   becomes a discriminating metric rather than ≈1 everywhere.
+4. Add process-level metrics beyond the terminal rung — which options were raised and
    rejected, the order considerations enter, dispersion of positions across the panel. These
    are richer than a single terminal action and are harder for a model to have memorised.
-4. Implement reasoning-theme coding with a validated agreement sample.
-5. Probe for parametric leakage directly: ask period-restricted personas about post-cutoff
+5. Implement reasoning-theme coding with a validated agreement sample.
+6. Probe for parametric leakage directly: ask period-restricted personas about post-cutoff
    concepts and measure how often they answer anyway.

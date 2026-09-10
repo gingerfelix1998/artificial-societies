@@ -37,7 +37,7 @@ data/corpora-src/brodie/strategy_missile_age_1959.md
 
 ```markdown
 ---
-work: The Absolute Weapon
+work: 'The Absolute Weapon: Atomic Power and World Order'
 date: 1946
 type: book_chapter
 confidence: general
@@ -70,6 +70,18 @@ A pointer. Reaches the manifest only, never a chunk, so it cannot be cited as ev
 Where each part goes, and why, is ADR 0007. The header block travels with every chunk and
 claim as metadata rather than as citable text: a citation to `confidence: general` would
 attest to nothing.
+
+**`work` and `confidence` are required.** A document that does not state its confidence is
+refused, not assumed good.
+
+**Quote any header value containing a colon.** Half the titles in this literature are
+`Title: Subtitle`, and unquoted that is invalid YAML — `artsoc ingest` names the file and
+tells you to quote it, but it is the commonest authoring mistake.
+
+**Every claim must be supported by prose in its *own* `## Argument` section.** Evidence
+edges are BM25 within the same publication, so a claim asserting something that document's
+Argument never discusses fails the build — `ingest` raises and names every unsupported
+claim at once. If a claim really belongs to another of the author's works, move it there.
 
 ## Building from it
 

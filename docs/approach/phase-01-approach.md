@@ -17,9 +17,11 @@ operational. The backend changes what produced the numbers, so it is experimenta
 lives in `configs/base.yaml` and is recorded in every output record.
 `tests/test_configs.py` asserts the parser exposes nothing else.
 
-The mock remains the default and every run in this repo so far has used it — deliberately
-shape-correct and content-nonsense, so no number it produces is a finding. A live backend
-is opted into per ADR 0002; `make test` still runs disconnected with no API key.
+The mock is the code default (`RunConfig.backend`) and is deliberately shape-correct and
+content-nonsense, so no number it produces is a finding. `configs/base.yaml` opts into the
+live Anthropic backend per ADR 0002 — a live run needs credentials and fails loudly without
+them; `make test` still runs disconnected with no API key, on the mock and the stub
+retriever.
 
 ## Delivery
 Wider context for anyone — human or agent — working in this repo. What follows is what the code is *for*, so that implementation trade-offs can be judged against it.
@@ -47,8 +49,11 @@ That reframes what counts as progress. A shortcut that makes the code work but w
 
 ### What "phase 1 done" means
 
-Every arm run at n≥100; real corpus retrieval in place of `StubRetriever`; the rung
-mapping reconciled with a published escalation ladder; reasoning themes validated against a hand-coded stratified sample; and a written result stated as a distribution and a delta, with the limitations section written before the findings section.
+Every arm run at n≥100 with a live backend; the claim-match retrieval thresholds calibrated
+against a live sweep (the mechanism is in place, ADR 0007; the numbers are not calibrated);
+the rung mapping reconciled with a published escalation ladder; reasoning themes validated
+against a hand-coded stratified sample; and a written result stated as a distribution and a
+delta, with the limitations section written before the findings section.
 
 ### What we will never claim
 
@@ -67,8 +72,9 @@ central war, so there is no outcome ground truth and the simulation cannot be va
 | Nominal panels ("100" that is really 6) | `metrics.panel_coverage`, routing tests |
 | Historical outcome leakage | Anonymised nations; counterfactual scenario variants |
 
-Detail lives in `docs/design.md` (methods and roadmap), `docs/access-matrix.md`
-(boundaries), `docs/measurement.md` (metrics and interpretation limits), and `CLAUDE.md` (the invariants).
+Detail lives in `docs/framework/design.md` (methods and roadmap), `docs/framework/access-matrix.md`
+(boundaries), `docs/framework/measurement.md` (metrics and interpretation limits), and
+`CLAUDE.md` (the invariants).
 
 ## Layout
 
@@ -78,59 +84,70 @@ configs/
   base.yaml            defaults inherited by every arm
   arms/*.yaml          one file per experimental arm; arms are configs, not flags
 data/
-  theorists/registry.yaml    persona registry (corpus_notes are PLACEHOLDERS)
+  theorists/registry.yaml    persona registry (all corpus_source: markdown)
   scenarios/*.json           injected events + presidential doctrine cards
-  corpora/                   theorist source texts — never committed
-docs/
+  corpora-src/<id>/*.md       COMMITTED source of record — project-written summaries
+  corpora/                    build artefacts (chunks, claims, manifest) — never committed
+docs/framework/
   design.md            population choice, persona methods, loop, roadmap
   access-matrix.md     who may see what, and why each boundary exists
   measurement.md       metrics, diagnostics, interpretation constraints
-  decisions/           ADRs
+docs/decisions/        ADRs
 src/artsoc/
   schema.py            typed messages, closed action space, deterministic rungs
   world.py             append-only world log, perception filter
-  llm.py               single model choke point: mock backend + disk cache
+  llm.py               single model choke point: mock + live backends, disk cache
   personas.py          persona construction M1/M2/M3, tag vocabulary, routing
-  retrieval.py         M2 grounding interface — CorpusRetriever is UNIMPLEMENTED
+  ingest.py            corpus building: markdown chunking + claim index (ADR 0007)
+  retrieval.py         M2 grounding: CorpusRetriever (claim index) and StubRetriever
   agents.py            the four roles and their enforced context boundaries
   sim.py               orchestration loop, RunConfig, ablation switches
-  coder.py             secondary coding of reasoning (never feeds the rung)
+  narrative.py         model-written run/session summaries (never feed the rung)
   metrics.py           outcome distributions, coverage, citation integrity
-  cli.py               artsoc run / analyse / arms
+  views.py             derived views the frontend consumes, all tested here
+  session.py           sessions, cost gate, provenance flags
+  api.py               local read-only API (optional `api` extra)
+  cli.py               artsoc run / analyse / arms / ingest
 tests/
   test_access_matrix.py   canary tests: no role sees forbidden context
   test_invariants.py      rungs, routing coverage, perception, configs, end-to-end
+  test_markdown_corpus.py claim index: parsing, chunking, retrieval, citations
+  test_retrieval.py       Wikipedia ingest + passage retrieval + belief fallback
 out/                   run outputs, gitignored
 ```
 
 ## Status
 
-Status as of 2026-09-06. `make test`: 101 tests passing. `make lint`: clean.
+`make test`: 448 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
+store, by design). `make lint`: clean. `frontend` `tsc`: clean.
 
-**The scaffold is complete and the loop runs end to end.** `artsoc run`, `artsoc analyse`
-and `make phase1` work offline against the mock backend with no API key.
+**The loop runs end to end, on real retrieval.** `artsoc run`, `artsoc analyse`, `artsoc
+ingest` and `make phase1` work offline against the mock backend and stub retriever with no
+API key; a live sweep is opted into via `configs/base.yaml`.
 
-Built: `schema.py` (closed action space, deterministic ladder), `world.py` (world log,
-perception filter), `llm.py` (model choke point, mock backend, disk cache), `personas.py`
-(M1/M2/M3, tag routing, panel coverage), `retrieval.py` (`StubRetriever`; `CorpusRetriever`
-raises), `agents.py` (the four roles), `config.py` and the seven arms in `configs/arms/`,
-`sim.py` (orchestration, Monte Carlo, JSONL output), `metrics.py` (distributions, contrasts,
-printed caveats), `cli.py`. Role context boundaries are enforced by
-`tests/test_access_matrix.py`, which was validated by deliberately breaking four boundaries
-and confirming each was caught.
+Built: the full scaffold (`schema.py`, `world.py`, `llm.py` with mock + live backends,
+`personas.py`, `agents.py`, `sim.py`, `metrics.py`, `config.py` and the arms in
+`configs/arms/`); courses of action (ADR 0006); the localhost viewer (`views.py`,
+`session.py`, `api.py`, `narrative.py`, `frontend/`); and corpus retrieval — every persona
+retrieves from a committed claim index over project-written summaries of its publications
+(`ingest.py`, `retrieval.CorpusRetriever`, ADR 0007). Role context boundaries are enforced
+by `tests/test_access_matrix.py`, validated by deliberately breaking four boundaries and
+confirming each was caught. The end-to-end citation path — a claim in an `.md` file through
+retrieval, the theorist's citation, `verify_citations`, the record, and the analyst-facing
+`resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
 
-Not written: `coder.py` (reasoning-theme coding), and `docs/design.md`,
-`docs/access-matrix.md`, `docs/measurement.md` are still empty.
+**A running loop is not a finished phase 1.** The project must not be described as producing
+grounded *results* until it has:
 
-**A complete scaffold is not a finished phase 1.** Nothing below has been done, and the
-project must not be described as producing grounded results until it has:
-
-- Real corpus retrieval. `StubRetriever` returns registry paraphrases and reports
-  `grounded=false`; **no run is corpus-grounded**.
-- `registry.yaml` `corpus_notes` are placeholders, not evidence; `prominence` values are
-  invented and weight nothing.
-- `schema.RUNG` has not been reconciled with a published escalation ladder.
-- Reasoning themes have no hand-coded agreement sample.
+- The claim-match thresholds (`retrieval_claim_min_terms`, `retrieval_claim_top_k`)
+  calibrated against a live sweep. The mechanism is in place; the numbers are reasoned, not
+  measured, and at the committed default a mock panel declines everything.
+- A corpus deep enough that corroboration depth discriminates — right now every claim is its
+  own group and depth reads ≈1 everywhere.
+- `corpus_notes` are placeholders, not evidence; `prominence` values are invented and weight
+  nothing.
+- `schema.RUNG` reconciled with a published escalation ladder.
+- Reasoning themes with a hand-coded agreement sample.
 - Every arm run at n≥100 with a live backend, written up as a distribution and a delta,
   limitations section first.
 
