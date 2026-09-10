@@ -1,0 +1,16 @@
+# ADR 0008. The three courses of action are debated by a disposition-varied deliberative
+# committee (the 1962-shaped ExComm) before the President decides. Round-robin, members may
+# abstain, the President chairs and concludes within a hard cap.
+#
+# CONTRAST AGAINST baseline. `baseline` records the President's prior over the three courses
+# (secret_lean) but runs no debate, so its lean->decision movement is the decision's own
+# instability — the noise floor. This arm's movement in excess of that is the deliberation
+# effect. The absolute movement of either arm is not a finding (Rivera et al.).
+#
+# Costs roughly 2x a panel arm per replication (roster of 11, up to 3 rounds, ~25% of turns
+# abstain). Develop on the mock; a live sweep of this arm is the expensive, opt-in part.
+
+convene_excomm: true
+notes: >-
+  ExComm deliberation on the courses of action before the decision. Read
+  mean_lean_shift against baseline's; absolute lean->decision movement is not a finding.

@@ -26,14 +26,24 @@ import random
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from artsoc.agents import Advisor, IntelligenceOfficer, President, Theorist
+from artsoc.agents import (
+    Advisor,
+    ExCommMember,
+    IntelligenceOfficer,
+    President,
+    Theorist,
+    render_deliberation,
+    render_situation,
+)
 from artsoc.config import RunConfig
 from artsoc.llm import DiskCache, LLMClient, estimate_cost, get_backend
 from artsoc.personas import (
     Persona,
+    load_excomm,
     load_registry,
     panel_coverage,
     route,
@@ -41,9 +51,12 @@ from artsoc.personas import (
 )
 from artsoc.retrieval import get_retriever
 from artsoc.schema import (
+    ActionType,
     AdvisorBrief,
     AnalyticalQuestion,
     CourseOfAction,
+    ExCommStatement,
+    PerceivedEvent,
     PresidentialQuery,
     RoutingRecord,
     RunRecord,
@@ -122,16 +135,98 @@ def build_panel(config: RunConfig, rng: random.Random) -> list[Persona]:
     return rng.sample(pool, config.panel_size)
 
 
+def build_excomm(config: RunConfig, rng: random.Random):
+    """The deliberative committee for this replication (ADR 0008).
+
+    Mirrors `build_panel`: the whole roster unless `excomm_size` caps it smaller, in which
+    case the run rng samples — so a future `small_excomm` arm measures "a committee of N"
+    rather than "these N seats".
+    """
+    roster = load_excomm()
+    if config.excomm_size and config.excomm_size < len(roster):
+        return rng.sample(roster, config.excomm_size)
+    return roster
+
+
+@dataclass
+class _Deliberation:
+    """What the advisory half produced past the courses of action (ADR 0008).
+
+    Defaults are the control-arm shape: no lean, no debate. `transcript` is the final
+    rendered debate, kept here so `run_once` can hand it to `President.decide` without
+    needing the roster.
+    """
+
+    lean_action: ActionType | None = None
+    lean_coa_id: str | None = None
+    lean_reasoning: str = ""
+    statements: list[ExCommStatement] = field(default_factory=list)
+    rounds: int = 0
+    transcript: str = ""
+
+
+def _deliberate(
+    config: RunConfig,
+    client: LLMClient,
+    scenario: Scenario,
+    intel,
+    view: list[PerceivedEvent],
+    brief: AdvisorBrief,
+    coas: list[CourseOfAction],
+    rng: random.Random,
+) -> _Deliberation:
+    """Record the President's prior, then run the committee if `convene_excomm` is set.
+
+    Sequential by construction — round-robin, each turn depends on the last — so it never
+    touches the theorist fan-out's concurrency and the "same record at any concurrency"
+    guarantee holds because there is nothing here to reorder.
+    """
+    lean_action, lean_coa_id, lean_reasoning = President(
+        client, scenario.doctrine_card
+    ).lean(intel, brief, coas)
+    result = _Deliberation(
+        lean_action=lean_action, lean_coa_id=lean_coa_id, lean_reasoning=lean_reasoning
+    )
+    if not config.convene_excomm:
+        return result
+
+    roster = build_excomm(config, rng)
+    situation = render_situation(intel, view)
+    chair = President(client, scenario.doctrine_card)
+    for round_no in range(1, config.deliberation_max_rounds + 1):
+        result.rounds = round_no
+        for member in roster:
+            transcript = render_deliberation(result.statements, roster)
+            result.statements.append(
+                ExCommMember(client, member).contribute(
+                    round_no, situation, brief, coas, transcript
+                )
+            )
+        if (
+            chair.chair(
+                round_no,
+                config.deliberation_max_rounds,
+                render_deliberation(result.statements, roster),
+            )
+            == "conclude"
+        ):
+            break
+    result.transcript = render_deliberation(result.statements, roster)
+    return result
+
+
 def _consult(
     config: RunConfig,
     client: LLMClient,
     scenario: Scenario,
     intel,
+    view: list[PerceivedEvent],
     rng: random.Random,
     panel: list[Persona],
     retriever,
 ) -> tuple[PresidentialQuery, list[AnalyticalQuestion], list[RoutingRecord],
-           list[TheoristOpinion], AdvisorBrief, list[CourseOfAction], list[str]]:
+           list[TheoristOpinion], AdvisorBrief, list[CourseOfAction], list[str],
+           _Deliberation]:
     """The advisory half of the loop: query, panel, brief.
 
     Split out so `run_once` reads as the sequence it is, and so the control arm's absence
@@ -189,7 +284,8 @@ def _consult(
 
     brief = advisor.synthesise(query, opinions, config.synthesis_mode)
     coas = advisor.propose_coas(query, opinions)
-    return query, questions, routing, opinions, brief, coas, unsupported
+    deliberation = _deliberate(config, client, scenario, intel, view, brief, coas, rng)
+    return query, questions, routing, opinions, brief, coas, unsupported, deliberation
 
 
 def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> RunRecord:
@@ -239,18 +335,25 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
     brief: AdvisorBrief | None = None
     coas: list[CourseOfAction] = []
     unsupported: list[str] = []
+    deliberation = _Deliberation()
 
     if config.consult_panel:
-        query, questions, routing, opinions, brief, coas, unsupported = _consult(
-            config, client, scenario, intel, rng, panel, retriever
-        )
+        (
+            query, questions, routing, opinions, brief, coas, unsupported, deliberation
+        ) = _consult(config, client, scenario, intel, view, rng, panel, retriever)
 
     # `coas` stays [] under the control arm, and President.decide's free-choice path is
     # what runs when the list is empty — the base-rate measurement every other arm's delta
     # is read against is untouched by ADR 0006 (`decide` treats `coas=None` the same as
     # today; an empty list from a consulted-but-COA-less path would be a design error, so
     # it is passed through honestly rather than coerced to None here).
-    action = President(client, scenario.doctrine_card).decide(intel, brief, coas or None)
+    #
+    # The deliberation transcript is added under `convene_excomm` (ADR 0008); it is "" on
+    # every other arm, including the control. The President's secret lean is NOT passed
+    # here — it never re-enters a prompt.
+    action = President(client, scenario.doctrine_card).decide(
+        intel, brief, coas or None, deliberation_transcript=deliberation.transcript
+    )
 
     return RunRecord(
         run_id=f"{config.arm}-{seed}",
@@ -285,6 +388,13 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         unsupported_citations=unsupported,
         action=action,
         rung=action.rung,
+        # ADR 0008. `None`/`[]`/`0` on the control arm and whenever `convene_excomm` is
+        # false but a lean was still recorded; the lean's `_reasoning` is host-only.
+        secret_lean=deliberation.lean_action,
+        secret_lean_coa_id=deliberation.lean_coa_id,
+        secret_lean_reasoning=deliberation.lean_reasoning,
+        deliberation=deliberation.statements,
+        deliberation_rounds=deliberation.rounds,
         panel_size=len(panel),
         personas_consulted=sorted(panel_coverage(routing)),
         llm_calls=client.calls,

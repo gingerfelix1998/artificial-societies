@@ -14,7 +14,7 @@ UI := frontend
 PORT ?= 8000
 N ?= 100
 SEED0 ?= 1
-ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth_only full_stack_variance tag_routing
+ARMS := escalation_prior baseline m1_ungrounded small_panel consensus_only synth_only full_stack_variance tag_routing excomm_debate
 
 # Forced-exclusion arms: one per theorist, each running a world in which that theorist
 # never existed. Kept out of ARMS because they answer a different question — not "does the

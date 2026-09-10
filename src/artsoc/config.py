@@ -148,6 +148,19 @@ class RunConfig(BaseModel):
 
     routing_mode: str = "advisor"
 
+    #: ADR 0008. When true, the three courses of action are debated by the ExComm committee
+    #: before the President decides, and the decision prompt gains the transcript. The
+    #: President's secret lean over the courses is recorded on every `consult_panel: true`
+    #: run regardless of this flag, so `baseline` carries the no-debate lean->decision
+    #: noise floor the `excomm_debate` arm is read against.
+    convene_excomm: bool = False
+    #: The hard cap on deliberation rounds. The President concludes within it; the host
+    #: forces conclusion at it. This is the main cost dial on a `convene_excomm` arm.
+    deliberation_max_rounds: int = Field(default=3, ge=1)
+    #: Cap on committee size; `0` uses the whole roster. Samples with the run rng when it
+    #: is smaller, for a future `small_excomm` arm.
+    excomm_size: int = Field(default=0, ge=0)
+
     #: Personas the world operates as though never existed. They are absent from the panel,
     #: from every roster the Advisor is shown, and from every prompt of every role — not
     #: merely unrouted. This is the forced-exclusion intervention that makes influence

@@ -2016,14 +2016,69 @@ def test_without_a_failure_list_a_failure_still_raises() -> None:
         sim_module.run_once = original
 
 
+def test_the_control_arm_is_untouched_by_the_deliberation_stage() -> None:
+    """ADR 0008's stage is inside the one `consult_panel` conditional, so `escalation_prior`
+    skips it entirely: no lean, no debate, `convene_excomm` unread."""
+    record = _run("escalation_prior", 3)
+    assert record.secret_lean is None
+    assert record.secret_lean_reasoning == ""
+    assert record.deliberation == []
+    assert record.deliberation_rounds == 0
+    # The flag having any value must not change the control record.
+    flipped = _mock(load_arm("escalation_prior")).model_copy(
+        update={"convene_excomm": True}
+    )
+    assert run_once(flipped, 3, use_disk_cache=False).model_dump(
+        mode="json", exclude={"wall_time_s", "started_at", "config"}
+    ) == run_once(_mock(load_arm("escalation_prior")), 3, use_disk_cache=False).model_dump(
+        mode="json", exclude={"wall_time_s", "started_at", "config"}
+    )
+
+
+def test_baseline_records_the_lean_but_holds_no_debate() -> None:
+    """The lean is recorded on every consulted arm so `baseline` is the no-debate noise
+    floor `excomm_debate` is read against (ADR 0008)."""
+    record = _run("baseline", 3)
+    assert isinstance(rung_for(record.secret_lean), int)
+    assert record.secret_lean_coa_id in {c.coa_id for c in record.courses_of_action}
+    assert record.deliberation == [] and record.deliberation_rounds == 0
+
+
+def test_the_excomm_debate_arm_produces_a_debate_and_a_lean() -> None:
+    record = _run("excomm_debate", 3)
+    roster_ids = {m.member_id for m in load_excomm()}
+    assert record.deliberation, "the debate produced no statements"
+    assert 1 <= record.deliberation_rounds <= 3
+    assert {s.round for s in record.deliberation} <= {1, 2, 3}
+    assert all(s.member_id in roster_ids for s in record.deliberation)
+    assert isinstance(rung_for(record.secret_lean), int)
+    assert any(not s.abstained for s in record.deliberation), "every member abstained"
+
+
+def test_sim_has_exactly_one_arm_conditional() -> None:
+    """`config.consult_panel` is the only branch on arm behaviour in sim.py; the
+    deliberation stage lives inside it (ADR 0008), not beside it."""
+    import artsoc.sim as sim_module
+
+    source = inspect.getsource(sim_module)
+    # One docstring mention, then the same guard twice in code (build_panel, the _consult
+    # call). A fourth occurrence would be a second arm conditional.
+    assert source.count("config.consult_panel") == 3
+    # The deliberation stage branches on `convene_excomm`, but INSIDE `_deliberate`, which
+    # only runs on the `consult_panel` path — not as a peer of it in `run_once`.
+    assert "config.convene_excomm" in inspect.getsource(sim_module._deliberate)
+    assert "config.convene_excomm" not in inspect.getsource(sim_module.run_once)
+
+
 def test_the_record_is_identical_at_any_concurrency() -> None:
     """The invariant concurrency must not break.
 
     Theorist calls are fanned out because they cannot see each other, but the record has to
     stay reproducible from a config and a seed. Results are keyed by index and re-sorted,
-    so completion order cannot reach the output.
+    so completion order cannot reach the output. The ExComm debate is sequential by
+    construction, so `convene_excomm` is exercised here too.
     """
-    base = _mock(load_arm("baseline"))
+    base = _mock(load_arm("excomm_debate"))
     dumps = []
     for concurrency in (1, 4, 8):
         record = run_once(
