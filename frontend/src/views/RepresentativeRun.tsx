@@ -16,6 +16,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { api } from '../api/client'
 import AgentPanel from '../components/AgentPanel'
+import AudiencePanel from '../components/AudiencePanel'
 import EventLog from '../components/EventLog'
 import InteractionGraphView from '../components/InteractionGraphView'
 import LoopGantt from '../components/LoopGantt'
@@ -25,7 +26,7 @@ import RungHistogram from '../components/RungHistogram'
 import RunSummary from '../components/RunSummary'
 import { RUNG_LABELS, humanise, percent } from '../lib/format'
 import { usePlayback } from '../lib/playback'
-import type { ArmSummary, RepresentativeView, SessionSummary } from '../types/artsoc'
+import type { ArmSummary, RepresentativeView, RosterEntry, SessionSummary } from '../types/artsoc'
 
 export default function RepresentativeRun() {
   const { sessionId = '', arm = '' } = useParams()
@@ -34,6 +35,10 @@ export default function RepresentativeRun() {
   const [selected, setSelected] = useState<string | null>(null)
   const [reveal, setReveal] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Real names (ADR 0010) — display-only, fetched once alongside the run and passed down
+  // to AgentPanel. Empty when this run convened no committee; `excommRoster` still 404s
+  // gracefully via `api`'s error path if ever called on such an arm, so this is skipped.
+  const [roster, setRoster] = useState<Record<string, RosterEntry>>({})
 
   useEffect(() => {
     void (async () => {
@@ -44,6 +49,11 @@ export default function RepresentativeRun() {
         ])
         setView(detail)
         setSummary(session)
+        if (detail.graph.nodes.some((n) => n.kind === 'excomm_member')) {
+          setRoster(await api.excommRoster(sessionId, arm))
+        } else {
+          setRoster({})
+        }
       } catch (e) {
         setError((e as Error).message)
       }
@@ -147,7 +157,14 @@ export default function RepresentativeRun() {
             selectedAgent={selected}
           />
           <div className="agent-panel">
-            <AgentPanel agent={agent} onClose={() => setSelected(null)} />
+            <AgentPanel
+              agent={agent}
+              onClose={() => setSelected(null)}
+              roster={roster}
+              sessionId={sessionId}
+              arm={arm}
+              runId={record.run_id}
+            />
           </div>
         </div>
       </section>
@@ -206,6 +223,13 @@ export default function RepresentativeRun() {
           />
         </section>
       </div>
+
+      {record.audience && (
+        <>
+          <hr className="rule" />
+          <AudiencePanel sessionId={sessionId} arm={arm} record={record} />
+        </>
+      )}
 
       <hr className="rule" />
 

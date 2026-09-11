@@ -428,6 +428,15 @@ input[type='range'] { accent-color: var(--accent); height: 1.4rem; }
 .passage.unresolved { border-color: var(--warn); }
 .passage.unresolved p { color: var(--warn); }
 
+/* ---------- live chat (ADR 0010) ---------- */
+
+.chat { margin-top: 1rem; border-top: 1px solid var(--rule); padding-top: 0.9rem; }
+.chat-history { display: grid; gap: 0.5rem; max-height: 16rem; overflow-y: auto; margin-bottom: 0.6rem; }
+.chat-turn { margin: 0; font-size: 0.85rem; line-height: 1.5; padding-left: 0.9rem; border-left: 2px solid var(--rule); }
+.chat-turn.user { border-left-color: var(--accent); color: var(--ink-2); }
+.chat-turn.advisor { border-left-color: var(--ink-4); }
+.chat-turn .tag { margin-right: 0.5rem; }
+
 /* ---------- analysis ---------- */
 
 .qa { display: grid; gap: 1rem; max-width: var(--measure); }

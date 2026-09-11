@@ -18,7 +18,9 @@ import type {
 } from '../types/api'
 import type {
   AnalysisAnswer,
+  ChatTurn,
   LandingView,
+  RosterEntry,
   RunNarrative,
   SessionAnalysis,
   SessionState,
@@ -170,6 +172,50 @@ export const api = {
     request<RepresentativeView>(
       `/api/sessions/${id}/runs/${encodeURIComponent(arm)}/representative` +
         (revealGroundTruth ? '?reveal_ground_truth=true' : ''),
+    ),
+
+  /** `member_id -> {role_title, real_name}`, for labelling the committee (ADR 0010). */
+  excommRoster: (id: string, arm: string) =>
+    request<Record<string, RosterEntry>>(
+      `/api/sessions/${id}/runs/${encodeURIComponent(arm)}/excomm/roster`,
+    ),
+
+  /** The conversation so far with one ExComm member or one citizen (ADR 0010). */
+  chatHistory: (
+    id: string,
+    arm: string,
+    kind: 'excomm' | 'citizen',
+    runId: string,
+    whoId: string,
+  ) =>
+    request<ChatTurn[]>(
+      `/api/sessions/${id}/runs/${encodeURIComponent(arm)}/chat/${kind}/` +
+        `${encodeURIComponent(runId)}/${encodeURIComponent(whoId)}`,
+    ),
+
+  /**
+   * Send one message and get the reply — live, on-demand, billed per message (ADR 0010).
+   * Capped at a per-conversation turn limit server-side; a 422 past it is not a bug.
+   */
+  sendChat: (
+    id: string,
+    arm: string,
+    kind: 'excomm' | 'citizen',
+    runId: string,
+    whoId: string,
+    message: string,
+  ) =>
+    request<ChatTurn>(
+      `/api/sessions/${id}/runs/${encodeURIComponent(arm)}/chat/${kind}/` +
+        `${encodeURIComponent(runId)}/${encodeURIComponent(whoId)}`,
+      { method: 'POST', body: JSON.stringify({ message }) },
+    ),
+
+  /** Weighted approve share by stratum category, pooled across the arm's replications
+   *  that ran with an audience (ADR 0009/0010). */
+  audienceBreakdown: (id: string, arm: string) =>
+    request<Record<string, number>>(
+      `/api/sessions/${id}/arms/${encodeURIComponent(arm)}/audience/breakdown`,
     ),
 }
 

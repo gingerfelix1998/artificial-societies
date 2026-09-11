@@ -20,19 +20,33 @@
  * Cited passages resolve to their text. A citation is only checkable against the claim it
  * was attached to if it can be read, and an id the store does not contain is shown as
  * unresolved rather than hidden — that is the citation-integrity finding.
+ *
+ * **An `excomm_member` node gets a real name and a live chat (ADR 0010).** `agent.label`
+ * already carries the real name — the API overlays it before this component ever sees the
+ * payload — and `roster[agent.id].role_title` is the anonymous seat, shown as a subtitle so
+ * the anonymisation the model actually operated under stays visible. The chat below it is
+ * a new, on-demand conversation: nothing sent or received here touches the record.
  */
 
 import { useMemo, useState } from 'react'
 
+import { api } from '../api/client'
+import ChatBox, { useChat } from './ChatBox'
 import { citationsByPersona, usePassages, type Passages } from '../lib/usePassages'
-import type { AgentAnswer, AgentDetail } from '../types/artsoc'
+import type { AgentAnswer, AgentDetail, RosterEntry } from '../types/artsoc'
 
 interface Props {
   agent: AgentDetail | null
   onClose: () => void
+  /** `member_id -> {role_title, real_name}` (ADR 0010). Empty when this run convened no
+   *  committee, or for an agent that isn't one. */
+  roster?: Record<string, RosterEntry>
+  sessionId?: string
+  arm?: string
+  runId?: string
 }
 
-export default function AgentPanel({ agent, onClose }: Props) {
+export default function AgentPanel({ agent, onClose, roster, sessionId, arm, runId }: Props) {
   // Pydantic defaults make these optional in the generated types. Normalised once here so
   // the markup below reads as the shape it actually is.
   const answers = agent?.answers ?? []
@@ -49,6 +63,20 @@ export default function AgentPanel({ agent, onClose }: Props) {
     [agent, answers],
   )
   const resolved = usePassages(wanted)
+
+  const isExcommChat = agent?.kind === 'excomm_member' && sessionId && arm && runId
+  const chatKey = isExcommChat ? `${sessionId}:${arm}:${runId}:${agent!.id}` : ''
+  const chat = useChat(
+    () =>
+      isExcommChat
+        ? api.chatHistory(sessionId, arm, 'excomm', runId, agent!.id)
+        : Promise.resolve([]),
+    (message) =>
+      isExcommChat
+        ? api.sendChat(sessionId, arm, 'excomm', runId, agent!.id, message)
+        : Promise.reject(new Error('no committee member selected')),
+    chatKey,
+  )
 
   if (agent == null) {
     return (
@@ -72,6 +100,12 @@ export default function AgentPanel({ agent, onClose }: Props) {
           Clear
         </button>
       </div>
+      {agent.kind === 'excomm_member' && roster?.[agent.id] && (
+        <p className="faint tiny" style={{ marginTop: '-0.3rem' }}>
+          Anonymised in the simulation as: {roster[agent.id]!.role_title}. The name above is
+          shown here only — the model never saw it.
+        </p>
+      )}
       <p className="muted small">{agent.summary}</p>
 
       {fields.length > 0 && (
@@ -106,11 +140,22 @@ export default function AgentPanel({ agent, onClose }: Props) {
         </div>
       )}
 
-      {answers.length === 0 && passages.length === 0 && (
+      {answers.length === 0 && passages.length === 0 && agent.kind !== 'excomm_member' && (
         <p className="empty">
           On the panel for this replication, but never consulted. That is a different fact
           from not being there, and it is what the panel-coverage diagnostic measures.
         </p>
+      )}
+
+      {isExcommChat && (
+        <ChatBox
+          label={agent.label}
+          history={chat.history}
+          loading={chat.loading}
+          error={chat.error}
+          onSend={chat.onSend}
+          sending={chat.sending}
+        />
       )}
     </>
   )
