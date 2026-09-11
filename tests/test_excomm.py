@@ -14,6 +14,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from artsoc.agents import BoundaryViolation
+from artsoc.agents import ExCommMember as ExCommAgent
+from artsoc.llm import LLMClient, MockBackend
 from artsoc.personas import (
     EXCOMM_REGISTRY_PATH,
     ExCommMember,
@@ -21,6 +24,7 @@ from artsoc.personas import (
     excomm_seat_title,
     load_excomm,
 )
+from artsoc.schema import AdvisorBrief
 
 ROSTER_KEY = Path(__file__).resolve().parents[1] / "docs" / "excomm" / "roster-key.md"
 
@@ -143,6 +147,35 @@ def test_the_identity_prompt_is_stable_across_the_debate() -> None:
 def test_load_excomm_raises_on_a_missing_file(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="no ExComm roster"):
         load_excomm(tmp_path / "nope.yaml")
+
+
+def test_a_planted_forbidden_token_makes_an_excomm_chat_call_raise() -> None:
+    """The canary discipline (ADR 0010): a guard that is never shown to fail is not
+    evidence. Plants the member's own disposition text as a forbidden token —
+    guaranteed present in the identity prompt `chat()` builds from — and confirms the
+    call raises `BoundaryViolation` rather than continuing on a scrubbed prompt."""
+    member = load_excomm()[0]
+    agent = ExCommAgent(LLMClient(backend=MockBackend(), run_seed=1), member)
+    brief = AdvisorBrief(summary="MOCK:")
+
+    with pytest.raises(BoundaryViolation, match="excomm chat"):
+        agent.chat(
+            [], "Why did you argue that?", "SITUATION: nothing notable.", brief, [], "",
+            forbidden_tokens=[member.disposition.split(".")[0]],
+        )
+
+
+def test_with_no_forbidden_token_planted_an_excomm_chat_call_succeeds() -> None:
+    """Anti-vacuity: the guard is not simply raising unconditionally."""
+    member = load_excomm()[0]
+    agent = ExCommAgent(LLMClient(backend=MockBackend(), run_seed=1), member)
+    brief = AdvisorBrief(summary="MOCK:")
+
+    reply = agent.chat(
+        [], "Why did you argue that?", "SITUATION: nothing notable.", brief, [], "",
+        forbidden_tokens=["some_theorist_id"],
+    )
+    assert reply
 
 
 def test_excomm_seat_title_is_the_role_title_up_to_its_own_em_dash() -> None:

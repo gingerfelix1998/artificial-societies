@@ -492,3 +492,32 @@ def test_audience_by_stratum_breaks_down_weighted_approval_by_category() -> None
     breakdown = audience_by_stratum([record])
     assert breakdown["region:northeast"] == 1.0
     assert breakdown["region:south"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Live citizen chat (ADR 0010)
+# ---------------------------------------------------------------------------
+
+
+def test_a_planted_forbidden_token_makes_a_citizen_chat_call_raise() -> None:
+    """The canary discipline: plants the citizen's own region — guaranteed present in
+    the identity prompt `chat()` builds from — and confirms the call raises
+    `BoundaryViolation` rather than continuing on a scrubbed prompt."""
+    citizen = Citizen(**_citizen(region="northeast"))
+    panelist = CitizenPanelist(LLMClient(backend=MockBackend(), run_seed=1), citizen)
+    statement = PublicStatement(action=ActionType.NO_ACTION, justification="MOCK:")
+
+    with pytest.raises(BoundaryViolation, match="citizen chat"):
+        panelist.chat([], "Can you say more?", [], statement, forbidden_tokens=["northeast"])
+
+
+def test_with_no_forbidden_token_planted_a_citizen_chat_call_succeeds() -> None:
+    """Anti-vacuity: the guard is not simply raising unconditionally."""
+    citizen = Citizen(**_citizen(region="northeast"))
+    panelist = CitizenPanelist(LLMClient(backend=MockBackend(), run_seed=1), citizen)
+    statement = PublicStatement(action=ActionType.NO_ACTION, justification="MOCK:")
+
+    reply = panelist.chat(
+        [], "Can you say more?", [], statement, forbidden_tokens=["some_other_theorist"]
+    )
+    assert reply
