@@ -139,10 +139,34 @@ def test_the_control_arm_is_estimated_at_two_calls_not_twenty() -> None:
 
 def test_a_full_loop_arm_is_estimated_from_its_own_question_and_k_settings() -> None:
     config = load_arm("baseline")
-    expected = 5 + config.n_questions * (1 + config.k_per_question)
+    # Seven fixed calls: intel, president_query, advisor_questions, advisor_synthesis,
+    # advisor_coas (ADR 0006), president_lean (ADR 0008), president_decision. Plus
+    # per-question advisor_selection and per-(question, k) theorist calls.
+    expected = 7 + config.n_questions * (1 + config.k_per_question)
     estimate = estimate_calls(_spec(["baseline"], n=7))
     assert estimate.arms[0].calls_per_replication == expected
     assert estimate.arms[0].total_calls == expected * 7
+
+
+def test_the_excomm_debate_arm_estimate_bounds_the_actual_loop() -> None:
+    """The upper bound must be >= what a mock run actually makes (ADR 0008)."""
+    from artsoc.personas import load_excomm
+    from artsoc.sim import run_once
+
+    config = load_arm("excomm_debate")
+    roster = config.excomm_size or len(load_excomm())
+    est = estimate_calls(_spec(["excomm_debate"], n=1)).arms[0]
+    by_role = {r.role: r.calls for r in est.roles}
+    assert by_role["excomm_member"] == roster * config.deliberation_max_rounds
+    assert by_role["president_chair"] == config.deliberation_max_rounds
+    assert by_role["president_lean"] == 1
+
+    actual = run_once(
+        config.model_copy(update={"backend": "mock", "retrieval_mode": "stub"}),
+        3,
+        use_disk_cache=False,
+    )
+    assert actual.llm_calls <= est.calls_per_replication, "the estimate under-bounds the loop"
 
 
 def test_a_smaller_panel_arm_estimates_the_same_calls_as_baseline() -> None:
@@ -426,6 +450,9 @@ def test_the_analysis_payload_carries_figures_and_nothing_else(tmp_path: Path) -
     # justification or a theorist's position appearing in it would mean a view leaked one.
     assert "justification" not in blob
     assert "reasoning" not in blob
+    # ADR 0008: the lean's prose reason is host-only; only the aggregate shift is exposed.
+    assert "secret_lean_reasoning" not in blob
+    assert "mean_lean_shift" in blob
 
 
 def test_the_analysis_payload_states_whether_a_control_was_run(tmp_path: Path) -> None:

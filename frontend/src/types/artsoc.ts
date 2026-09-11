@@ -104,6 +104,13 @@ export interface ArmSummary {
   corpus_tier?: string
   mean_corroboration?: number
   single_source_share?: number
+  n_with_lean?: number
+  mean_lean_shift?: number
+  p_moved?: number
+  p_moved_up?: number
+  p_moved_down?: number
+  mean_deliberation_rounds?: number
+  abstention_rate?: number
   models?: {
     [k: string]: string
   }
@@ -863,6 +870,11 @@ export interface RunFacts {
   grounded: boolean
   corpus_tier?: string
   retrieval_mode: string
+  secret_lean?: string | null
+  lean_shift?: number
+  deliberation_rounds?: number
+  n_deliberation_statements?: number
+  n_abstentions?: number
 }
 /**
  * A stored three-sentence summary, tied to the run it describes.
@@ -906,6 +918,9 @@ export interface RunConfig {
   n_questions?: number
   synthesis_mode?: string
   routing_mode?: string
+  convene_excomm?: boolean
+  deliberation_max_rounds?: number
+  excomm_size?: number
   excluded_personas?: string[]
   notes?: string
 }

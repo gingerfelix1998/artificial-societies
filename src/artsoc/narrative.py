@@ -74,9 +74,16 @@ class RunNarrative(BaseModel):
 
 
 def _agent_visible(record: Any) -> dict[str, Any]:
-    """The record as an agent-side reader would see it, with the host's truth removed."""
+    """The record as an agent-side reader would see it, with the host's truth removed.
+
+    `secret_lean_reasoning` goes too (ADR 0008): the lean is recorded for the analyst and
+    never re-enters a prompt, so a model summarising the run must not see it either. The
+    typed `secret_lean` / `secret_lean_coa_id` stay — they score on the ladder and the
+    summary may state that the decision moved off the prior.
+    """
     payload = record.model_dump(mode="json")
     payload.pop("host_ground_truth", None)
+    payload.pop("secret_lean_reasoning", None)
     return payload
 
 

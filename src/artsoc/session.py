@@ -66,6 +66,7 @@ from artsoc.narrative import (
 # `SessionSummary`. Two functions with one name, one returning figures and the other
 # returning prose about them, is exactly the confusion to avoid here.
 from artsoc.narrative import summarise_session as generate_session_analysis
+from artsoc.personas import load_excomm
 from artsoc.schema import RunRecord
 from artsoc.sim import CACHE_DIR, DEFAULT_OUT_DIR, run_many, write_jsonl
 from artsoc.views import representative_run
@@ -312,7 +313,9 @@ def estimate_calls(spec: SessionSpec) -> CallEstimate:
         caching.add(config.cache_enabled)
 
         # One entry per call site in `sim.run_once`, so the estimate is checkable against
-        # the loop rather than against a formula that has to be kept in step with it.
+        # the loop rather than against a formula that has to be kept in step with it. This
+        # is an UPPER bound: caching, abstention and the President concluding a debate early
+        # only reduce it.
         if config.consult_panel:
             per_role = {
                 "intelligence_officer": 1,
@@ -321,8 +324,14 @@ def estimate_calls(spec: SessionSpec) -> CallEstimate:
                 "advisor_selection": config.n_questions,
                 "theorist": config.n_questions * config.k_per_question,
                 "advisor_synthesis": 1,
+                "advisor_coas": 1,  # ADR 0006 added this call and did not add this row.
+                "president_lean": 1,  # ADR 0008.
                 "president_decision": 1,
             }
+            if config.convene_excomm:
+                roster = config.excomm_size or len(load_excomm())
+                per_role["excomm_member"] = roster * config.deliberation_max_rounds
+                per_role["president_chair"] = config.deliberation_max_rounds
         else:
             # No advisor, no panel, no brief. The control arm is two calls, not twenty.
             per_role = {"intelligence_officer": 1, "president_decision": 1}
@@ -507,6 +516,15 @@ def analysis_payload(session_id: str, arm: str, root: Path | None = None) -> dic
         "contrast_against_control": asdict(contrast) if contrast else None,
         "control_arm_was_run": control is not None,
         "course_of_action_support": coa_support(records).model_dump(mode="json"),
+        # ADR 0008. Aggregates only — never `secret_lean_reasoning`, which is per-record and
+        # host-only. `mean_lean_shift` is read against baseline's, not on its own.
+        "deliberation": {
+            "n_with_lean": summary.n_with_lean,
+            "mean_lean_shift": summary.mean_lean_shift,
+            "p_moved": summary.p_moved,
+            "mean_rounds": summary.mean_deliberation_rounds,
+            "abstention_rate": summary.abstention_rate,
+        },
         "diagnostics": summary.warnings,
         "conditions": {
             "backend": summary.backend,

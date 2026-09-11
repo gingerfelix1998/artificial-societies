@@ -35,7 +35,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord
+from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
 
 #: Below this ratio of consulted personas to declared panel size, the panel is nominal.
 COVERAGE_WARNING_RATIO = 0.5
@@ -127,6 +127,25 @@ class ArmSummary:
     mean_corroboration: float = 0.0
     single_source_share: float = 0.0
 
+    #: The lean->decision contrast (ADR 0008). `secret_lean` is the President's prior over
+    #: the three courses, captured before any deliberation; `rung` is where the decision
+    #: landed. `lean_shift` is `rung(action) - rung(secret_lean)` per replication.
+    #:
+    #: `baseline` records the lean but runs no debate, so its `mean_lean_shift` is the
+    #: decision's own instability — the noise floor. The interpretable quantity is
+    #: `excomm_debate.mean_lean_shift - baseline.mean_lean_shift`; the absolute movement of
+    #: either arm is not a finding (Rivera et al.). Defaulted for records with no lean.
+    n_with_lean: int = 0
+    mean_lean_shift: float = 0.0
+    p_moved: float = 0.0
+    p_moved_up: float = 0.0
+    p_moved_down: float = 0.0
+    #: Mean rounds the committee actually ran, `0.0` on an arm with no deliberation.
+    mean_deliberation_rounds: float = 0.0
+    #: Share of committee turns that abstained. A near-zero rate is a warning — a panel
+    #: performing participation — the same reading as the out-of-record rate.
+    abstention_rate: float = 0.0
+
     #: Which model served each role. One distinct value across every role means a smoke
     #: test: the presidential decision is the primary metric, and serving it from the same
     #: cheap model as everything else changes what was measured, not just what it cost.
@@ -171,6 +190,12 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
     citations = sum(len(o.citations) for o in opinions)
     unsupported = sum(len(r.unsupported_citations) for r in records)
 
+    # ADR 0008. Only replications that recorded a lean contribute; the lean and the rung
+    # both go through `rung_for`, so this is a ladder contrast, not a text one.
+    with_lean = [r for r in records if r.secret_lean is not None]
+    shifts = [r.rung - rung_for(r.secret_lean) for r in with_lean]
+    turns = [s for r in records for s in r.deliberation]
+
     consulted = {p for r in records for p in r.personas_consulted}
     declared = max((r.panel_size for r in records), default=0)
     per_run = [
@@ -208,6 +233,19 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
             round(sum(1 for c in claim_based if c.corroboration <= 1) / len(claim_based), 4)
             if claim_based
             else 0.0
+        ),
+        n_with_lean=len(with_lean),
+        mean_lean_shift=round(statistics.fmean(shifts), 3) if shifts else 0.0,
+        p_moved=round(sum(1 for s in shifts if s != 0) / len(shifts), 4) if shifts else 0.0,
+        p_moved_up=round(sum(1 for s in shifts if s > 0) / len(shifts), 4) if shifts else 0.0,
+        p_moved_down=(
+            round(sum(1 for s in shifts if s < 0) / len(shifts), 4) if shifts else 0.0
+        ),
+        mean_deliberation_rounds=round(
+            statistics.fmean(r.deliberation_rounds for r in records), 3
+        ),
+        abstention_rate=(
+            round(sum(1 for s in turns if s.abstained) / len(turns), 4) if turns else 0.0
         ),
         backend=first.backend,
         models=dict(first.models),
@@ -289,6 +327,21 @@ def _warnings(s: ArmSummary) -> list[str]:
             "source, so `grounded: true` covers passages of different evidential weight. "
             "A contrast against another arm is only clean if that arm mixed them the same "
             "way."
+        )
+    # ADR 0008. A committee whose debate never moves the President is either inert or the
+    # transcript is not reaching the decision prompt. Only meaningful once a debate ran.
+    if s.mean_deliberation_rounds > 0 and s.n_with_lean and s.p_moved < 0.02:
+        out.append(
+            f"DELIBERATION MOVED NOBODY ({s.arm}): {s.p_moved:.0%} of decisions differ "
+            f"from the President's recorded lean after a {s.mean_deliberation_rounds:.1f}"
+            "-round debate. A debate that never shifts the decision is either inert or its "
+            "transcript is not reaching `decide`."
+        )
+    if s.mean_deliberation_rounds > 0 and s.abstention_rate <= 0.02:
+        out.append(
+            f"NO ABSTENTIONS ({s.arm}): committee members abstained on "
+            f"{s.abstention_rate:.0%} of turns. A near-zero rate is a panel performing "
+            "participation, the same reading as a near-zero out-of-record rate."
         )
     # M1 personas are given no record, so there is nothing for them to be outside of and a
     # zero rate is correct. Warning there would train the reader to ignore the warning.
@@ -455,6 +508,18 @@ def format_report(summaries: list[ArmSummary]) -> str:
             f"    backend={s.backend} grounded={s.grounded} corpus={s.corpus_tier} "
             f"cache={s.cache_enabled} retrieval={s.retrieval_mode}"
         )
+        if s.n_with_lean:
+            debate = (
+                f", {s.mean_deliberation_rounds:.1f} rounds, "
+                f"{s.abstention_rate:.0%} abstained"
+                if s.mean_deliberation_rounds > 0
+                else " (no debate — noise floor)"
+            )
+            out.append(
+                f"    lean->decision: mean shift {s.mean_lean_shift:+.2f}, moved "
+                f"{s.p_moved:.0%} ({s.p_moved_up:.0%} up / {s.p_moved_down:.0%} down)"
+                f"{debate}"
+            )
 
     out += ["", "=" * 78, f"CONTRASTS AGAINST {CONTROL_ARM}", "=" * 78]
     if control is None:
@@ -483,6 +548,14 @@ def format_report(summaries: list[ArmSummary]) -> str:
         "  Per-persona influence is not reported: routing correlates with question tags,\n"
         "  which correlate with outcome, so it would be observational and read as causal."
     )
+    if any(s.n_with_lean for s in ordered):
+        out.append(
+            "\n  lean->decision movement is a within-replication quantity, not a delta.\n"
+            "  Absolute movement is not a finding — it carries the same base-rate confound.\n"
+            "  The interpretable quantity is excomm_debate's mean shift MINUS baseline's:\n"
+            "  baseline records the lean but runs no debate, so its movement is the\n"
+            "  decision's own instability, and the excess is the deliberation effect."
+        )
 
     seen: set[str] = set()
     for s in ordered:

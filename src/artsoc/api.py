@@ -280,6 +280,9 @@ def _record_without_ground_truth(record: RunRecord) -> dict[str, Any]:
     """
     dumped = record.model_dump(mode="json")
     dumped["host_ground_truth"] = {}
+    # ADR 0008: the President's stated reason for the lean is host-only, like ground truth.
+    # The typed lean stays so the client can show that the decision moved off the prior.
+    dumped["secret_lean_reasoning"] = ""
     return dumped
 
 

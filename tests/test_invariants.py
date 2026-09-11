@@ -2055,6 +2055,27 @@ def test_the_excomm_debate_arm_produces_a_debate_and_a_lean() -> None:
     assert any(not s.abstained for s in record.deliberation), "every member abstained"
 
 
+def test_lean_shift_is_the_ladder_distance_lean_to_decision() -> None:
+    """A within-replication contrast, both endpoints through `rung_for` (invariant 2)."""
+    from artsoc.metrics import summarise
+
+    records = [run_once(_mock(load_arm("excomm_debate")), s, use_disk_cache=False)
+               for s in (1, 2, 3)]
+    s = summarise(records)
+    assert s.n_with_lean == 3
+    expected = [r.rung - rung_for(r.secret_lean) for r in records]
+    assert s.mean_lean_shift == round(sum(expected) / 3, 3)
+    assert s.p_moved == round(sum(1 for x in expected if x != 0) / 3, 4)
+    assert s.mean_deliberation_rounds > 0
+    # baseline records a lean but no debate — the noise floor.
+    b = summarise([run_once(_mock(load_arm("baseline")), s, use_disk_cache=False)
+                   for s in (1, 2, 3)])
+    assert b.n_with_lean == 3 and b.mean_deliberation_rounds == 0
+    # A record with no lean (control arm) is excluded from the denominator.
+    c = summarise([run_once(_mock(load_arm("escalation_prior")), 1, use_disk_cache=False)])
+    assert c.n_with_lean == 0 and c.mean_lean_shift == 0.0
+
+
 def test_sim_has_exactly_one_arm_conditional() -> None:
     """`config.consult_panel` is the only branch on arm behaviour in sim.py; the
     deliberation stage lives inside it (ADR 0008), not beside it."""

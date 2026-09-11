@@ -1136,10 +1136,26 @@ class RunFacts(_View):
     corpus_tier: str = "none"
     retrieval_mode: str
 
+    #: ADR 0008. The President's prior over the courses, the action it landed on, and the
+    #: ladder distance between them. `None`/`0` when no lean was recorded.
+    secret_lean: str | None = None
+    lean_shift: int = 0
+    deliberation_rounds: int = 0
+    n_deliberation_statements: int = 0
+    n_abstentions: int = 0
+
 
 def run_facts(record: RunRecord) -> RunFacts:
-    """Reduce one record to the facts a header can state without interpreting anything."""
+    """Reduce one record to the facts a header can state without interpreting anything.
+
+    `secret_lean_reasoning` is deliberately absent — it is host-only. The typed lean and
+    the ladder shift are shown so a reader can see the decision moved (or did not) without
+    the prose that produced the prior.
+    """
     brief = record.advisor_brief
+    lean_shift = (
+        record.rung - rung_for(record.secret_lean) if record.secret_lean is not None else 0
+    )
     return RunFacts(
         action=record.action.action.value,
         rung=record.rung,
@@ -1161,6 +1177,11 @@ def run_facts(record: RunRecord) -> RunFacts:
         grounded=record.grounded,
         corpus_tier=record.corpus_tier,
         retrieval_mode=record.retrieval_mode,
+        secret_lean=record.secret_lean.value if record.secret_lean is not None else None,
+        lean_shift=lean_shift,
+        deliberation_rounds=record.deliberation_rounds,
+        n_deliberation_statements=len(record.deliberation),
+        n_abstentions=sum(1 for s in record.deliberation if s.abstained),
     )
 
 
