@@ -48,7 +48,15 @@ from pydantic import (
 #: not have before, so `action` cannot be reproduced from a pre-1.3.0 config and seed. The
 #: `secret_lean` and `deliberation` fields look additive but the mechanism changed — the
 #: same test ADR 0006 and 0007 applied.
-SCHEMA_VERSION = "1.3.0"
+#:
+#: 1.4.0: the citizen audience (ADR 0009). Unlike every prior bump, this one *is* purely
+#: additive — `RunRecord.audience` is populated by a stage that runs strictly after
+#: `action` is decided and cannot feed back into it (invariant 1; enforced by
+#: `tests/test_access_matrix.py`), so a pre-1.4.0 record's `action` is still exactly
+#: reproducible from its config and seed. The version still moves, because the shape of
+#: `RunRecord` moved and the reason for each bump is recorded here even when, as here, it
+#: is the boring reason.
+SCHEMA_VERSION = "1.4.0"
 
 
 class ActionType(str, Enum):
@@ -505,6 +513,144 @@ class ExCommStatement(_Model):
     _coerce_text = field_validator("statement", mode="before")(as_text_field)
 
 
+class PublicEvent(_Model):
+    """A world event as publicly known — what was announced or plainly observable (ADR
+    0009).
+
+    Deliberately leaner than `PerceivedEvent`: no `confidence`, `degraded` or
+    `source_note`, because those are the Intelligence Officer's collection picture, not
+    what a member of the public could know. A distinct type from `PerceivedEvent` on the
+    same principle that separates it from `WorldEvent` — so the audience cannot be handed
+    the state's collection picture by a caller passing the wrong list. Built from
+    `WorldEvent` by `world.public_events_from`, never from `PerceivedEvent`.
+    """
+
+    event_id: str
+    t: int
+    actor_nation: str
+    description: str
+
+
+class PublicStatement(_Model):
+    """The President's action as publicly announced: the label and the justification
+    (ADR 0009).
+
+    No rung, no `chosen_coa_id`, no advisor content — it is impossible to construct one
+    carrying them, because this type has no such fields. Always derive with
+    `public_statement_from`; never build one by hand from a live `PresidentialAction`.
+    """
+
+    action: ActionType
+    justification: str
+
+
+class Approval(str, Enum):
+    """A citizen's stance on the President's action (ADR 0009). Closed, so nothing about
+    it is ever a free-text judgement call — `NO_OPINION` is a first-class value, not an
+    absence of data."""
+
+    STRONGLY_APPROVE = "strongly_approve"
+    APPROVE = "approve"
+    NO_OPINION = "no_opinion"
+    DISAPPROVE = "disapprove"
+    STRONGLY_DISAPPROVE = "strongly_disapprove"
+
+
+class PrimaryConcern(str, Enum):
+    """What a citizen's response was mainly about (ADR 0009). Closed for the same reason
+    `Approval` is: a free-text field is never scored, so what gets counted must be typed."""
+
+    NATIONAL_SECURITY = "national_security"
+    ECONOMIC_IMPACT = "economic_impact"
+    FAMILY_SAFETY = "family_safety"
+    MORAL_OR_RELIGIOUS = "moral_or_religious"
+    INTERNATIONAL_STANDING = "international_standing"
+    GOVERNMENT_TRUST = "government_trust"
+    OTHER = "other"
+    NONE = "none"
+
+
+class Citizen(_Model):
+    """One sampled member of the public (ADR 0009). Stratum attributes only.
+
+    No name, no invented biography, no theorist-style `prominence`. Every field here has
+    a marginal in the committed frame (`data/society/<frame>/strata.yaml`) — an attribute
+    with no marginal is not on this type, checked at load time by `society.load_frame`.
+    """
+
+    citizen_id: str
+    region: str
+    urbanicity: str
+    age_band: str
+    sex: str
+    education: str
+    party_id: str
+    #: The raking weight: how much this citizen counts toward a population-representative
+    #: total, distinct from the number of citizens actually drawn.
+    weight: float
+
+
+class CitizenResponse(_Model):
+    """One citizen's reaction to the published `PublicStatement` (ADR 0009).
+
+    `approval` is always set; `refused=True` marks a response the backend declined to
+    produce in character (a structural refusal), distinct from a citizen's own genuine
+    `Approval.NO_OPINION` stance. `rationale` is qualitative and is never scored — nothing
+    reads it into `approval` or `primary_concern`, which are both typed and closed.
+    """
+
+    citizen_id: str
+    approval: Approval
+    primary_concern: PrimaryConcern
+    rationale: str = ""
+    refused: bool = False
+
+    _coerce_text = field_validator("rationale", mode="before")(as_text_field)
+
+
+class CitizenFailure(_Model):
+    """A citizen call that could not produce a response at all (ADR 0009). Recorded, not
+    dropped silently — a crash that quietly drops a stratum is a biased sample, and a
+    refusal is data while a crash is not the same thing."""
+
+    citizen_id: str
+    reason: str
+
+
+class AudienceRecord(_Model):
+    """The sampled panel and its reaction, for one replication (ADR 0009).
+
+    An outcome measure, not an input: nothing here is read back into any earlier stage of
+    the same replication. `target_marginals` and `achieved_marginals` are both carried so
+    a reviewer can see the gap the raking weights are correcting for without recomputing
+    it from `citizens`.
+    """
+
+    frame: str
+    sample_seed: int
+    citizens: list[Citizen] = Field(default_factory=list)
+    responses: list[CitizenResponse] = Field(default_factory=list)
+    failures: list[CitizenFailure] = Field(default_factory=list)
+    target_marginals: dict[str, dict[str, float]] = Field(default_factory=dict)
+    achieved_marginals: dict[str, dict[str, float]] = Field(default_factory=dict)
+    #: Approval value -> share of the panel, using the raking weights.
+    weighted_approval: dict[str, float] = Field(default_factory=dict)
+    #: Approval value -> raw share of the panel, no weighting. Carried alongside the
+    #: weighted distribution so the two can be compared directly.
+    unweighted_approval: dict[str, float] = Field(default_factory=dict)
+    response_rate: float = 0.0
+    #: Share of responses whose `rationale` names the real crisis, its real participants,
+    #: or a post-1962 event — parametric leakage the model produced unprompted, not a
+    #: prompt-boundary breach (that is guarded separately, at prompt-build time).
+    leakage_rate: float = 0.0
+    no_opinion_rate: float = 0.0
+    #: Per stratum dimension, the lowest category-coverage ratio achieved against target.
+    stratum_coverage: dict[str, float] = Field(default_factory=dict)
+    #: Distance from `validation_targets.yaml`'s held-out marginals. Empty when the frame
+    #: ships no validation targets.
+    validation_distance: dict[str, float] = Field(default_factory=dict)
+
+
 class PresidentialAction(_Model):
     """Exactly one typed action, plus the justification that did not produce it."""
 
@@ -529,6 +675,13 @@ class PresidentialAction(_Model):
 
 
     _coerce_text = field_validator('justification', mode="before")(as_text_field)
+
+
+def public_statement_from(action: PresidentialAction) -> PublicStatement:
+    """The only way to build a `PublicStatement` (ADR 0009). Drops `chosen_coa_id` and the
+    computed `rung`/`is_nuclear` fields explicitly, by construction rather than by care."""
+    return PublicStatement(action=action.action, justification=action.justification)
+
 
 class RunRecord(_Model):
     """One replication, in full.
@@ -622,6 +775,12 @@ class RunRecord(_Model):
 
     panel_size: int = 0
     personas_consulted: list[str] = Field(default_factory=list)
+
+    #: The citizen audience's reaction to the decision (ADR 0009). `None` unless
+    #: `audience_enabled` was set on this arm. Populated strictly after `action` above —
+    #: an outcome measure, never an input, so its presence or absence cannot change what
+    #: the President decided.
+    audience: AudienceRecord | None = None
 
     llm_calls: int = 0
     cache_hits: int = 0
