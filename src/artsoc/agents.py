@@ -63,6 +63,7 @@ from artsoc.personas import (
     build_excomm_identity_prompt,
     build_identity_prompt,
     build_question_prompt,
+    excomm_seat_title,
 )
 from artsoc.retrieval import Retriever, verify_citations
 from artsoc.schema import (
@@ -323,7 +324,7 @@ def render_deliberation(deliberation: list[ExCommStatement], roster: list[ExComm
     been said, and in the President's decision prompt to show the concluded debate."""
     if not deliberation:
         return "(no statements yet)"
-    seats = {m.member_id: m.role_title.split("—")[0].strip() for m in roster}
+    seats = {m.member_id: excomm_seat_title(m) for m in roster}
     out: list[str] = []
     for stmt in deliberation:
         who = seats.get(stmt.member_id, stmt.member_id)

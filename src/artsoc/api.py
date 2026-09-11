@@ -40,12 +40,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from artsoc.config import base_defaults, list_arms, load_arm, varied_fields
-from artsoc.metrics import CONTROL_ARM
+from artsoc.metrics import CONTROL_ARM, audience_by_stratum
 from artsoc.narrative import AnalysisAnswer, RunNarrative, SessionAnalysis
+from artsoc.personas import excomm_seat_title, load_excomm
 from artsoc.retrieval import resolve_passages
 from artsoc.schema import RunRecord
 from artsoc.session import (
     CallEstimate,
+    ChatTurn,
     ProgressEvent,
     SessionError,
     SessionSpec,
@@ -59,9 +61,12 @@ from artsoc.session import (
     estimate_calls,
     list_sessions,
     load_analysis,
+    load_chat,
     load_narrative,
     load_session,
     run_session,
+    send_citizen_chat_message,
+    send_excomm_chat_message,
     summarise_session,
 )
 from artsoc.views import (
@@ -231,6 +236,28 @@ class AnalysisQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
 
 
+class ChatMessage(BaseModel):
+    """One chat turn. The only thing a client may send to the chat endpoint (ADR 0010)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class RosterEntry(BaseModel):
+    """One ExComm seat, for labelling the committee in the viewer (ADR 0010).
+
+    `role_title` is the anonymous seat every prompt uses; `real_name` is display-only,
+    from `docs/excomm/roster-key.md` — the model behind the recorded debate and any live
+    chat continuing it never saw it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role_title: str
+    real_name: str
+
+
 class RepresentativeView(BaseModel):
     """The representative run, its derived views, and its provenance in one payload.
 
@@ -284,6 +311,49 @@ def _record_without_ground_truth(record: RunRecord) -> dict[str, Any]:
     # The typed lean stays so the client can show that the decision moved off the prior.
     dumped["secret_lean_reasoning"] = ""
     return dumped
+
+
+#: Maintainer-only documentation, `member_id -> real 1962 figure`. ADR 0010: this is the
+#: ONE place in `artsoc` this file is read. `tests/test_api.py::
+#: test_nothing_in_artsoc_imports_the_api` already proves, structurally, that no core
+#: module — `sim.py`, `agents.py`, `personas.py`, `llm.py` — can import this one, so the
+#: same test now also guarantees a real name can never reach a prompt.
+ROSTER_KEY_PATH = Path(__file__).resolve().parents[2] / "docs" / "excomm" / "roster-key.md"
+
+
+def _load_roster_key() -> dict[str, str]:
+    """Parse the roster key's table. Mirrors `tests/test_excomm.py::_real_names`'s row
+    parsing exactly, but keeps the `member_id -> figure` mapping rather than only a
+    leak-check set."""
+    mapping: dict[str, str] = {}
+    for line in ROSTER_KEY_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3 or cells[0].startswith("---"):
+            continue
+        figure = cells[2]
+        if not figure or figure.lower().startswith("figure"):
+            continue
+        mapping[cells[0].strip("`")] = figure
+    return mapping
+
+
+def _overlay_excomm_names(payload: dict[str, Any]) -> None:
+    """The one place a real name enters an API response (ADR 0010).
+
+    Every `excomm_member` node/detail's `label` is the anonymous institutional seat
+    `views.py` gave it — this replaces it with the real name for display, after every
+    view has already been computed from the anonymous record. Nothing upstream of this
+    call, including a live chat continuing the same conversation, ever sees it.
+    """
+    names = _load_roster_key()
+    for node in payload["graph"]["nodes"]:
+        if node["kind"] == "excomm_member" and node["id"] in names:
+            node["label"] = names[node["id"]]
+    for agent in payload["agents"]:
+        if agent["kind"] == "excomm_member" and agent["id"] in names:
+            agent["label"] = names[agent["id"]]
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +663,78 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
             if reveal_ground_truth
             else _record_without_ground_truth(record)
         )
+        _overlay_excomm_names(payload)
         return payload
+
+    @app.get(
+        "/api/sessions/{session_id}/runs/{arm}/excomm/roster",
+        response_model=dict[str, RosterEntry],
+    )
+    def get_excomm_roster(session_id: str, arm: str) -> dict[str, RosterEntry]:
+        """`member_id -> {role_title, real_name}`, for labelling the committee in the
+        viewer (ADR 0010)."""
+        _session_or_404(session_id)
+        if arm not in list_arms():
+            raise HTTPException(status_code=404, detail=f"no arm {arm!r}")
+        names = _load_roster_key()
+        return {
+            m.member_id: RosterEntry(
+                role_title=excomm_seat_title(m),
+                real_name=names.get(m.member_id, m.member_id),
+            )
+            for m in load_excomm()
+        }
+
+    @app.get(
+        "/api/sessions/{session_id}/runs/{arm}/chat/{kind}/{run_id}/{who_id}",
+        response_model=list[ChatTurn],
+    )
+    def get_chat(session_id: str, arm: str, kind: str, run_id: str, who_id: str) -> list[ChatTurn]:
+        """The conversation so far with one ExComm member (`kind="excomm"`) or one citizen
+        (`kind="citizen"`), triggered from the viewer after the run has finished."""
+        _session_or_404(session_id)
+        if kind not in ("excomm", "citizen"):
+            raise HTTPException(status_code=404, detail=f"unknown chat kind {kind!r}")
+        return load_chat(session_id, kind, run_id, who_id)
+
+    @app.post(
+        "/api/sessions/{session_id}/runs/{arm}/chat/{kind}/{run_id}/{who_id}",
+        response_model=ChatTurn,
+    )
+    def post_chat(
+        session_id: str, arm: str, kind: str, run_id: str, who_id: str, body: ChatMessage
+    ) -> ChatTurn:
+        """Send one message and get the reply — live, on-demand, billed per message, the
+        same accounting `narrative`/`analysis/ask` already get (ADR 0010). Capped at
+        `CHAT_TURN_CAP` turns per conversation.
+        """
+        _session_or_404(session_id)
+        if kind not in ("excomm", "citizen"):
+            raise HTTPException(status_code=404, detail=f"unknown chat kind {kind!r}")
+        try:
+            if kind == "excomm":
+                return send_excomm_chat_message(session_id, arm, run_id, who_id, body.message)
+            return send_citizen_chat_message(session_id, arm, run_id, who_id, body.message)
+        except SessionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/sessions/{session_id}/arms/{arm}/audience/breakdown")
+    def get_audience_breakdown(session_id: str, arm: str) -> dict[str, float]:
+        """Weighted approve-or-strongly-approve share, by stratum category, pooled across
+        every replication of this arm that ran with an audience (ADR 0009/0010).
+
+        Arm-level rather than one-run: `metrics.audience_by_stratum` is more statistically
+        meaningful pooled across a sweep's replications than read from one representative
+        run's 70 citizens alone.
+        """
+        state = _session_or_404(session_id)
+        if arm not in state.spec.arms:
+            raise HTTPException(status_code=404, detail=f"session has no arm {arm!r}")
+        try:
+            records = arm_records(session_id, arm)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return audience_by_stratum(records)
 
     @app.post(
         "/api/sessions/{session_id}/runs/{arm}/narrative",

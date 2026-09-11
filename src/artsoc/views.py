@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from artsoc.personas import load_excomm
+from artsoc.personas import excomm_seat_title, load_excomm
 from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
 
 #: Node id for the host-side world. Not an agent: it is where events come from and where
@@ -565,7 +565,7 @@ def interaction_graph(record: RunRecord) -> InteractionGraph:
     for statement in record.deliberation:
         by_member.setdefault(statement.member_id, []).append(statement)
     if by_member:
-        seats = {m.member_id: m.role_title for m in load_excomm()}
+        seats = {m.member_id: excomm_seat_title(m) for m in load_excomm()}
         for member_id, statements in by_member.items():
             spoke = [s for s in statements if not s.abstained]
             nodes.append(
@@ -1149,7 +1149,7 @@ def agent_details(record: RunRecord) -> list[AgentDetail]:
     for statement in record.deliberation:
         by_member.setdefault(statement.member_id, []).append(statement)
     if by_member:
-        seats = {m.member_id: m.role_title for m in load_excomm()}
+        seats = {m.member_id: excomm_seat_title(m) for m in load_excomm()}
         for member_id, statements in by_member.items():
             spoke = [s for s in statements if not s.abstained]
             details.append(

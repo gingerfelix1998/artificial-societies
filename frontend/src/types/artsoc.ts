@@ -170,6 +170,16 @@ export interface RoleCost {
 }
 
 /**
+ * One turn in a live follow-up conversation.
+ */
+
+export interface ChatTurn {
+  role: string
+  text: string
+  ts?: string
+}
+
+/**
  * Per-persona grounding of the option the President took.
  *
  * **This is not influence and must never be labelled as it.** It says whose opinions the
@@ -1014,6 +1024,27 @@ export interface RunNarrative {
 }
 /**
  * Per-persona engagement across an arm, plus what could not be attributed.
+ */
+
+export interface RosterEntry {
+  role_title: string
+  real_name: string
+}
+
+/**
+ * Which personas a question was put to, and why each of them was chosen.
+ *
+ * Selection happens one of two ways, and the record says which:
+ *
+ * * ``tag`` — deterministic overlap between the question's tags and each persona's
+ *   declared areas. Reproducible and model-free, but not a social process.
+ * * ``advisor`` — the Advisor is shown the roster and picks, giving a stated reason.
+ *   That is the modelled act of deciding whom to consult, so the reason is data and is
+ *   recorded here rather than discarded.
+ *
+ * The selection reasons are kept in separate fields on purpose. A panel that is only
+ * nominally large — reached by top-up rather than by anyone judging those personas
+ * relevant — stays visible in the record instead of having to be inferred.
  */
 
 export interface RunConfig {

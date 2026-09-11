@@ -498,6 +498,17 @@ _EXCOMM_INSTRUCTION = (
 )
 
 
+def excomm_seat_title(member: ExCommMember) -> str:
+    """The short institutional seat, for display — `role_title` up to its own em-dash.
+
+    `role_title` carries the seat plus a longer clause on what it does (needed inside the
+    identity prompt, where the extra context helps the model reason in character); a
+    label in a graph node, a transcript line, or the roster endpoint (ADR 0010) wants just
+    the seat. One function so the four call sites cannot drift apart on how they trim it.
+    """
+    return member.role_title.split("—")[0].strip()
+
+
 def build_excomm_identity_prompt(member: ExCommMember) -> str:
     """The system prompt for one ExComm member: its role, temperament and prior positions.
 

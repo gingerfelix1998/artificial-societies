@@ -722,3 +722,141 @@ def test_a_scenario_label_keeps_its_acronyms(client: TestClient) -> None:
         s for s in client.get("/api/scenarios").json() if s["scenario_id"] == SCENARIO_ID
     )
     assert card["label"] == "TEL Dispersal"
+
+
+# ---------------------------------------------------------------------------
+# Live ExComm/citizen chat, and the real-name overlay (ADR 0010).
+# ---------------------------------------------------------------------------
+
+
+def test_the_representative_payload_shows_real_committee_names(client: TestClient) -> None:
+    """The one place a real name enters an API response: `views.py`'s anonymous
+    `role_title` label is overlaid with the real name from `docs/excomm/roster-key.md`,
+    after every view has already been computed from the anonymous record."""
+    from artsoc.api import _load_roster_key
+
+    session_id = _run_session(client, ["excomm_debate"], n=1)
+    body = client.get(f"/api/sessions/{session_id}/runs/excomm_debate/representative").json()
+    names = _load_roster_key()
+
+    excomm_nodes = [n for n in body["graph"]["nodes"] if n["kind"] == "excomm_member"]
+    assert excomm_nodes, "no ExComm nodes in the graph; the test proves nothing"
+    for node in excomm_nodes:
+        assert node["label"] == names[node["id"]]
+        assert node["label"] != node["id"]
+
+    excomm_agents = [a for a in body["agents"] if a["kind"] == "excomm_member"]
+    for agent in excomm_agents:
+        assert agent["label"] == names[agent["id"]]
+
+
+def test_the_excomm_roster_endpoint_maps_seats_to_real_names(client: TestClient) -> None:
+    session_id = _run_session(client, ["excomm_debate"], n=1)
+    roster = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/excomm/roster"
+    ).json()
+    assert roster["defense_secretary"]["real_name"] == "Robert McNamara"
+    assert roster["defense_secretary"]["role_title"] == "Secretary of Defense"
+
+
+def test_an_excomm_chat_round_trips_and_persists(client: TestClient) -> None:
+    session_id = _run_session(client, ["excomm_debate"], n=1)
+    record = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/representative"
+    ).json()["representative"]["record"]
+    member_id = record["deliberation"][0]["member_id"]
+
+    empty = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/chat/excomm/{record['run_id']}/{member_id}"
+    )
+    assert empty.json() == []
+
+    sent = client.post(
+        f"/api/sessions/{session_id}/runs/excomm_debate/chat/excomm/{record['run_id']}/{member_id}",
+        json={"message": "Why did you argue that?"},
+    )
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["role"] == "advisor"
+
+    history = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/chat/excomm/{record['run_id']}/{member_id}"
+    ).json()
+    assert [t["role"] for t in history] == ["user", "advisor"]
+
+
+def test_a_citizen_chat_round_trips(client: TestClient) -> None:
+    session_id = _run_session(client, ["audience_d1"], n=1)
+    record = client.get(
+        f"/api/sessions/{session_id}/runs/audience_d1/representative"
+    ).json()["representative"]["record"]
+    citizen_id = record["audience"]["citizens"][0]["citizen_id"]
+
+    sent = client.post(
+        f"/api/sessions/{session_id}/runs/audience_d1/chat/citizen/{record['run_id']}/{citizen_id}",
+        json={"message": "Can you say more?"},
+    )
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["role"] == "advisor"
+
+
+def test_chatting_with_an_unknown_kind_is_a_404(client: TestClient) -> None:
+    session_id = _run_session(client, ["excomm_debate"], n=1)
+    response = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/chat/not_a_kind/run-1/member-1"
+    )
+    assert response.status_code == 404
+
+
+def test_a_chat_on_baseline_reports_no_committee_to_chat_with(client: TestClient) -> None:
+    session_id = _run_session(client, ["baseline"], n=1)
+    record = client.get(
+        f"/api/sessions/{session_id}/runs/baseline/representative"
+    ).json()["representative"]["record"]
+
+    response = client.post(
+        f"/api/sessions/{session_id}/runs/baseline/chat/excomm/{record['run_id']}/defense_secretary",
+        json={"message": "hi?"},
+    )
+    assert response.status_code == 422
+    assert "no committee" in response.json()["detail"]
+
+
+def test_no_chat_response_carries_a_prompt(client: TestClient) -> None:
+    """Invariant 10, extended to the chat surface: nothing here may carry a role marker."""
+    session_id = _run_session(client, ["excomm_debate"], n=1)
+    record = client.get(
+        f"/api/sessions/{session_id}/runs/excomm_debate/representative"
+    ).json()["representative"]["record"]
+    member_id = record["deliberation"][0]["member_id"]
+
+    sent = client.post(
+        f"/api/sessions/{session_id}/runs/excomm_debate/chat/excomm/{record['run_id']}/{member_id}",
+        json={"message": "Why did you argue that?"},
+    )
+    assert "[[ROLE:" not in sent.text
+    assert "[[WHO:" not in sent.text
+
+
+def test_the_audience_breakdown_endpoint_matches_the_metrics_function(
+    client: TestClient,
+) -> None:
+    from artsoc.metrics import audience_by_stratum
+    from artsoc.session import arm_records as _arm_records
+
+    session_id = _run_session(client, ["audience_d1"], n=2)
+    body = client.get(f"/api/sessions/{session_id}/arms/audience_d1/audience/breakdown").json()
+
+    # `root=None` resolves `session.SESSIONS_DIR` at call time, which `_offline` has
+    # already monkeypatched to this test's tmp_path — the same resolution the endpoint
+    # itself relies on.
+    expected = audience_by_stratum(_arm_records(session_id, "audience_d1"))
+    assert body == expected
+    assert body, "no keys returned; the test proves nothing"
+
+
+def test_the_audience_breakdown_endpoint_rejects_an_arm_not_in_the_session(
+    client: TestClient,
+) -> None:
+    session_id = _run_session(client, ["baseline"], n=1)
+    response = client.get(f"/api/sessions/{session_id}/arms/audience_d1/audience/breakdown")
+    assert response.status_code == 404

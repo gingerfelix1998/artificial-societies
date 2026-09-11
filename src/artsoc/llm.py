@@ -123,7 +123,7 @@ PASSAGE_ID = re.compile(r"\[([A-Za-z0-9_]+:[A-Za-z0-9_]+:\d+)\]")
 #: The user's new chat turn, in a live follow-up conversation (ADR 0010). In the prompt so
 #: the mock and the access-matrix scan can both read it; everything before it is the
 #: host-assembled, guarded portion, everything after is the user's own free text.
-NEW_MESSAGE_MARKER = re.compile(r"NEW MESSAGE:\n(.*)", re.DOTALL)
+NEW_MESSAGE_MARKER = re.compile(r"NEW MESSAGE:\n(.*?)(?:\n\n|\Z)", re.DOTALL)
 
 
 #: Weighted sampling distribution for the mock's presidential decision.

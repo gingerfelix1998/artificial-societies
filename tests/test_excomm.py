@@ -18,6 +18,7 @@ from artsoc.personas import (
     EXCOMM_REGISTRY_PATH,
     ExCommMember,
     build_excomm_identity_prompt,
+    excomm_seat_title,
     load_excomm,
 )
 
@@ -142,3 +143,12 @@ def test_the_identity_prompt_is_stable_across_the_debate() -> None:
 def test_load_excomm_raises_on_a_missing_file(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="no ExComm roster"):
         load_excomm(tmp_path / "nope.yaml")
+
+
+def test_excomm_seat_title_is_the_role_title_up_to_its_own_em_dash() -> None:
+    """ADR 0010. `role_title` carries the seat plus a clause on what it does, for the
+    identity prompt; a display label wants just the seat, and this is the one function
+    every display call site shares so they cannot drift apart on how they trim it."""
+    for member in load_excomm():
+        assert "—" not in excomm_seat_title(member)
+        assert member.role_title.startswith(excomm_seat_title(member))

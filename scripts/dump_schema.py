@@ -49,6 +49,7 @@ PYDANTIC_MODELS: dict[str, Any] = {
     "SessionSummary": session.SessionSummary,
     "CallEstimate": session.CallEstimate,
     "ProgressEvent": session.ProgressEvent,
+    "ChatTurn": session.ChatTurn,
     "RunNarrative": narrative.RunNarrative,
     "SessionAnalysis": narrative.SessionAnalysis,
     "AnalysisAnswer": narrative.AnalysisAnswer,
@@ -84,6 +85,7 @@ def _api_models() -> dict[str, Any]:
         "RepresentativeView": api.RepresentativeView,
         "PassageLookup": api.PassageLookup,
         "LandingView": api.LandingView,
+        "RosterEntry": api.RosterEntry,
     }
 
 

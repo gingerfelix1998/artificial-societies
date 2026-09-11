@@ -355,10 +355,10 @@ def test_the_excomm_appears_in_the_graph_anonymously(baseline_record: RunRecord)
     """ADR 0008/0010. Nodes and edges for every member who spoke, labelled by the
     anonymous institutional seat — never a real name, which this module has no way to
     look up and must not need to."""
-    from artsoc.personas import load_excomm
+    from artsoc.personas import excomm_seat_title, load_excomm
 
     record = _run("excomm_debate", 3)
-    seats = {m.member_id: m.role_title for m in load_excomm()}
+    seats = {m.member_id: excomm_seat_title(m) for m in load_excomm()}
 
     graph = interaction_graph(record)
     excomm_nodes = [n for n in graph.nodes if n.kind == "excomm_member"]
