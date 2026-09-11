@@ -42,6 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from artsoc.personas import load_excomm
 from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
 
 #: Node id for the host-side world. Not an agent: it is where events come from and where
@@ -437,7 +438,7 @@ class GraphNode(_View):
 
     id: str
     label: str
-    #: world | instrument | persona | phantom
+    #: world | instrument | persona | phantom | excomm_member
     kind: str
     state: str
     n_opinions: int = 0
@@ -456,7 +457,7 @@ class GraphEdge(_View):
     source: str
     target: str
     #: perception | brief | query | consult | opine | decline | synthesise | decide |
-    #: hallucinated
+    #: hallucinated | deliberate
     kind: str
     #: The step at which this pair first communicated this way, so playback can reveal
     #: edges in loop order.
@@ -555,6 +556,29 @@ def interaction_graph(record: RunRecord) -> InteractionGraph:
             )
         )
 
+    # ADR 0008/0010. Empty on any arm with no debate, including the control — this is not
+    # a second population like `panel`, it is the deliberative committee, present only
+    # when `convene_excomm` actually ran. Anonymous throughout: `label` is the seat's
+    # institutional title from `load_excomm()`, never a real name — `api.py` is the only
+    # place a real name is overlaid onto this label, after this function has returned.
+    by_member: dict[str, list[Any]] = {}
+    for statement in record.deliberation:
+        by_member.setdefault(statement.member_id, []).append(statement)
+    if by_member:
+        seats = {m.member_id: m.role_title for m in load_excomm()}
+        for member_id, statements in by_member.items():
+            spoke = [s for s in statements if not s.abstained]
+            nodes.append(
+                GraphNode(
+                    id=member_id,
+                    label=seats.get(member_id, member_id),
+                    kind="excomm_member",
+                    state="active" if spoke else "declined",
+                    n_opinions=len(spoke),
+                    n_declines=len(statements) - len(spoke),
+                )
+            )
+
     # One edge per (source, target, kind), carrying every step it covers. The pair is what
     # gets drawn; the step list is what lets playback reveal each deliberation separately
     # rather than lighting the whole edge at its first occurrence.
@@ -587,6 +611,21 @@ def interaction_graph(record: RunRecord) -> InteractionGraph:
             weight=len(hallucinated),
         )
     ] if hallucinated else []
+
+    # The debate is not tied to loop-step playback in this pass (out of scope, ADR 0010) —
+    # every committee edge is revealed once the run has finished, the same fallback the
+    # hallucinated edge above uses, rather than a real per-round index.
+    edges += [
+        GraphEdge(
+            source="president",
+            target=member_id,
+            kind="deliberate",
+            step_index=last_step,
+            step_indices=[last_step],
+            weight=len(statements),
+        )
+        for member_id, statements in by_member.items()
+    ]
 
     edges.sort(key=lambda e: (e.step_index, e.source, e.target, e.kind))
     return InteractionGraph(nodes=nodes, edges=edges, hallucinated_ids=hallucinated)
@@ -1102,6 +1141,39 @@ def agent_details(record: RunRecord) -> list[AgentDetail]:
                 ],
             )
         )
+
+    # ADR 0008/0010. Anonymous throughout, matching interaction_graph's ExComm nodes:
+    # `label` is the seat's institutional title, never a real name — `api.py` overlays
+    # the real name onto this label afterwards, the one place that happens.
+    by_member: dict[str, list[Any]] = {}
+    for statement in record.deliberation:
+        by_member.setdefault(statement.member_id, []).append(statement)
+    if by_member:
+        seats = {m.member_id: m.role_title for m in load_excomm()}
+        for member_id, statements in by_member.items():
+            spoke = [s for s in statements if not s.abstained]
+            details.append(
+                AgentDetail(
+                    id=member_id,
+                    label=seats.get(member_id, member_id),
+                    kind="excomm_member",
+                    summary=(
+                        f"Spoke in {len(spoke)} of {len(statements)} round(s) of the "
+                        "deliberation."
+                    ),
+                    fields=[
+                        ("Rounds spoken", str(len(spoke))),
+                        ("Rounds abstained", str(len(statements) - len(spoke))),
+                    ],
+                    passages=[
+                        (
+                            f"Round {s.round}",
+                            s.statement if not s.abstained else "[abstained]",
+                        )
+                        for s in sorted(statements, key=lambda s: s.round)
+                    ],
+                )
+            )
     return details
 
 

@@ -351,6 +351,53 @@ def test_graph_edges_are_deterministic(baseline_record: RunRecord) -> None:
     assert interaction_graph(baseline_record) == interaction_graph(baseline_record)
 
 
+def test_the_excomm_appears_in_the_graph_anonymously(baseline_record: RunRecord) -> None:
+    """ADR 0008/0010. Nodes and edges for every member who spoke, labelled by the
+    anonymous institutional seat — never a real name, which this module has no way to
+    look up and must not need to."""
+    from artsoc.personas import load_excomm
+
+    record = _run("excomm_debate", 3)
+    seats = {m.member_id: m.role_title for m in load_excomm()}
+
+    graph = interaction_graph(record)
+    excomm_nodes = [n for n in graph.nodes if n.kind == "excomm_member"]
+    spoken_members = {s.member_id for s in record.deliberation}
+    assert {n.id for n in excomm_nodes} == spoken_members
+    for node in excomm_nodes:
+        # `label` is the seat's institutional title from the (name-free) registry —
+        # views.py has no roster-key access at all, so there is no real name it could
+        # leak even by accident.
+        assert node.label == seats[node.id]
+        assert node.state in {"active", "declined"}
+
+    excomm_edges = [e for e in graph.edges if e.kind == "deliberate"]
+    assert {e.target for e in excomm_edges} == spoken_members
+    assert all(e.source == "president" for e in excomm_edges)
+
+    # No committee convened on baseline — nothing here is a persona/instrument mislabel.
+    assert not [n for n in interaction_graph(baseline_record).nodes if n.kind == "excomm_member"]
+
+
+def test_excomm_agent_details_carry_one_passage_per_round() -> None:
+    record = _run("excomm_debate", 3)
+    details = agent_details(record)
+    by_member: dict[str, list] = {}
+    for statement in record.deliberation:
+        by_member.setdefault(statement.member_id, []).append(statement)
+
+    for member_id, statements in by_member.items():
+        detail = next(d for d in details if d.id == member_id)
+        assert detail.kind == "excomm_member"
+        assert len(detail.passages) == len(statements)
+        rounds_shown = {label for label, _ in detail.passages}
+        assert rounds_shown == {f"Round {s.round}" for s in statements}
+
+
+def test_excomm_details_are_absent_when_no_committee_convened(baseline_record: RunRecord) -> None:
+    assert not [d for d in agent_details(baseline_record) if d.kind == "excomm_member"]
+
+
 def test_every_edge_endpoint_is_a_node(baseline_record: RunRecord) -> None:
     """A dangling edge renders as a node the record never contained."""
     graph = interaction_graph(baseline_record)
