@@ -795,6 +795,76 @@ class ExCommMember:
         )
         return _clean(statement, "statement")
 
+    def chat(
+        self,
+        history: list[tuple[str, str]],
+        message: str,
+        situation_block: str,
+        brief: AdvisorBrief,
+        coas: list[CourseOfAction],
+        transcript: str,
+        forbidden_tokens: list[str],
+    ) -> str:
+        """A live, on-demand follow-up conversation with this member, after the debate has
+        concluded (ADR 0010) — triggered from the viewer, never part of the sweep, and
+        never written back into any `RunRecord`.
+
+        Same identity and the same context the member saw during the debate. The model is
+        never told a real name here either, only the anonymised seat and disposition — a
+        real name is a label the viewer attaches to the reply afterwards, never a fact
+        this call is given. Guarded the same way `contribute()` is, over the
+        host-assembled portion only (the identity prompt and the situation/brief/COA/
+        transcript context); the growing history and the user's own new message are not
+        guarded — they are not something the system is leaking, and the instruction below
+        tells the model to stay in character rather than confirm a real identity if asked.
+        """
+        system = _system(
+            Role.EXCOMM_CHAT,
+            f"{build_excomm_identity_prompt(self.member)}\n\n{_CHAT_FOLLOWUP_INSTRUCTION}",
+        )
+        context = "\n".join(
+            [
+                situation_block,
+                "",
+                *_advisor_block(brief),
+                "",
+                *_coa_block(coas),
+                "",
+                "THE DELIBERATION THAT TOOK PLACE:",
+                transcript,
+            ]
+        )
+        assert_decontextualised(f"{system}\n{context}", forbidden_tokens, where="excomm chat")
+
+        lines = [context, "", "CONVERSATION SO FAR:"]
+        lines += [f"{role}: {text}" for role, text in history] or ["(nothing yet)"]
+        lines += [
+            "",
+            f"NEW MESSAGE:\n{message}",
+            "",
+            "Produce JSON with keys: reply (string). " + JSON_ONLY,
+        ]
+        payload = _parse_json(
+            self.client.complete(
+                role=Role.EXCOMM_CHAT, system=system, prompt="\n".join(lines), cacheable=False
+            ),
+            Role.EXCOMM_CHAT,
+        )
+        return _strip_inline_markers(str(payload.get("reply", "")))
+
+
+#: Appended to the identity prompt for a live follow-up chat, after the debate has
+#: concluded. The identity prompt already tells the member not to claim a named identity
+#: (`_EXCOMM_INSTRUCTION`); this adds the direct-question case, since an open chat is the
+#: first surface where a user can simply ask.
+_CHAT_FOLLOWUP_INSTRUCTION = (
+    "The committee's debate has concluded. Someone is now asking you a follow-up question "
+    "about your reasoning. Answer in character, from your disposition and standing "
+    "positions, engaging with what you and the committee actually discussed. If asked to "
+    "confirm a real name or identity, decline, and say only that you are this committee "
+    "seat — do not name or guess at who you might be."
+)
+
 
 # ---------------------------------------------------------------------------
 # Advisor
@@ -1286,3 +1356,52 @@ class CitizenPanelist:
                 refused=True,
             )
         return _clean(response, "rationale")
+
+    def chat(
+        self,
+        history: list[tuple[str, str]],
+        message: str,
+        public_events: list[PublicEvent],
+        statement: PublicStatement,
+        forbidden_tokens: list[str],
+    ) -> str:
+        """A live, on-demand follow-up conversation with this citizen about its recorded
+        reaction (ADR 0010) — triggered from the viewer, never part of the sweep, and
+        never written back into any `RunRecord`. No real-identity dance needed: a citizen
+        is synthetic from the start (no name, ADR 0009), so the instruction below covers
+        only "you are not a named public figure," not "do not confirm you are someone
+        real."
+        """
+        system = _system(
+            Role.CITIZEN_CHAT,
+            f"{build_citizen_identity_prompt(self.citizen)}\n\n{_CITIZEN_CHAT_FOLLOWUP_INSTRUCTION}",
+        )
+        context = _render_public(public_events, statement)
+        assert_decontextualised(f"{system}\n{context}", forbidden_tokens, where="citizen chat")
+
+        lines = [context, "", "CONVERSATION SO FAR:"]
+        lines += [f"{role}: {text}" for role, text in history] or ["(nothing yet)"]
+        lines += [
+            "",
+            f"NEW MESSAGE:\n{message}",
+            "",
+            "Produce JSON with keys: reply (string). " + JSON_ONLY,
+        ]
+        payload = _parse_json(
+            self.client.complete(
+                role=Role.CITIZEN_CHAT, system=system, prompt="\n".join(lines), cacheable=False
+            ),
+            Role.CITIZEN_CHAT,
+        )
+        return _strip_inline_markers(str(payload.get("reply", "")))
+
+
+#: Appended to the identity prompt for a live follow-up chat, after this citizen's one
+#: recorded response. Unlike the ExComm case there is no real identity to protect — the
+#: citizen simply has no name (ADR 0009) — so this only heads off a user asking for one.
+_CITIZEN_CHAT_FOLLOWUP_INSTRUCTION = (
+    "You already gave your reaction to this. Someone is now asking you a follow-up "
+    "question about how you feel and why. Answer in character, from your own background "
+    "and perspective. You are not a named public figure; if asked your name, say you'd "
+    "rather not share it."
+)

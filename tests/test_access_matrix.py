@@ -171,6 +171,44 @@ class LoopRun:
             for citizen in sample.citizens
         ]
 
+        # Live, on-demand follow-up chats (ADR 0010). Driven here, after the recorded loop
+        # has finished, the same reasoning the citizen block above follows — this is not
+        # part of the sweep, but the canary suite must still cover the roles however the
+        # app actually calls them.
+        # Scoped to what the ExComm's own context must never carry — not `citizen_forbidden`,
+        # which wrongly includes the intel summary and role titles the ExComm legitimately
+        # sees as part of its own briefing.
+        # `persona_id` is deliberately not forbidden here: a course of action's rationale
+        # legitimately cites supporting opinions by id (ADR 0006), and both the President's
+        # decision prompt and the ExComm's already carry that through `_coa_block` — the
+        # existing `test_an_excomm_member_never_sees_raw_theorist_opinions` scopes its own
+        # check to `persona_name`/`position`/`reasoning` for the same reason.
+        self.excomm_chat_forbidden = [
+            *(p.name for p in self.personas),
+            *(o.position for o in self.opinions),
+            *(o.reasoning for o in self.opinions),
+            self.lean_reason,
+            *self.scenario.ground_truth().values(),
+        ]
+        self.chat_member = self.excomm[0]
+        self.excomm_chat_reply = ExCommMember(self.client, self.chat_member).chat(
+            [],
+            "Why did you argue that?",
+            self.situation,
+            self.brief,
+            self.coas,
+            render_deliberation(self.deliberation, self.excomm),
+            self.excomm_chat_forbidden,
+        )
+        self.chat_citizen = sample.citizens[0]
+        self.citizen_chat_reply = CitizenPanelist(self.client, self.chat_citizen).chat(
+            [],
+            "Can you say more about that?",
+            self.public_events,
+            self.public_statement,
+            self.citizen_forbidden,
+        )
+
     def texts_for(self, role: Role) -> list[str]:
         """Every prompt this role saw, system and user concatenated."""
         return [f"{system}\n{prompt}" for system, prompt in self.client.prompts_for(role)]
@@ -593,16 +631,15 @@ def test_every_prompt_carries_its_own_role_marker_and_no_other(run: LoopRun) -> 
 
 
 def test_only_the_io_and_the_excomm_are_shown_collection_output(run: LoopRun) -> None:
-    """Collection output is the IO's input; the ExComm is also shown it (ADR 0008).
-
-    Changed from "the IO alone" when the ExComm was added: the committee is a briefed
-    deliberative body convened over the specific crisis, so it sees the anonymised
-    situation — the intel brief and the perceived events — the same way the President does.
-    It still never sees `ground_truth_detail`. No other role is shown the signature.
+    """Collection output is the IO's input; the ExComm is also shown it (ADR 0008), and so
+    is a live follow-up chat with an ExComm member (ADR 0010) — it is handed the same
+    situation block the recorded turn was, so the conversation stays grounded in what the
+    member actually saw. It still never sees `ground_truth_detail`. No other role is shown
+    the signature — in particular not `CITIZEN_CHAT`, which gets only the public event.
     """
     signature = run.scenario.events[0].observable_signature[0]
     seen_in = {role for role in Role if any(signature in t for t in run.texts_for(role))}
-    assert seen_in == {Role.INTEL_OFFICER, Role.EXCOMM_MEMBER}
+    assert seen_in == {Role.INTEL_OFFICER, Role.EXCOMM_MEMBER, Role.EXCOMM_CHAT}
 
 
 # ---------------------------------------------------------------------------

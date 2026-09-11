@@ -20,7 +20,14 @@ import pytest
 from artsoc.config import RunConfig, load_arm
 from artsoc.llm import MOCK_PREFIX, LLMClient, MockBackend
 from artsoc.narrative import INSTRUCTION, build_prompt, summarise_run
-from artsoc.schema import RunRecord
+from artsoc.schema import (
+    ActionType,
+    IntelBrief,
+    PresidentialAction,
+    RoutingRecord,
+    RunRecord,
+    TheoristOpinion,
+)
 from artsoc.sim import run_once
 from artsoc.views import (
     EXCERPT_CHARS,
@@ -273,17 +280,64 @@ def test_the_graph_carries_the_whole_panel_not_only_the_consulted(
     assert any(n.state == "unconsulted" for n in graph.nodes if n.kind == "persona")
 
 
-def test_a_declining_persona_is_not_styled_as_an_absent_one(
-    baseline_records: list[RunRecord],
-) -> None:
-    """The escape hatch firing is the honest outcome, not a gap in the data."""
-    states = {
-        n.state
-        for record in baseline_records
-        for n in interaction_graph(record).nodes
-        if n.kind == "persona"
-    }
-    assert {"active", "declined", "unconsulted"} <= states
+def test_a_declining_persona_is_not_styled_as_an_absent_one() -> None:
+    """The escape hatch firing is the honest outcome, not a gap in the data.
+
+    Hand-built rather than swept from `baseline_records`: whether any given mock replay
+    happens to land one persona's *every* opinion on the decline branch is a rare compound
+    event (out-of-record is itself a ~15% roll, and it has to hit every opinion a
+    single-slot persona got), and it is not this test's job to prove the mock's dice are
+    fair. It only needs to prove `interaction_graph` styles that state correctly when it
+    occurs, so it constructs the occurrence directly.
+    """
+    record = RunRecord(
+        run_id="fixture-declined-state",
+        arm="baseline",
+        seed=1,
+        started_at="2026-01-01T00:00:00Z",
+        wall_time_s=0.0,
+        config={},
+        backend="mock",
+        cache_enabled=True,
+        retrieval_mode="stub",
+        grounded=False,
+        scenario_id="fixture",
+        intel_brief=IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate"),
+        routing=[
+            RoutingRecord(
+                question_id="q0",
+                k_requested=2,
+                mode="advisor",
+                chosen_by_advisor=["brodie", "schelling"],
+                roster=["brodie", "schelling", "kahn"],
+            )
+        ],
+        opinions=[
+            TheoristOpinion(
+                persona_id="brodie",
+                persona_name="Bernard Brodie",
+                question_id="q0",
+                position="MOCK: out of record",
+                reasoning="MOCK: declined",
+                out_of_record=True,
+            ),
+            TheoristOpinion(
+                persona_id="schelling",
+                persona_name="Thomas Schelling",
+                question_id="q0",
+                position="MOCK: a stated position",
+                reasoning="MOCK: reasoning",
+                out_of_record=False,
+            ),
+        ],
+        personas_consulted=["brodie", "schelling"],
+        action=PresidentialAction(action=ActionType.NO_ACTION, justification="MOCK:"),
+        rung=0,
+    )
+    by_id = {n.id: n.state for n in interaction_graph(record).nodes if n.kind == "persona"}
+    assert by_id["brodie"] == "declined"
+    assert by_id["schelling"] == "active"
+    assert by_id["kahn"] == "unconsulted"
 
 
 def test_an_excluded_persona_is_shown_as_excluded_not_merely_unchosen() -> None:

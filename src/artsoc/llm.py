@@ -43,7 +43,7 @@ MOCK_PREFIX = "MOCK:"
 
 #: Bumped whenever mock output changes shape. It is part of the cache key, so old cached
 #: responses cannot be silently served against new parsing code.
-MOCK_VERSION = "mock-5"
+MOCK_VERSION = "mock-6"
 
 
 class Role(str, Enum):
@@ -69,6 +69,15 @@ class Role(str, Enum):
     #: made (ADR 0009). The only role that runs strictly after `PRESIDENT_DECISION` and
     #: cannot see anything upstream of it beyond the publicly known event.
     CITIZEN = "citizen"
+    #: A live, on-demand follow-up conversation with one ExComm member, triggered from the
+    #: viewer after the run has finished (ADR 0010). Its own role rather than a reuse of
+    #: `EXCOMM_MEMBER`: a chat turn (growing history, a free-text question) is a different
+    #: prompt shape from `contribute()`'s fixed one. Session-directory state, not
+    #: `RunRecord` — this call never touches the sweep or the record it is chatting about.
+    EXCOMM_CHAT = "excomm_chat"
+    #: The citizen analogue of `EXCOMM_CHAT` — a live follow-up with one sampled citizen
+    #: about its recorded reaction, triggered from the viewer (ADR 0010).
+    CITIZEN_CHAT = "citizen_chat"
 
 
 def role_marker(role: Role) -> str:
@@ -111,6 +120,10 @@ MAXROUNDS_MARKER = re.compile(r"\[\[MAXROUNDS:(\d+)\]\]")
 #: own would place it inside the access matrix and imply an agent that never existed.
 NARRATIVE_MARKER = "[[NARRATIVE:3]]"
 PASSAGE_ID = re.compile(r"\[([A-Za-z0-9_]+:[A-Za-z0-9_]+:\d+)\]")
+#: The user's new chat turn, in a live follow-up conversation (ADR 0010). In the prompt so
+#: the mock and the access-matrix scan can both read it; everything before it is the
+#: host-assembled, guarded portion, everything after is the user's own free text.
+NEW_MESSAGE_MARKER = re.compile(r"NEW MESSAGE:\n(.*)", re.DOTALL)
 
 
 #: Weighted sampling distribution for the mock's presidential decision.
@@ -223,6 +236,8 @@ class MockBackend:
             Role.PRESIDENT_CHAIR: self._chair,
             Role.PRESIDENT_DECISION: self._decision,
             Role.CITIZEN: self._citizen,
+            Role.EXCOMM_CHAT: self._chat,
+            Role.CITIZEN_CHAT: self._chat,
         }[role]
         return json.dumps(handler(prompt, rng, digest))
 
@@ -517,6 +532,19 @@ class MockBackend:
             "refused": False,
         }
 
+    def _chat(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # Shared by EXCOMM_CHAT and CITIZEN_CHAT: both are "reply to the new message,
+        # in character" and differ only in whose identity prompt built the system text —
+        # a fact this handler never sees or needs, by design (ADR 0010).
+        asked = NEW_MESSAGE_MARKER.search(prompt)
+        gist = asked.group(1).strip()[:40] if asked else ""
+        return {
+            "reply": (
+                f"{MOCK_PREFIX} placeholder reply {digest[:6]} to {gist!r}; this text is "
+                "not real reasoning"
+            )
+        }
+
 
 #: Published per-1M-token rates, USD, for turning a measured token count into an estimate.
 #: An estimate is all it is: the invoice is the provider's, and these move.
@@ -569,6 +597,11 @@ DEFAULT_MODELS: dict[str, str] = {
     # ADR 0009. Many short, uncached calls — the same character as a theorist's — and not
     # the primary metric, which stays Opus on the decision above.
     Role.CITIZEN.value: "claude-haiku-4-5",
+    # ADR 0010. Live, on-demand, user-triggered follow-ups — low volume (one message at a
+    # time, never part of the sweep) where quality matters, the PRESIDENT_LEAN/
+    # PRESIDENT_CHAIR precedent.
+    Role.EXCOMM_CHAT.value: "claude-sonnet-5",
+    Role.CITIZEN_CHAT.value: "claude-sonnet-5",
 }
 
 #: Models that take adaptive thinking. Haiku 4.5 uses a different, older thinking API and

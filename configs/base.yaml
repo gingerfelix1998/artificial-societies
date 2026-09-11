@@ -49,6 +49,11 @@ models:
   #   citizen             a sampled member of the public reacting to the decision (ADR
   #                       0009) — many short, uncached calls, like theorist.
   citizen: claude-haiku-4-5
+  #   excomm_chat         a live, on-demand follow-up chat with one ExComm member,
+  #   citizen_chat        or one citizen, triggered from the viewer after the run has
+  #                       finished (ADR 0010) — never part of the sweep.
+  excomm_chat: claude-sonnet-5
+  citizen_chat: claude-sonnet-5
 
 # Thinking depth for models that take adaptive thinking. Thinking tokens bill as output,
 # and output already dominates this workload, so this is the main cost dial.
