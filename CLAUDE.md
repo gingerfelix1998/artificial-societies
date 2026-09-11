@@ -166,6 +166,17 @@ not — is confounded and is not used here. Any influence figure must state whic
   not — read `excomm_debate` against `baseline`'s no-debate noise floor. The two arms'
   decision prompts also differ in length before they differ in content, which is an
   unseparated confound (`docs/framework/measurement.md`).
+- **The audience frame's marginals are partially unverified** (ADR 0009):
+  `data/society/us_1962/strata.yaml` marks several category shares `# UNVERIFIED` where
+  they could not be confirmed against a primary Census/Gallup/SRC-NES table; they are
+  reproduced from general knowledge, not sourced fact.
+- **The audience sampler assumes independence across stratification dimensions.**
+  `society.sample_citizens` draws each dimension independently and rakes the weights back
+  to the target marginals; it does not model the true population's correlation between
+  dimensions (`data/society/us_1962/README.md`).
+- `d_approval`'s absolute value is not a finding, the same way an absolute rung is not —
+  read against whatever control arm also ran with `audience_enabled: true`. Leakage rate
+  is a first-pass diagnostic (a fixed keyword/year list), not a validated leakage measure.
 
 Never report a run as grounded in more than what actually served it: `StubRetriever` is
 never grounded at all, and `grounded: true` alone does not say whether the text was a
@@ -177,9 +188,12 @@ false or unsupportable.
 
 - Run `make test` before and after any change. The mock backend exercises the whole loop with
   no API key, so there is no excuse for skipping it.
-- Prefer adding an arm config over adding a branch in `sim.py`. There is exactly one conditional
-  on arm behaviour in that module; a new arm needing a second one means the thing being varied
-  belongs in `RunConfig`.
+- Prefer adding an arm config over adding a branch in `sim.py`. There is exactly one
+  conditional gating whether the advisory apparatus runs at all in that module
+  (`config.consult_panel`); a new arm needing a second one there means the thing being
+  varied belongs in `RunConfig`. `config.audience_enabled` (ADR 0009) is a deliberate,
+  documented exception — a second, independent top-level conditional, because the citizen
+  audience must react to the decision whether or not a panel was consulted.
 - Prefer making a failure impossible to express over remembering to prevent it. `PerceivedEvent`
   having no `ground_truth_detail` field is the pattern: leaking requires editing a class, not
   forgetting a line.
@@ -204,6 +218,8 @@ false or unsupportable.
 | Role prompts and context boundaries | `src/artsoc/agents.py` |
 | Persona construction M1–M3, tag vocabulary, routing, the ExComm roster | `src/artsoc/personas.py` |
 | The ExComm roster's real-person mapping (never read by code) | `docs/excomm/roster-key.md` |
+| The citizen audience: the sampling frame, the raking sampler | `src/artsoc/society.py` |
+| The committed sampling frame (construction vs. validation marginals) | `data/society/us_1962/README.md` |
 | Retrieval interface and the grounded boundary | `src/artsoc/retrieval.py` |
 | Corpus building, chunking, the claim index | `src/artsoc/ingest.py` |
 | The committed source of record, and what may go in it | `data/corpora-src/README.md` |

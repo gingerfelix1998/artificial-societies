@@ -88,23 +88,28 @@ data/
   scenarios/*.json           injected events + presidential doctrine cards
   corpora-src/<id>/*.md       COMMITTED source of record — project-written summaries
   corpora/                    build artefacts (chunks, claims, manifest) — never committed
+  excomm/registry.yaml        the deliberative committee, 1962-shaped (ADR 0008)
+  society/us_1962/            the citizen audience's sampling frame (ADR 0009)
 docs/framework/
-  design.md            population choice, persona methods, loop, roadmap
+  design.md            populations, persona methods, loop, roadmap
   access-matrix.md     who may see what, and why each boundary exists
   measurement.md       metrics, diagnostics, interpretation constraints
 docs/decisions/        ADRs
 src/artsoc/
   schema.py            typed messages, closed action space, deterministic rungs
-  world.py             append-only world log, perception filter
+  world.py             append-only world log, perception filter, public-event view
   llm.py               single model choke point: mock + live backends, disk cache
   personas.py          persona construction M1/M2/M3, tag vocabulary, routing, ExComm roster
+  society.py           the citizen audience's sampling frame and raking sampler (ADR 0009)
   ingest.py            corpus building: markdown chunking + claim index (ADR 0007)
   retrieval.py         M2 grounding: CorpusRetriever (claim index) and StubRetriever
   agents.py            the roles and their enforced context boundaries, incl. the ExComm
-                       deliberation and the secret lean (ADR 0008)
+                       deliberation, the secret lean (ADR 0008), and the citizen audience
+                       (ADR 0009)
   sim.py               orchestration loop, RunConfig, ablation switches
   narrative.py         model-written run/session summaries (never feed the rung)
-  metrics.py           outcome distributions, coverage, citation integrity, lean->decision
+  metrics.py           outcome distributions, coverage, citation integrity, lean->decision,
+                       audience approval
   views.py             derived views the frontend consumes, all tested here
   session.py           sessions, cost gate, provenance flags
   api.py               local read-only API (optional `api` extra)
@@ -115,12 +120,13 @@ tests/
   test_markdown_corpus.py claim index: parsing, chunking, retrieval, citations
   test_retrieval.py       Wikipedia ingest + passage retrieval + belief fallback
   test_excomm.py          the ExComm roster: model, loader, identity prompt
+  test_society.py         the citizen audience: schema, frame, sampler, metrics
 out/                   run outputs, gitignored
 ```
 
 ## Status
 
-`make test`: 478 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
+`make test`: 532 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
 store, by design). `make lint`: clean. `frontend` `tsc`: clean.
 
 **The loop runs end to end, on real retrieval.** `artsoc run`, `artsoc analyse`, `artsoc
@@ -132,15 +138,20 @@ Built: the full scaffold (`schema.py`, `world.py`, `llm.py` with mock + live bac
 `configs/arms/`); courses of action (ADR 0006); the localhost viewer (`views.py`,
 `session.py`, `api.py`, `narrative.py`, `frontend/`); corpus retrieval — every persona
 retrieves from a committed claim index over project-written summaries of its publications
-(`ingest.py`, `retrieval.CorpusRetriever`, ADR 0007); and the ExComm deliberation — an
+(`ingest.py`, `retrieval.CorpusRetriever`, ADR 0007); the ExComm deliberation — an
 anonymised, 1962-shaped committee debates the three courses of action before the President
 decides, whose prior over them is recorded and never re-prompted
-(`data/excomm/registry.yaml`, `agents.ExCommMember`, `sim._deliberate`, ADR 0008). Role
-context boundaries are enforced by `tests/test_access_matrix.py`, validated by deliberately
-breaking four boundaries and confirming each was caught, plus a deliberate *inverted*
-assertion for the one role permitted peer visibility. The end-to-end citation path — a claim
-in an `.md` file through retrieval, the theorist's citation, `verify_citations`, the record,
-and the analyst-facing `resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
+(`data/excomm/registry.yaml`, `agents.ExCommMember`, `sim._deliberate`, ADR 0008); and the
+citizen audience — a stratified 70-citizen sample of the 1962 US public reacts to the
+President's published decision after it is made, as an outcome measure with its own delta
+against the control (`data/society/us_1962/`, `society.sample_citizens`,
+`agents.CitizenPanelist`, `sim._survey_audience`, ADR 0009). Role context boundaries are
+enforced by `tests/test_access_matrix.py`, validated by deliberately breaking boundaries
+(including the audience's prompt-build-time guard) and confirming each was caught, plus a
+deliberate *inverted* assertion for the one role permitted peer visibility. The end-to-end
+citation path — a claim in an `.md` file through retrieval, the theorist's citation,
+`verify_citations`, the record, and the analyst-facing `resolve_passages` — is exercised in
+`tests/test_markdown_corpus.py`.
 
 **A running loop is not a finished phase 1.** The project must not be described as producing
 grounded *results* until it has:
@@ -156,6 +167,10 @@ grounded *results* until it has:
 - Reasoning themes with a hand-coded agreement sample.
 - `mean_lean_shift`'s prompt-length confound (`excomm_debate`'s decision prompt carries the
   transcript; `baseline`'s does not) separated from a content effect.
+- `data/society/us_1962/strata.yaml`'s marginals calibrated against primary Census/Gallup/
+  SRC-NES tables — several are currently marked `# UNVERIFIED` (ADR 0009), and the sampler's
+  independent-per-dimension draw does not model the true population's correlated
+  dimensions.
 - Every arm run at n≥100 with a live backend, written up as a distribution and a delta,
   limitations section first.
 

@@ -82,6 +82,56 @@ prompt is strictly longer than `baseline`'s — it carries the transcript — so
 measured shift is a prompt-length effect rather than a content effect, and the two are not
 currently separated.
 
+## A third interpretable quantity: audience approval (ADR 0009)
+
+`RunRecord.audience`, populated when `audience_enabled` is set, carries a stratified
+70-citizen sample's reaction to the President's published decision — the label and the
+justification, never the reasoning behind it. Unlike `mean_lean_shift`, this is not a new
+within-replication shape: `metrics.Delta.d_approval` is an **across-arm** delta, the same
+kind as `d_mean_rung`, because the audience has no earlier stage of its own to be
+contrasted against. `d_approval` is the weighted "approve or strongly approve" share, arm
+minus control, computed only when both summaries recorded an audience.
+
+**The absolute approval share is not a finding, for the same reason absolute rung
+distributions are not.** The Rivera confound applies to a model asked to role-play public
+opinion exactly as it applies to a model asked to role-play a decision-maker. Read
+`audience_d1.weighted_approval`'s share only as a contrast against whatever control arm
+also ran with `audience_enabled: true`.
+
+**Four diagnostics gate the audience the way three already gate the theorist panel.**
+Response rate (a missing share is a dropped stratum, not just a smaller n — check
+`AudienceRecord.failures` before reading the approval share at all). Leakage rate — the
+share of citizen responses that named the real crisis, its real participants, or a
+post-1962 event, unprompted. Unlike the panel-coverage ratio, **any nonzero leakage rate is
+flagged**, not just a rate below a threshold: a single leaked reference at n=70 is direct
+evidence the era-framing failed for at least one citizen, and a ratio-based warning would
+average that away. No-opinion rate: **a near-zero rate is a warning, not a success**, the
+same reading a near-zero out-of-record rate gets for the theorist panel — it means the
+audience is performing an opinion it does not have. Stratum coverage: the worst
+per-dimension achieved/target ratio in the raw draw, before raking; a low floor means some
+stratum cell's weighted contribution is doing outsized work.
+
+**Two leakage mechanisms exist because they catch different failures.**
+`agents.assert_decontextualised`, run at prompt-build time on every citizen call, raises
+if a forbidden token (a theorist's name, a claim id, an ExComm label, ground truth) is
+about to be *sent*. The leakage-rate diagnostic above catches what that guard structurally
+cannot: a model naming the real episode from its own parametric knowledge, with nothing
+forbidden ever having appeared in its prompt.
+
+**By-stratum breakdowns are a multiple-comparisons exposure, exactly like the `loo_*`
+attribution.** `metrics.audience_by_stratum` computes a weighted-approval share per
+stratum category — six dimensions, several categories each — and is tested but rendered by
+nothing in `format_report` yet. Reading any one cell as a finding without a correction is
+the same error fifteen uncorrected `loo_*` comparisons would be; report it descriptively or
+state the correction.
+
+**The sampler's independence assumption is a fact about the method, not about public
+opinion.** `society.sample_citizens` draws each stratum dimension independently and rakes
+the weights back to the target marginals; the true population's dimensions were
+correlated, and this construction does not reproduce that correlation. `data/society/us_1962/README.md`
+states this, and any read of a by-stratum breakdown should hold it in view the same way a
+corroboration-depth reading holds the corpus's thinness in view.
+
 ## Diagnostics that gate interpretation
 
 Three diagnostics decide whether a distribution may be read at all. `_warnings` raises them
@@ -221,3 +271,9 @@ In rough order of value:
 8. Replace round-robin turn-taking with a President-driven chair that calls on specific
    members, closer to how the 1962 ExComm actually ran, and measure whether it changes which
    arguments surface.
+9. Calibrate `data/society/us_1962/strata.yaml`'s marginals against primary Census/Gallup/
+   SRC-NES tables — several are currently marked `# UNVERIFIED` (ADR 0009), reproduced from
+   general knowledge rather than confirmed against a primary source.
+10. Replace the audience sampler's independent-per-dimension draw with a joint (correlated)
+    construction, so a by-stratum breakdown reflects the true population's structure rather
+    than an independence assumption stated as a limitation.

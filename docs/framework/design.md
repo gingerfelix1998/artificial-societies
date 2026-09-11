@@ -4,15 +4,32 @@ What this project models, how the code is arranged, and why each structural choi
 made. For the invariants themselves see `CLAUDE.md`; for the boundaries in detail see
 `docs/access-matrix.md`; for what a run may be claimed to show see `docs/measurement.md`.
 
-## The population being modelled
+## The populations being modelled
 
-The brief asks for 100 personas modelling one group of humans. Here the group is **the
-authors of the nuclear-strategy literature**. The theorists are the population. President,
-Advisor and Intelligence Officer are *instruments* — they aggregate and act on the panel's
-opinions, and they are not samples of anything.
+The brief asks for 100 personas modelling one group of humans. Here there are, as of ADR
+0009, **two** groups modelled, and everything else in the loop is an instrument acting on
+one or between them.
 
-This distinction is the first thing to state when defending the work, because "a president
-persona" is not an answer to "whose opinions is this capturing?".
+**The authors of the nuclear-strategy literature.** The theorists are the population.
+President, Advisor and Intelligence Officer are *instruments* — they aggregate and act on
+the panel's opinions, and they are not samples of anything. This distinction is the first
+thing to state when defending the work, because "a president persona" is not an answer to
+"whose opinions is this capturing?". The ExComm (ADR 0008) is a second instrument, not a
+second population: it is convened over the decision and feeds *into* it, structurally
+unlike either group below.
+
+**The 1962 US public.** A stratified sample (`data/society/us_1962/`, ADR 0009) that reads
+the President's decision after it is made and reacts to it. Unlike the theorists, it is not
+grounded in a written record and is not checked against held-out writings — it is
+constructed from demographic and attitudinal survey marginals (region, urbanicity, age
+band, sex, education, party identification) via `society.sample_citizens`, which draws each
+stratum value independently and then rakes the sample's weights back to the target
+marginals. That independence assumption is a real simplification: the true population's
+dimensions were correlated, and this construction does not model that correlation — stated
+here and in the frame's own `README.md` rather than left implicit. It is an **outcome
+measure**, not an input: nothing it produces returns to the President, and it exists to ask
+whether the advisory apparatus this project builds changes anything the public would
+notice, not to change what the apparatus does.
 
 The population choice suits LLM personas unusually well: the field's authorship is close to
 enumerable and every member left a written record, so personas can be grounded in primary
@@ -85,7 +102,7 @@ specified behaviour and stays visible in the routing record.
 
 ## Roles and the loop
 
-Eleven call sites, enumerated in `llm.Role`, each stamping a `[[ROLE:...]]` marker into its
+Twelve call sites, enumerated in `llm.Role`, each stamping a `[[ROLE:...]]` marker into its
 own system prompt. The marker is what lets the mock backend route and what lets the
 access-matrix tests scan by role.
 
@@ -104,11 +121,19 @@ scenario events → WorldLog
   [if convene_excomm] → excomm_member × roster × round, president_chair × round
                                                                  (ADR 0008)
   → president_decision       → PresidentialAction (one ActionType, deterministic rung)
+  [if audience_enabled] → citizen × audience_size → CitizenResponse (ADR 0009)
 ```
 
-The bracketed stage is the deliberation: gated entirely inside the `consult_panel` path (see
-`sim.py`'s single arm conditional), it never runs on `escalation_prior`, and its transcript —
+The bracketed deliberation stage is gated entirely inside the `consult_panel` path (see
+`sim.py`'s single arm conditional), never runs on `escalation_prior`, and its transcript —
 not the lean above it — is what `president_decision` sees when it runs.
+
+The bracketed audience stage is different in kind: it is a **second, independent**
+conditional (`config.audience_enabled`), not nested inside `consult_panel`, because it
+reacts to `PresidentialAction` regardless of whether a panel produced it — it runs under
+`escalation_prior` too, when turned on. It is the only stage that runs after
+`president_decision` and the only one whose output — `RunRecord.audience` — is read by
+nothing upstream of it.
 
 Defaults are `n_questions: 3` and `k_per_question: 4`, so up to twelve opinion slots are
 drawn from a fifteen-persona panel.
@@ -169,9 +194,14 @@ Jervis strand of the panel would say misperception is the mechanism that matters
 as possible, so "baseline vs X" isolates exactly the field X varies. The loader rejects
 unknown keys, so a typo fails loudly instead of silently running the default.
 
-`sim.py` contains exactly one conditional on arm behaviour — `config.consult_panel`, the
-structural difference between the control arm and everything else. A new arm needing a new
-branch is a signal that the thing being varied belongs in `RunConfig`.
+`sim.py` contains exactly one conditional gating whether the advisory apparatus runs at
+all — `config.consult_panel`, the structural difference between the control arm and
+everything else. A new arm needing a new branch there is a signal that the thing being
+varied belongs in `RunConfig`. The citizen audience (ADR 0009) is the one deliberate
+exception: `config.audience_enabled` is a second, *independent* top-level conditional,
+because it must react to the decision whether or not a panel was consulted — it is not
+nested inside `consult_panel` the way the ExComm deliberation (ADR 0008) is, and both
+conditionals' occurrence counts are pinned by dedicated tests so neither grows a third.
 
 | Arm | Varies | Question |
 |---|---|---|
@@ -227,10 +257,14 @@ purpose.
 seeds. Corpus retrieval is in place: every persona retrieves from a committed claim index
 over project-written summaries of its publications (ADR 0007). A deliberative ExComm can sit
 between the courses of action and the decision, with the President's prior recorded before
-it convenes (ADR 0008). What remains is calibrating the claim-match thresholds against a
-live sweep, reconciling `RUNG` with a published ladder, reasoning-theme coding, and — for the
-ExComm specifically — a corpus deep enough for a disposition-ablation arm and President-driven
-turn-taking rather than round-robin — see `docs/prompts/improvements-log.md`.
+it convenes (ADR 0008). A stratified 1962-US-public audience can react to the decision
+after it is made, as an outcome measure with its own delta against the control (ADR 0009).
+What remains is calibrating the claim-match thresholds against a live sweep, reconciling
+`RUNG` with a published ladder, reasoning-theme coding, and — for the ExComm specifically —
+a corpus deep enough for a disposition-ablation arm and President-driven turn-taking rather
+than round-robin; for the audience, calibrating `strata.yaml`'s marginals against primary
+Census/Gallup/SRC-NES tables and a joint (correlated) construction in place of the
+independent-draw-plus-raking sampler — see `docs/prompts/improvements-log.md`.
 
 **Phase 2.** Multiple nations signalling, asymmetric perception filters, reciprocity and
 arms-race metrics measured against the phase 1 single-nation baseline.

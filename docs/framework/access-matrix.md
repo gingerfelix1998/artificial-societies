@@ -10,23 +10,34 @@ enforces them from the outside.
 
 ## The matrix
 
-| | Perceived events | Own doctrine | Own record | Peer opinions | Intel brief | Advisor brief | Courses of action | Debate transcript | Secret lean | Host ground truth |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **Intelligence Officer** | read | read | — | — | writes | — | — | — | — | **never** |
-| **President** (query) | — | read | — | — | read | — | — | — | — | **never** |
-| **Advisor** (questions) | — | — | — | — | — | — | — | — | — | **never** |
-| **Advisor** (selection) | — | — | — | roster only | — | — | — | — | — | **never** |
-| **Theorist** | — | — | read | — | — | — | — | — | — | **never** |
-| **Advisor** (synthesis) | — | — | — | read | — | writes | — | — | — | **never** |
-| **Advisor** (COAs) | — | — | — | read | — | — | writes | — | — | **never** |
-| **President** (lean) | — | read | — | — | read | read | read | — | *writes, host-only* | **never** |
-| **ExComm member** | read | — | — | — | read | read | read | read *(the point)* | — | **never** |
-| **President** (chair) | — | — | — | — | — | — | — | read | — | **never** |
-| **President** (decision) | — | read | — | — | read | read | read | read | — | **never** |
+| | Perceived events | Own doctrine | Own record | Peer opinions | Intel brief | Advisor brief | Courses of action | Debate transcript | Secret lean | Host ground truth | Public event/statement |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Intelligence Officer** | read | read | — | — | writes | — | — | — | — | **never** | — |
+| **President** (query) | — | read | — | — | read | — | — | — | — | **never** | — |
+| **Advisor** (questions) | — | — | — | — | — | — | — | — | — | **never** | — |
+| **Advisor** (selection) | — | — | — | roster only | — | — | — | — | — | **never** | — |
+| **Theorist** | — | — | read | — | — | — | — | — | — | **never** | — |
+| **Advisor** (synthesis) | — | — | — | read | — | writes | — | — | — | **never** | — |
+| **Advisor** (COAs) | — | — | — | read | — | — | writes | — | — | **never** | — |
+| **President** (lean) | — | read | — | — | read | read | read | — | *writes, host-only* | **never** | — |
+| **ExComm member** | read | — | — | — | read | read | read | read *(the point)* | — | **never** | — |
+| **President** (chair) | — | — | — | — | — | — | — | read | — | **never** | — |
+| **President** (decision) | — | read | — | — | read | read | read | read | — | **never** | — |
+| **Citizen** | — | — | — | — | — | — | — | — | — | **never** | *read (the point)* |
 
 The Advisor appears four times because it is four roles in `llm.Role`, with separate prompts
 and separate model assignments. Its selection step sees persona ids and declared areas — the
 roster — not opinions, which do not exist yet at that point in the loop.
+
+**The Citizen row (ADR 0009) reads a different column from everyone else's.** It is the
+only role that never sees the intel brief, the advisor brief, a course of action, or the
+debate transcript — and the only role permitted the "public event / statement" column,
+which is `PublicEvent[]` and one `PublicStatement`, structurally leaner types than
+`PerceivedEvent`/`PresidentialAction` (no collection fields, no rung, no `chosen_coa_id`).
+It runs strictly *after* `President` (decision), the only role for which that is true, and
+its own output never appears in any other role's row — proven by scanning every earlier
+role's prompts for it, the mirror image of how the secret lean is proven never to leak
+*forward*.
 
 The **ExComm member** row is the first to carry a `read` in the *peer* sense — the debate
 transcript — and to see *Perceived events* / *Intel brief*. That is deliberate and is
@@ -78,6 +89,17 @@ briefed the way the President is — the intel brief and the perceived events, i
 and `PerceivedEvent` fields, neither of which has a `ground_truth_detail`. The consequence
 for the tests: `test_only_the_io_and_the_excomm_are_shown_collection_output` replaced the
 old "the IO alone" assertion, changed in the ADR 0008 commit alongside this document.
+
+**The citizen sees the public event and the decision, and nothing that produced it (ADR
+0009).** It is an outcome measure, not an input: it exists to react to what became public,
+not to reconstruct why the President chose it. `assert_decontextualised` — the same guard
+that closes the President's-query path — runs here too, in the other direction: it checks
+the prompt about to be *sent* to a citizen, built fresh each replication from every
+theorist name and id, every opinion's citations, the ExComm roster when a debate ran, the
+intel brief, and every `ground_truth_detail` string. A response-content scan
+(`AudienceRecord.leakage_rate`) catches the complementary failure a build-time guard
+cannot: a model naming the real crisis from its own training data, with nothing forbidden
+ever having been in its prompt.
 
 **The secret lean is recorded and never prompted (ADR 0008).** The President's private prior
 over the three courses is captured before the committee convenes, typed as an `ActionType`

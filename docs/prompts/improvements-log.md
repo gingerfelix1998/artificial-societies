@@ -306,3 +306,31 @@ President chairs within a hard cap, and `mean_lean_shift` reads `excomm_debate` 
   moves, the causal-attribution pattern the theorist panel already has.
 - **Live calibration of `deliberation_max_rounds` and the roster size**, which are reasoned
   from cost rather than measured against when additional rounds stop changing the outcome.
+
+### 22. Audience follow-ups (ADR 0009)
+
+**Now.** A stratified 70-citizen sample of the 1962 US public reacts to the President's
+published decision after it is made: `society.sample_citizens` draws citizens against
+committed marginals (`data/society/us_1962/strata.yaml`) and rakes their weights,
+`agents.CitizenPanelist` guards every prompt with `assert_decontextualised` and reports a
+response-content leakage rate, and `metrics.Delta.d_approval` reads the weighted approval
+share against the arm's own control.
+
+**What remains, in rough order of value.**
+
+- **Calibrate the frame against primary sources.** Several of `strata.yaml`'s marginals are
+  marked `# UNVERIFIED` — reproduced from general knowledge rather than confirmed against a
+  primary Census/Gallup/SRC-NES table in the session that authored the file. This is the
+  audience's version of the claim-retrieval thresholds' "mechanism in place, numbers not
+  calibrated" status.
+- **A joint, correlated construction**, in place of the independent-per-dimension draw plus
+  raking. The true 1962 population's stratification dimensions were correlated (region and
+  party identification, notably); this sampler does not model that, and a by-stratum
+  breakdown read today inherits the gap.
+- **A live sweep of `audience_d1` against `escalation_prior`** (or against `baseline`, with
+  both running `audience_enabled: true`), to see whether `d_approval` moves at all once real
+  models are answering — the mechanism has only been exercised on the mock so far.
+- **A second `audience_method`.** Only `"d1"` (independent draw plus raking) is implemented;
+  the `RunConfig` field is already there for a second construction method to compare against.
+- **A multiple-comparisons correction for `metrics.audience_by_stratum`**, which is currently
+  tested but rendered by nothing and carries an explicit caveat instead of a correction.

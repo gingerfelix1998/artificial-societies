@@ -505,6 +505,79 @@ def test_the_lean_and_chair_never_see_raw_theorist_opinions(run: LoopRun) -> Non
 
 
 # ---------------------------------------------------------------------------
+# The citizen audience (ADR 0009). An outcome measure: it runs strictly after the
+# decision, sees only the publicly known event and the President's action, and nothing it
+# produces returns to any earlier role.
+# ---------------------------------------------------------------------------
+
+
+def test_no_citizen_prompt_carries_a_theorist_name_opinion_or_citation(run: LoopRun) -> None:
+    """The audience never sees the panel, its positions, or what they cited."""
+    for text in run.texts_for(Role.CITIZEN):
+        for persona in run.personas:
+            assert persona.persona_id not in text
+            assert persona.name not in text
+        for opinion in run.opinions:
+            assert opinion.position not in text
+            assert opinion.reasoning not in text
+            for citation in opinion.citations:
+                assert citation not in text
+
+
+def test_no_citizen_prompt_carries_the_excomm_transcript_or_a_member_label(run: LoopRun) -> None:
+    """The debate is the point for the ExComm; it must not reach the audience at all."""
+    for text in run.texts_for(Role.CITIZEN):
+        for member in run.excomm:
+            assert member.member_id not in text
+            assert member.role_title not in text
+        for statement in run.deliberation:
+            if statement.statement:
+                assert statement.statement not in text
+
+
+def test_no_citizen_prompt_carries_the_secret_lean(run: LoopRun) -> None:
+    """Scanned the way the President's own decision prompt is scanned for it."""
+    for text in run.texts_for(Role.CITIZEN):
+        assert run.lean_reason not in text
+
+
+def test_a_citizen_response_never_reaches_any_earlier_roles_prompt(run: LoopRun) -> None:
+    """The mirror image of the secret-lean test above: the audience runs last, so its own
+    output must never leak *backward* into a role that ran before it — the concrete form
+    of 'nothing it produces returns to the President'."""
+    rationales = [r.rationale for r in run.citizen_responses if r.rationale]
+    assert rationales, "anti-vacuity: no citizen produced a rationale to scan for"
+    non_citizen_roles = [role for role in Role if role is not Role.CITIZEN]
+    for role in non_citizen_roles:
+        for text in run.texts_for(role):
+            for rationale in rationales:
+                assert rationale not in text
+            for citizen in run.citizen_responses:
+                assert citizen.citizen_id not in text
+
+
+def test_a_planted_forbidden_token_makes_a_citizen_call_raise_not_scrub(run: LoopRun) -> None:
+    """The canary discipline: a guard that is never shown to fail is not evidence. Plants
+    one of the run's own theorist names as a forbidden token for a real citizen from this
+    loop and confirms the call raises `BoundaryViolation` rather than continuing on a
+    scrubbed prompt. The revert half of this discipline — the same setup with the token
+    removed succeeding — is `tests/test_society.py::
+    test_with_no_forbidden_token_planted_the_same_call_succeeds`, against the same
+    `CitizenPanelist.respond`."""
+    from artsoc.schema import ActionType, PublicStatement
+
+    statement = PublicStatement(action=ActionType.NO_ACTION, justification="MOCK:")
+    citizen = load_frame("us_1962")
+    planted = sample_citizens(citizen, 1, random.Random(1)).citizens[0]
+    panelist = CitizenPanelist(run.client, planted)
+
+    # `build_citizen_identity_prompt` renders underscores as spaces, so the forbidden
+    # token must match what actually reaches the prompt, not the raw stratum value.
+    with pytest.raises(BoundaryViolation, match="citizen"):
+        panelist.respond([], statement, forbidden_tokens=[planted.region.replace("_", " ")])
+
+
+# ---------------------------------------------------------------------------
 # Role separation at the choke point.
 # ---------------------------------------------------------------------------
 
