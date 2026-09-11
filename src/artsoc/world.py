@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from artsoc.schema import DoctrineCard, PerceivedEvent, WorldEvent
+from artsoc.schema import DoctrineCard, PerceivedEvent, PublicEvent, WorldEvent
 
 PRESIDENT_ROLE = "president"
 HOST_ROLE = "host"
@@ -63,6 +63,26 @@ class WorldLog:
             )
         self._events.append(event)
         return event
+
+
+def public_events_from(events: tuple[WorldEvent, ...] | list[WorldEvent]) -> list[PublicEvent]:
+    """What was publicly known or announced, for the citizen audience (ADR 0009).
+
+    Deliberately not a `PerceptionFilter` product: the audience is not a nation's
+    collection apparatus and gets no `confidence`/`degraded`/collection reading — only
+    `PublicEvent`'s bare `event_id`/`t`/`actor_nation`/`description`, dropping
+    `ground_truth_detail`, `observable_signature`, `covert` and `action` explicitly. Use
+    this on the injected scenario events, never on `PerceivedEvent`s.
+    """
+    return [
+        PublicEvent(
+            event_id=event.event_id,
+            t=event.t,
+            actor_nation=event.actor_nation,
+            description=event.description,
+        )
+        for event in events
+    ]
 
 
 class PerceptionParams(BaseModel):

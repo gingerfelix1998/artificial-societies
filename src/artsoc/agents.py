@@ -23,6 +23,11 @@ The boundaries, and why each exists:
   deliberative committee convened over the crisis, so it reads the anonymised situation, the
   advisor's brief, the three courses and the running debate transcript. It never sees raw
   theorist opinions, the President's secret lean, or the host's ground truth.
+* **A Citizen** (ADR 0009) runs strictly *after* `President.decide`, and cannot influence
+  it: it is shown only the publicly known event and the President's action and
+  justification, as `PublicEvent`/`PublicStatement` — never the intel brief, the advisor's
+  brief, a theorist opinion, a claim or chunk id, a course of action, the ExComm transcript,
+  the secret lean, or another citizen's response. It is an outcome measure, not an input.
 
 The one path by which situational detail could reach the Advisor is the President's query,
 which is written *after* reading the intelligence brief. `assert_decontextualised` closes
@@ -37,7 +42,7 @@ import random
 import re
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from artsoc.llm import (
     ACTION_ENTRY,
@@ -65,6 +70,9 @@ from artsoc.schema import (
     ActionType,
     AdvisorBrief,
     AnalyticalQuestion,
+    Approval,
+    Citizen,
+    CitizenResponse,
     CourseOfAction,
     DoctrineCard,
     ExCommStatement,
@@ -72,9 +80,13 @@ from artsoc.schema import (
     PerceivedEvent,
     PresidentialAction,
     PresidentialQuery,
+    PrimaryConcern,
+    PublicEvent,
+    PublicStatement,
     RoutingRecord,
     TheoristOpinion,
 )
+from artsoc.society import build_citizen_identity_prompt
 
 #: Appended to every role's output instruction. Live models otherwise fence the object in
 #: markdown and add commentary around it, which is well-formed output in an envelope the
@@ -286,6 +298,23 @@ def render_situation(intel: IntelBrief, view: list[PerceivedEvent]) -> str:
                 lines.append(f"      · {sig}")
             if event.degraded:
                 lines.append("      · (this reading is degraded)")
+    return "\n".join(lines)
+
+
+def _render_public(events: list[PublicEvent], statement: PublicStatement) -> str:
+    """What a `Citizen` is shown (ADR 0009): the publicly known event(s) and the
+    President's action, as publicly announced. Built from `PublicEvent`/`PublicStatement`
+    only — neither type has a `ground_truth_detail`, a rung, or advisor content to leak,
+    so this renderer cannot carry more than the audience is meant to see."""
+    lines = ["WHAT HAPPENED:"]
+    for event in events:
+        lines.append(f"  - {event.actor_nation}: {event.description}")
+    lines += [
+        "",
+        "THE PRESIDENT'S ACTION:",
+        f"  {statement.action.value.replace('_', ' ')}",
+        f"  justification given: {statement.justification}",
+    ]
     return "\n".join(lines)
 
 
@@ -1187,3 +1216,73 @@ class Theorist:
     def unsupported_citations(self, opinion: TheoristOpinion, record_block: str) -> list[str]:
         """Ids this persona cited that were not in the block it was shown."""
         return verify_citations(opinion.citations, record_block)
+
+
+# ---------------------------------------------------------------------------
+# The citizen audience (ADR 0009)
+# ---------------------------------------------------------------------------
+
+
+class CitizenPanelist:
+    """One sampled member of the public, reacting once to the published decision.
+
+    Runs strictly after `President.decide`. Shown only the publicly known event and the
+    President's action and justification — no theorist opinion, no claim or chunk id, no
+    ExComm transcript, no secret lean, no ground truth. `assert_decontextualised` guards
+    the built prompt before it is sent, in its other direction from every other call site
+    in this module: it checks what is about to be *sent*, not what a role writes forward.
+    """
+
+    def __init__(self, client: LLMClient, citizen: Citizen) -> None:
+        self.client = client
+        self.citizen = citizen
+
+    def respond(
+        self,
+        public_events: list[PublicEvent],
+        statement: PublicStatement,
+        forbidden_tokens: list[str],
+    ) -> CitizenResponse:
+        system = _system(Role.CITIZEN, build_citizen_identity_prompt(self.citizen))
+        prompt = "\n".join(
+            [
+                _render_public(public_events, statement),
+                "",
+                "How do you feel about this, and why? Produce JSON with keys: approval "
+                "(one of: strongly_approve, approve, no_opinion, disapprove, "
+                "strongly_disapprove), primary_concern (one of: national_security, "
+                "economic_impact, family_safety, moral_or_religious, "
+                "international_standing, government_trust, other, none), rationale "
+                "(a sentence or two, in your own words). " + JSON_ONLY,
+            ]
+        )
+        assert_decontextualised(f"{system}\n{prompt}", forbidden_tokens, where="citizen")
+
+        # Uncacheable by construction: the input is the decision and its justification,
+        # the thing that varies by design (ADR 0009). `LLMClient.complete` also refuses
+        # this role the disk cache outright, regardless of this flag — belt and suspenders.
+        raw = self.client.complete(role=Role.CITIZEN, system=system, prompt=prompt, cacheable=False)
+        try:
+            payload = _parse_json(raw, Role.CITIZEN)
+            response = CitizenResponse(
+                citizen_id=self.citizen.citizen_id,
+                approval=payload["approval"],
+                primary_concern=payload.get("primary_concern", "none"),
+                rationale=str(payload.get("rationale", "")),
+                refused=bool(payload.get("refused", False)),
+            )
+        except (ValueError, KeyError, ValidationError):
+            # A response that came back but could not be parsed into a valid, typed
+            # reaction is analyst-visible data (the model declined or answered
+            # off-spec), not a system failure — recorded as a structural refusal rather
+            # than raised. A transport/backend failure (nothing came back at all) is a
+            # different case, handled by the caller in `sim.py`, which records it as a
+            # `CitizenFailure` and continues rather than dropping the whole replication.
+            return CitizenResponse(
+                citizen_id=self.citizen.citizen_id,
+                approval=Approval.NO_OPINION,
+                primary_concern=PrimaryConcern.NONE,
+                rationale="",
+                refused=True,
+            )
+        return _clean(response, "rationale")

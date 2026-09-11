@@ -167,6 +167,20 @@ class RunConfig(BaseModel):
     #: causal rather than observational.
     excluded_personas: list[str] = Field(default_factory=list)
 
+    #: ADR 0009. When true, a stratified sample of the public reacts to the President's
+    #: decision after it is made. An outcome measure: nothing it produces returns to any
+    #: earlier stage, and it composes with either value of `consult_panel`. Off by default
+    #: so every existing arm's cost estimate is unchanged.
+    audience_enabled: bool = False
+    #: 70, stratified — see ADR 0009 for the figure's justification. Uncacheable by
+    #: construction (`llm.LLMClient.complete`), so this is the main cost dial.
+    audience_size: int = Field(default=70, ge=1)
+    #: Which committed frame under `data/society/` to sample from.
+    audience_frame: str = "us_1962"
+    #: Which construction method built the sample. `"d1"` is independent-per-dimension
+    #: draw plus raking (`society.sample_citizens`), the only method implemented so far.
+    audience_method: str = "d1"
+
     notes: str = ""
 
     @field_validator("persona_method")

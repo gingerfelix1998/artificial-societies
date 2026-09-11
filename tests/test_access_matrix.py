@@ -30,6 +30,7 @@ import pytest
 from artsoc.agents import (
     Advisor,
     BoundaryViolation,
+    CitizenPanelist,
     ExCommMember,
     IntelligenceOfficer,
     President,
@@ -42,9 +43,10 @@ from artsoc.config import RunConfig
 from artsoc.llm import ROSTER_ENTRY, LLMClient, MockBackend, Role, role_marker
 from artsoc.personas import load_excomm, load_registry
 from artsoc.retrieval import get_retriever
-from artsoc.schema import PresidentialQuery
+from artsoc.schema import PresidentialQuery, public_statement_from
 from artsoc.sim import build_panel
-from artsoc.world import PerceptionFilter, build_world, load_scenario
+from artsoc.society import load_frame, sample_citizens
+from artsoc.world import PerceptionFilter, build_world, load_scenario, public_events_from
 
 SCENARIO_ID = "phase1_tel_dispersal_v1"
 
@@ -139,6 +141,35 @@ class LoopRun:
             self.coas,
             deliberation_transcript=render_deliberation(self.deliberation, self.excomm),
         )
+
+        # The citizen audience (ADR 0009). Driven here, strictly after the decision, so
+        # the canary suite covers this role however `sim.py` assembles it — the same
+        # reasoning the ExComm block above follows. A small n keeps the suite fast; the
+        # boundary being tested does not depend on the sample size.
+        frame = load_frame("us_1962")
+        sample = sample_citizens(frame, 3, random.Random(seed))
+        self.public_events = public_events_from(log.events)
+        self.public_statement = public_statement_from(self.action)
+        # Deliberately NOT `self.forbidden` (the scenario's proper nouns): the audience is
+        # meant to see the anonymised nation labels and the public event's own content —
+        # that is what `_render_public` shows it. What must never reach a citizen prompt is
+        # the theorist/ExComm/ground-truth material below (ADR 0009).
+        self.citizen_forbidden = [
+            *(p.persona_id for p in self.personas),
+            *(p.name for p in self.personas),
+            *(o.position for o in self.opinions),
+            *(o.reasoning for o in self.opinions),
+            *(m.member_id for m in self.excomm),
+            *(m.role_title for m in self.excomm),
+            self.intel.summary,
+            self.lean_reason,
+        ]
+        self.citizen_responses = [
+            CitizenPanelist(self.client, citizen).respond(
+                self.public_events, self.public_statement, self.citizen_forbidden
+            )
+            for citizen in sample.citizens
+        ]
 
     def texts_for(self, role: Role) -> list[str]:
         """Every prompt this role saw, system and user concatenated."""

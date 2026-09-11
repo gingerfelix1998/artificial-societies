@@ -34,7 +34,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
-from artsoc.schema import ActionType
+from artsoc.schema import ActionType, Approval, PrimaryConcern
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO_ROOT / ".env"
@@ -43,7 +43,7 @@ MOCK_PREFIX = "MOCK:"
 
 #: Bumped whenever mock output changes shape. It is part of the cache key, so old cached
 #: responses cannot be silently served against new parsing code.
-MOCK_VERSION = "mock-4"
+MOCK_VERSION = "mock-5"
 
 
 class Role(str, Enum):
@@ -65,6 +65,10 @@ class Role(str, Enum):
     #: The President, as chair, deciding after each round whether to continue or conclude.
     PRESIDENT_CHAIR = "president_chair"
     PRESIDENT_DECISION = "president_decision"
+    #: A sampled member of the public, reacting to the President's decision after it is
+    #: made (ADR 0009). The only role that runs strictly after `PRESIDENT_DECISION` and
+    #: cannot see anything upstream of it beyond the publicly known event.
+    CITIZEN = "citizen"
 
 
 def role_marker(role: Role) -> str:
@@ -218,6 +222,7 @@ class MockBackend:
             Role.EXCOMM_MEMBER: self._excomm_member,
             Role.PRESIDENT_CHAIR: self._chair,
             Role.PRESIDENT_DECISION: self._decision,
+            Role.CITIZEN: self._citizen,
         }[role]
         return json.dumps(handler(prompt, rng, digest))
 
@@ -488,6 +493,30 @@ class MockBackend:
             ),
         }
 
+    def _citizen(self, prompt: str, rng: random.Random, digest: str) -> dict:
+        # ~3% structural refusals, so the refused/no_opinion distinction is exercised
+        # without dominating the panel. A refusal still carries content-nonsense text with
+        # the marker, like every other mock shape — never a blank string that could be
+        # mistaken for a real model declining silently.
+        if rng.random() < 0.03:
+            return {
+                "approval": Approval.NO_OPINION.value,
+                "primary_concern": PrimaryConcern.NONE.value,
+                "rationale": f"{MOCK_PREFIX} placeholder refusal {digest[:6]}",
+                "refused": True,
+            }
+        approval = rng.choice(list(Approval))
+        concern = rng.choice(list(PrimaryConcern))
+        return {
+            "approval": approval.value,
+            "primary_concern": concern.value,
+            "rationale": (
+                f"{MOCK_PREFIX} placeholder citizen reaction {digest[:6]}; this text is "
+                "not a real opinion"
+            ),
+            "refused": False,
+        }
+
 
 #: Published per-1M-token rates, USD, for turning a measured token count into an estimate.
 #: An estimate is all it is: the invoice is the provider's, and these move.
@@ -537,6 +566,9 @@ DEFAULT_MODELS: dict[str, str] = {
     Role.EXCOMM_MEMBER.value: "claude-haiku-4-5",
     Role.PRESIDENT_CHAIR.value: "claude-sonnet-5",
     Role.PRESIDENT_DECISION.value: "claude-opus-5",
+    # ADR 0009. Many short, uncached calls — the same character as a theorist's — and not
+    # the primary metric, which stays Opus on the decision above.
+    Role.CITIZEN.value: "claude-haiku-4-5",
 }
 
 #: Models that take adaptive thinking. Haiku 4.5 uses a different, older thinking API and
@@ -860,7 +892,17 @@ class LLMClient:
         generation = getattr(self.backend, "generation_signature", lambda: "")()
         salt = self._salt(cacheable)
         key = self._key(role, system, prompt, salt, model, generation)
-        use_cache = self.cache is not None and self.cache_enabled and cacheable
+        # A citizen's input is the decision and its justification — the thing that varies
+        # by design (ADR 0009) — so this role never touches the disk cache, regardless of
+        # `cacheable`/`cache_enabled`. This is stronger than `cacheable=False` elsewhere
+        # (which only seed-salts the key): a citizen call is never written to or read from
+        # `self.cache` at all. Do not "optimise" this back on.
+        use_cache = (
+            self.cache is not None
+            and self.cache_enabled
+            and cacheable
+            and role is not Role.CITIZEN
+        )
 
         if use_cache:
             hit = self.cache.get(key)  # type: ignore[union-attr]

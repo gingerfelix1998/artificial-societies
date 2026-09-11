@@ -18,6 +18,8 @@ import yaml
 from pydantic import ValidationError
 
 import artsoc.society as society_module
+from artsoc.agents import BoundaryViolation, CitizenPanelist
+from artsoc.llm import DiskCache, LLMClient, MockBackend, Role
 from artsoc.schema import (
     ActionType,
     AudienceRecord,
@@ -324,3 +326,71 @@ def test_raking_still_terminates_on_a_near_unreachable_target() -> None:
     sample = sample_citizens(frame, 5, random.Random(1))
     assert len(sample.citizens) == 5
     assert all(c.weight > 0 for c in sample.citizens)
+
+
+# ---------------------------------------------------------------------------
+# The role never touches the disk cache (ADR 0009)
+# ---------------------------------------------------------------------------
+
+
+def test_a_citizen_call_never_touches_the_disk_cache(tmp_path: Path) -> None:
+    """Stronger than `cacheable=False` elsewhere: a citizen's input is the decision and
+    its justification, the thing that varies by design, so this role must never be served
+    from or written to the disk cache — even with `cache_enabled=True` and the identical
+    system/prompt/model repeated."""
+    client = LLMClient(
+        backend=MockBackend(), run_seed=1, cache=DiskCache(tmp_path), cache_enabled=True
+    )
+    system = "[[ROLE:citizen]]\nyou are a citizen"
+    prompt = "how do you feel about this?"
+
+    client.complete(role=Role.CITIZEN, system=system, prompt=prompt, cacheable=True)
+    client.complete(role=Role.CITIZEN, system=system, prompt=prompt, cacheable=True)
+
+    assert client.cache_hits == 0
+    assert client.calls == 2
+
+
+def test_a_non_citizen_call_with_the_same_prompt_does_cache(tmp_path: Path) -> None:
+    """Anti-vacuity: the bypass in the prior test is scoped to `Role.CITIZEN`, not a
+    disk-cache regression that would make every role miss."""
+    client = LLMClient(
+        backend=MockBackend(), run_seed=1, cache=DiskCache(tmp_path), cache_enabled=True
+    )
+    system = "[[ROLE:theorist]]\nyou are a theorist"
+    prompt = "what do you think?"
+
+    client.complete(role=Role.THEORIST, system=system, prompt=prompt, cacheable=True)
+    client.complete(role=Role.THEORIST, system=system, prompt=prompt, cacheable=True)
+
+    assert client.cache_hits == 1
+
+
+# ---------------------------------------------------------------------------
+# The prompt-build-time guard (ADR 0009). This is the same `assert_decontextualised`
+# `agents.py` already uses for the President's query, called here in its other
+# direction: guarding what is about to be *sent* to the citizen.
+# ---------------------------------------------------------------------------
+
+
+def test_a_planted_forbidden_token_makes_the_citizen_call_raise() -> None:
+    """A leak that is quietly cleaned up is a leak nobody finds out about — this proves
+    the guard actually raises `BoundaryViolation` rather than silently passing, by
+    planting a token the built prompt is guaranteed to carry (the citizen's own region,
+    which `build_citizen_identity_prompt` always renders)."""
+    citizen = Citizen(**_citizen(region="northeast"))
+    panelist = CitizenPanelist(LLMClient(backend=MockBackend(), run_seed=1), citizen)
+    statement = PublicStatement(action=ActionType.NO_ACTION, justification="MOCK:")
+
+    with pytest.raises(BoundaryViolation, match="citizen"):
+        panelist.respond([], statement, forbidden_tokens=["northeast"])
+
+
+def test_with_no_forbidden_token_planted_the_same_call_succeeds() -> None:
+    """Anti-vacuity: the guard is not simply raising unconditionally."""
+    citizen = Citizen(**_citizen(region="northeast"))
+    panelist = CitizenPanelist(LLMClient(backend=MockBackend(), run_seed=1), citizen)
+    statement = PublicStatement(action=ActionType.NO_ACTION, justification="MOCK:")
+
+    response = panelist.respond([], statement, forbidden_tokens=["some_other_theorist"])
+    assert response.citizen_id == "c001"
