@@ -85,7 +85,7 @@ specified behaviour and stays visible in the routing record.
 
 ## Roles and the loop
 
-Seven call sites, enumerated in `llm.Role`, each stamping a `[[ROLE:...]]` marker into its
+Eleven call sites, enumerated in `llm.Role`, each stamping a `[[ROLE:...]]` marker into its
 own system prompt. The marker is what lets the mock backend route and what lets the
 access-matrix tests scan by role.
 
@@ -99,8 +99,16 @@ scenario events → WorldLog
   → advisor_selection        → RoutingRecord per question (roster shown, reasons recorded)
   → theorist × k_per_question → TheoristOpinion + citation verification
   → advisor_synthesis        → AdvisorBrief
+  → advisor_coas             → CourseOfAction × 3               (ADR 0006)
+  → president_lean           → the secret prior, HOST-ONLY      (ADR 0008)
+  [if convene_excomm] → excomm_member × roster × round, president_chair × round
+                                                                 (ADR 0008)
   → president_decision       → PresidentialAction (one ActionType, deterministic rung)
 ```
+
+The bracketed stage is the deliberation: gated entirely inside the `consult_panel` path (see
+`sim.py`'s single arm conditional), it never runs on `escalation_prior`, and its transcript —
+not the lean above it — is what `president_decision` sees when it runs.
 
 Defaults are `n_questions: 3` and `k_per_question: 4`, so up to twelve opinion slots are
 drawn from a fifteen-persona panel.
@@ -118,6 +126,17 @@ model-free alternative and exists as the `tag_routing` arm. `RoutingRecord` keep
 mostly by top-up — nobody judged those personas relevant — is visible in the record rather
 than inferred. Ids the Advisor names that were not on the roster land in `hallucinated`,
 dropped rather than honoured; the rate is a finding about how reliably a model routes.
+
+**The ExComm deliberation is a second panel, not the theorist panel again (ADR 0008).**
+Where the theorist panel is decontextualised and independent by construction, the ExComm is
+briefed on the (anonymised) situation and debates it in the open — the two panels sit on
+opposite sides of the access matrix on purpose, and `docs/framework/access-matrix.md` argues
+why that is not a contradiction. Before it convenes, the President's prior over the three
+courses is recorded and then withheld from the simulation entirely, including its own later
+decision prompt — `RunRecord.secret_lean` is host-only in exactly the sense
+`host_ground_truth` is. The measurable this produces is `rung(action) - rung(secret_lean)`
+per replication, read as `excomm_debate`'s mean shift against `baseline`'s no-debate noise
+floor — see `docs/framework/measurement.md`.
 
 ## Type-level enforcement of the host boundary
 
@@ -206,9 +225,12 @@ purpose.
 
 **Phase 1 (current).** One nation, one injected event, one closed loop, Monte Carlo over
 seeds. Corpus retrieval is in place: every persona retrieves from a committed claim index
-over project-written summaries of its publications (ADR 0007). What remains is calibrating
-the claim-match thresholds against a live sweep, reconciling `RUNG` with a published ladder,
-and reasoning-theme coding — see `docs/prompts/improvements-log.md`.
+over project-written summaries of its publications (ADR 0007). A deliberative ExComm can sit
+between the courses of action and the decision, with the President's prior recorded before
+it convenes (ADR 0008). What remains is calibrating the claim-match thresholds against a
+live sweep, reconciling `RUNG` with a published ladder, reasoning-theme coding, and — for the
+ExComm specifically — a corpus deep enough for a disposition-ablation arm and President-driven
+turn-taking rather than round-robin — see `docs/prompts/improvements-log.md`.
 
 **Phase 2.** Multiple nations signalling, asymmetric perception filters, reciprocity and
 arms-race metrics measured against the phase 1 single-nation baseline.

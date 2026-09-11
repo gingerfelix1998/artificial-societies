@@ -285,3 +285,24 @@ publishable and should be said rather than buried.
 Zenodo's GitHub integration mints a DOI at a specific date. Given that the methodology is the
 asset and a licence does not protect methods, a timestamped citable record is the thing that
 actually establishes priority.
+
+### 21. ExComm follow-ups (ADR 0008)
+
+**Now.** The deliberation mechanism landed: the President records a secret lean, an
+anonymised 1962-shaped committee debates the three courses round-robin with abstention, the
+President chairs within a hard cap, and `mean_lean_shift` reads `excomm_debate` against
+`baseline`'s no-debate noise floor.
+
+**What remains, in rough order of value.**
+
+- **Separate the prompt-length confound from the content effect.** `excomm_debate`'s
+  decision prompt is longer than `baseline`'s before it differs in content. A length-matched
+  padding arm would isolate how much of any measured shift is length rather than argument.
+- **President-driven turn-taking.** The committee is round-robin; the real ExComm was chaired
+  actively, with the President calling on specific members. Whether that changes which
+  arguments surface — and whether it changes the shift — is untested.
+- **A disposition-ablation arm**, in the spirit of `loo_*`: remove one seat's disposition
+  (replace it with a neutral one) and measure whether the committee's aggregate lean-shift
+  moves, the causal-attribution pattern the theorist panel already has.
+- **Live calibration of `deliberation_max_rounds` and the roster size**, which are reasoned
+  from cost rather than measured against when additional rounds stop changing the outcome.

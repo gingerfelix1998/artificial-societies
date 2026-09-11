@@ -157,6 +157,15 @@ not — is confounded and is not used here. Any influence figure must state whic
 - `schema.RUNG` has not been validated against a published escalation ladder.
 - Reasoning-theme coding does not exist.
 - Arm contrasts have no confidence intervals and no multiple-comparisons correction.
+- **ExComm members are 1962-shaped, not the historical individuals** (ADR 0008): a
+  disposition profile and a hand-authored belief system per institutional seat, no real
+  name in `data/excomm/registry.yaml` or in any prompt. `docs/excomm/roster-key.md` maps
+  seats to the real figures for maintainers; it is documentation, not evidence, and nothing
+  in the code path reads it.
+- `mean_lean_shift`'s absolute value is not a finding, the same way an absolute rung is
+  not — read `excomm_debate` against `baseline`'s no-debate noise floor. The two arms'
+  decision prompts also differ in length before they differ in content, which is an
+  unseparated confound (`docs/framework/measurement.md`).
 
 Never report a run as grounded in more than what actually served it: `StubRetriever` is
 never grounded at all, and `grounded: true` alone does not say whether the text was a
@@ -193,7 +202,8 @@ false or unsupportable.
 |---|---|
 | Message types, action space, rungs, records | `src/artsoc/schema.py` |
 | Role prompts and context boundaries | `src/artsoc/agents.py` |
-| Persona construction M1–M3, tag vocabulary, routing | `src/artsoc/personas.py` |
+| Persona construction M1–M3, tag vocabulary, routing, the ExComm roster | `src/artsoc/personas.py` |
+| The ExComm roster's real-person mapping (never read by code) | `docs/excomm/roster-key.md` |
 | Retrieval interface and the grounded boundary | `src/artsoc/retrieval.py` |
 | Corpus building, chunking, the claim index | `src/artsoc/ingest.py` |
 | The committed source of record, and what may go in it | `data/corpora-src/README.md` |

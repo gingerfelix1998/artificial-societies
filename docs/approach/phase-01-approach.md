@@ -97,13 +97,14 @@ src/artsoc/
   schema.py            typed messages, closed action space, deterministic rungs
   world.py             append-only world log, perception filter
   llm.py               single model choke point: mock + live backends, disk cache
-  personas.py          persona construction M1/M2/M3, tag vocabulary, routing
+  personas.py          persona construction M1/M2/M3, tag vocabulary, routing, ExComm roster
   ingest.py            corpus building: markdown chunking + claim index (ADR 0007)
   retrieval.py         M2 grounding: CorpusRetriever (claim index) and StubRetriever
-  agents.py            the four roles and their enforced context boundaries
+  agents.py            the roles and their enforced context boundaries, incl. the ExComm
+                       deliberation and the secret lean (ADR 0008)
   sim.py               orchestration loop, RunConfig, ablation switches
   narrative.py         model-written run/session summaries (never feed the rung)
-  metrics.py           outcome distributions, coverage, citation integrity
+  metrics.py           outcome distributions, coverage, citation integrity, lean->decision
   views.py             derived views the frontend consumes, all tested here
   session.py           sessions, cost gate, provenance flags
   api.py               local read-only API (optional `api` extra)
@@ -113,12 +114,13 @@ tests/
   test_invariants.py      rungs, routing coverage, perception, configs, end-to-end
   test_markdown_corpus.py claim index: parsing, chunking, retrieval, citations
   test_retrieval.py       Wikipedia ingest + passage retrieval + belief fallback
+  test_excomm.py          the ExComm roster: model, loader, identity prompt
 out/                   run outputs, gitignored
 ```
 
 ## Status
 
-`make test`: 448 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
+`make test`: 478 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
 store, by design). `make lint`: clean. `frontend` `tsc`: clean.
 
 **The loop runs end to end, on real retrieval.** `artsoc run`, `artsoc analyse`, `artsoc
@@ -128,13 +130,17 @@ API key; a live sweep is opted into via `configs/base.yaml`.
 Built: the full scaffold (`schema.py`, `world.py`, `llm.py` with mock + live backends,
 `personas.py`, `agents.py`, `sim.py`, `metrics.py`, `config.py` and the arms in
 `configs/arms/`); courses of action (ADR 0006); the localhost viewer (`views.py`,
-`session.py`, `api.py`, `narrative.py`, `frontend/`); and corpus retrieval — every persona
+`session.py`, `api.py`, `narrative.py`, `frontend/`); corpus retrieval — every persona
 retrieves from a committed claim index over project-written summaries of its publications
-(`ingest.py`, `retrieval.CorpusRetriever`, ADR 0007). Role context boundaries are enforced
-by `tests/test_access_matrix.py`, validated by deliberately breaking four boundaries and
-confirming each was caught. The end-to-end citation path — a claim in an `.md` file through
-retrieval, the theorist's citation, `verify_citations`, the record, and the analyst-facing
-`resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
+(`ingest.py`, `retrieval.CorpusRetriever`, ADR 0007); and the ExComm deliberation — an
+anonymised, 1962-shaped committee debates the three courses of action before the President
+decides, whose prior over them is recorded and never re-prompted
+(`data/excomm/registry.yaml`, `agents.ExCommMember`, `sim._deliberate`, ADR 0008). Role
+context boundaries are enforced by `tests/test_access_matrix.py`, validated by deliberately
+breaking four boundaries and confirming each was caught, plus a deliberate *inverted*
+assertion for the one role permitted peer visibility. The end-to-end citation path — a claim
+in an `.md` file through retrieval, the theorist's citation, `verify_citations`, the record,
+and the analyst-facing `resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
 
 **A running loop is not a finished phase 1.** The project must not be described as producing
 grounded *results* until it has:
@@ -148,6 +154,8 @@ grounded *results* until it has:
   nothing.
 - `schema.RUNG` reconciled with a published escalation ladder.
 - Reasoning themes with a hand-coded agreement sample.
+- `mean_lean_shift`'s prompt-length confound (`excomm_debate`'s decision prompt carries the
+  transcript; `baseline`'s does not) separated from a content effect.
 - Every arm run at n≥100 with a live backend, written up as a distribution and a delta,
   limitations section first.
 

@@ -52,6 +52,36 @@ apparatus changed — is attributable to the thing this project builds.
 `delta(arm, control)` computes it; `Delta` is documented as the only interpretable quantity
 in the module.
 
+## A second interpretable quantity: lean → decision (ADR 0008)
+
+`Delta` compares two arms. `mean_lean_shift` compares two moments of *the same*
+replication: `RunRecord.secret_lean`, the President's prior over the three courses of action
+recorded before the ExComm convenes, against `RunRecord.rung`, where the decision actually
+landed, both scored through `rung_for` (invariant 2 — the primary metric is never a free-text
+judgement). It is the first within-replication contrast in the project; every other
+diagnostic here compares across replications or across arms.
+
+**The absolute number is not a finding, for the same reason absolute rung distributions are
+not.** A President that moves off its prior on `baseline` — where no debate ran — is not
+evidence of deliberation; it is the decision call's own instability, since the lean and the
+decision are two independent calls over the same inputs. That instability is the noise floor,
+and it is why the lean is recorded on `baseline` as well as `excomm_debate` rather than only
+where a debate actually happens.
+
+**The interpretable quantity is `excomm_debate.mean_lean_shift − baseline.mean_lean_shift`.**
+Read together with `p_moved` (the share of replications where the decision differs from the
+lean at all) and `mean_deliberation_rounds` / `abstention_rate` (whether the debate that
+produced the shift was substantive or nominal — a near-zero abstention rate is a committee
+performing participation, the same reading `metrics._warnings` already gives a near-zero
+out-of-record rate).
+
+**Two confounds to hold in view.** First, the Rivera confound applies here exactly as it does
+to the rung: an off-the-shelf model's tendency to move under social pressure in a wargame
+setting is not evidence about the underlying phenomenon. Second, `excomm_debate`'s decision
+prompt is strictly longer than `baseline`'s — it carries the transcript — so some of any
+measured shift is a prompt-length effect rather than a content effect, and the two are not
+currently separated.
+
 ## Diagnostics that gate interpretation
 
 Three diagnostics decide whether a distribution may be read at all. `_warnings` raises them
@@ -184,3 +214,10 @@ In rough order of value:
 5. Implement reasoning-theme coding with a validated agreement sample.
 6. Probe for parametric leakage directly: ask period-restricted personas about post-cutoff
    concepts and measure how often they answer anyway.
+7. Separate the ExComm's prompt-length confound from its content effect (ADR 0008) — run an
+   arm where the decision prompt is padded to the debate's length with inert text, so
+   `excomm_debate`'s lean-shift can be read against a length-matched noise floor rather than
+   only `baseline`'s.
+8. Replace round-robin turn-taking with a President-driven chair that calls on specific
+   members, closer to how the 1962 ExComm actually ran, and measure whether it changes which
+   arguments surface.
