@@ -9,9 +9,15 @@ committed frame, and the sampler.
 
 from __future__ import annotations
 
+import ast
+import random
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
+import artsoc.society as society_module
 from artsoc.schema import (
     ActionType,
     AudienceRecord,
@@ -25,6 +31,7 @@ from artsoc.schema import (
     RunRecord,
     public_statement_from,
 )
+from artsoc.society import Frame, load_frame, sample_citizens
 
 
 def _minimal_record() -> RunRecord:
@@ -150,3 +157,170 @@ def test_a_pre_1_4_0_record_with_no_audience_field_round_trips() -> None:
     payload.pop("audience", None)
     restored = RunRecord.model_validate(payload)
     assert restored.audience is None
+
+
+# ---------------------------------------------------------------------------
+# society.py: no artsoc.llm import
+# ---------------------------------------------------------------------------
+
+
+def test_society_imports_nothing_from_artsoc_llm() -> None:
+    """Same rule as `personas.py`: sampling produces prompt text and stratum data, and
+    only `agents.py` sends anything anywhere. Checked against the actual import
+    statements, not the prose, since the module's own docstring names `artsoc.llm` while
+    explaining the rule."""
+    tree = ast.parse(Path(society_module.__file__).read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert not any(name.startswith("artsoc.llm") or name == "artsoc.llm" for name in imported)
+
+
+# ---------------------------------------------------------------------------
+# The committed frame
+# ---------------------------------------------------------------------------
+
+
+def test_the_committed_frame_loads_and_every_dimension_sums_to_one() -> None:
+    frame = load_frame("us_1962")
+    assert set(frame.dimensions) == {
+        "region",
+        "urbanicity",
+        "age_band",
+        "sex",
+        "education",
+        "party_id",
+    }
+    for name, categories in frame.dimensions.items():
+        assert abs(sum(categories.values()) - 1.0) < 1e-6, name
+
+
+def test_the_committed_frame_carries_a_held_out_validation_dimension() -> None:
+    frame = load_frame("us_1962")
+    assert "party_id" in frame.validation_dimensions
+    # Held out from construction: a different year's wave, not the construction figure.
+    assert frame.validation_dimensions["party_id"] != frame.dimensions["party_id"]
+
+
+def test_load_frame_raises_on_a_missing_frame(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="no sampling frame"):
+        load_frame("does_not_exist", root=tmp_path)
+
+
+def test_load_frame_raises_when_a_dimension_has_no_matching_citizen_field(
+    tmp_path: Path,
+) -> None:
+    """A `Citizen` field with no marginal is not a persona attribute, and a marginal with
+    no `Citizen` field is dead data — both directions must fail loudly."""
+    frame_dir = tmp_path / "broken"
+    frame_dir.mkdir()
+    (frame_dir / "strata.yaml").write_text(
+        yaml.dump(
+            {
+                "dimensions": {
+                    "region": {"categories": {"north": 0.5, "south": 0.5}},
+                    "favourite_colour": {"categories": {"blue": 1.0}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="drifted"):
+        load_frame("broken", root=tmp_path)
+
+
+def test_load_frame_raises_when_a_dimension_does_not_sum_to_one(tmp_path: Path) -> None:
+    frame_dir = tmp_path / "unbalanced"
+    frame_dir.mkdir()
+    dims = {
+        "region": {"categories": {"a": 0.4, "b": 0.4}},
+        "urbanicity": {"categories": {"urban": 0.7, "rural": 0.3}},
+        "age_band": {"categories": {"young": 0.5, "old": 0.5}},
+        "sex": {"categories": {"female": 0.5, "male": 0.5}},
+        "education": {"categories": {"some": 1.0}},
+        "party_id": {"categories": {"a": 1.0}},
+    }
+    (frame_dir / "strata.yaml").write_text(
+        yaml.dump({"dimensions": dims}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="sums to"):
+        load_frame("unbalanced", root=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The sampler
+# ---------------------------------------------------------------------------
+
+
+def test_sample_citizens_is_deterministic_given_the_same_rng_seed() -> None:
+    frame = load_frame("us_1962")
+    first = sample_citizens(frame, 70, random.Random(11))
+    second = sample_citizens(frame, 70, random.Random(11))
+    assert [c.model_dump() for c in first.citizens] == [c.model_dump() for c in second.citizens]
+
+
+def test_sample_citizens_returns_exactly_n_citizens_with_unique_ids() -> None:
+    frame = load_frame("us_1962")
+    sample = sample_citizens(frame, 70, random.Random(3))
+    assert len(sample.citizens) == 70
+    ids = {c.citizen_id for c in sample.citizens}
+    assert len(ids) == 70
+
+
+def test_weights_are_positive_and_sum_to_n() -> None:
+    frame = load_frame("us_1962")
+    sample = sample_citizens(frame, 70, random.Random(5))
+    weights = [c.weight for c in sample.citizens]
+    assert all(w > 0 for w in weights)
+    assert abs(sum(weights) - 70) < 1e-6
+
+
+@pytest.mark.parametrize(
+    "dimension", ["region", "urbanicity", "age_band", "sex", "education", "party_id"]
+)
+def test_the_weighted_distribution_recovers_the_target_marginal(dimension: str) -> None:
+    """Raking is what the sampler is for: the raw draw is noisy at n=70, but the *weighted*
+    read must land close to the target — this is the property `AudienceRecord.
+    weighted_approval` depends on being true."""
+    frame = load_frame("us_1962")
+    sample = sample_citizens(frame, 70, random.Random(42))
+    total_weight = sum(c.weight for c in sample.citizens)
+    weighted_share: dict[str, float] = {}
+    for citizen in sample.citizens:
+        category = getattr(citizen, dimension)
+        weighted_share[category] = weighted_share.get(category, 0.0) + citizen.weight
+    weighted_share = {k: v / total_weight for k, v in weighted_share.items()}
+    for category, target in frame.dimensions[dimension].items():
+        assert abs(weighted_share.get(category, 0.0) - target) < 0.01, (
+            dimension,
+            category,
+        )
+
+
+def test_stratum_coverage_is_reported_per_dimension() -> None:
+    frame = load_frame("us_1962")
+    sample = sample_citizens(frame, 70, random.Random(9))
+    assert set(sample.stratum_coverage) == set(frame.dimensions)
+    for ratio in sample.stratum_coverage.values():
+        assert 0.0 <= ratio <= 1.0 + 1e-9
+
+
+def test_raking_still_terminates_on_a_near_unreachable_target() -> None:
+    """A dimension with a near-zero-probability category (small n makes it plausible the
+    raw draw never lands on it) must not hang or divide by zero — the iteration cap and
+    the `achieved_share > 0` guard in `_rake` bound it."""
+    dimensions = {
+        "region": {"common": 0.999999, "rare": 0.000001},
+        "urbanicity": {"urban": 0.5, "rural": 0.5},
+        "age_band": {"young": 0.5, "old": 0.5},
+        "sex": {"female": 0.5, "male": 0.5},
+        "education": {"some": 0.5, "none": 0.5},
+        "party_id": {"a": 0.5, "b": 0.5},
+    }
+    frame = Frame(name="degenerate", dimensions=dimensions, validation_dimensions={})
+    sample = sample_citizens(frame, 5, random.Random(1))
+    assert len(sample.citizens) == 5
+    assert all(c.weight > 0 for c in sample.citizens)
