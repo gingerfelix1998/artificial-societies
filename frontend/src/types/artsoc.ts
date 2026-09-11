@@ -114,6 +114,17 @@ export interface ArmSummary {
   models?: {
     [k: string]: string
   }
+  n_with_audience?: number
+  weighted_approval?: {
+    [k: string]: number
+  }
+  unweighted_approval?: {
+    [k: string]: number
+  }
+  mean_response_rate?: number
+  mean_leakage_rate?: number
+  mean_no_opinion_rate?: number
+  stratum_coverage_floor?: number
   warnings?: string[]
 }
 
@@ -202,6 +213,7 @@ export interface Delta {
   control: string
   d_mean_rung: number
   d_p_nuclear: number
+  d_approval?: number | null
 }
 
 /**
@@ -643,6 +655,30 @@ export interface ProvenanceLink {
  * The closed set of actions available to the President.
  */
 
+export type Approval = 'strongly_approve' | 'approve' | 'no_opinion' | 'disapprove' | 'strongly_disapprove'
+/**
+ * What a citizen's response was mainly about (ADR 0009). Closed for the same reason
+ * `Approval` is: a free-text field is never scored, so what gets counted must be typed.
+ */
+
+export type PrimaryConcern =
+  | 'national_security'
+  | 'economic_impact'
+  | 'family_safety'
+  | 'moral_or_religious'
+  | 'international_standing'
+  | 'government_trust'
+  | 'other'
+  | 'none'
+
+/**
+ * One record chosen to illustrate an arm, plus the rule that chose it.
+ *
+ * **Not a result.** One replication reaching a nuclear rung is an anecdote; the
+ * distribution over replications is the finding. `selection_note` exists so a viewer can
+ * see why this record and not another, and must be rendered with it.
+ */
+
 export interface RepresentativeRun {
   record: RunRecord
   selection_note: string
@@ -704,6 +740,7 @@ export interface RunRecord {
   deliberation_rounds?: number
   panel_size?: number
   personas_consulted?: string[]
+  audience?: AudienceRecord | null
   llm_calls?: number
   cache_hits?: number
   retries?: number
@@ -780,6 +817,91 @@ export interface ExCommStatement {
   abstained?: boolean
   statement?: string
   favoured_coa_id?: string | null
+}
+/**
+ * The sampled panel and its reaction, for one replication (ADR 0009).
+ *
+ * An outcome measure, not an input: nothing here is read back into any earlier stage of
+ * the same replication. `target_marginals` and `achieved_marginals` are both carried so
+ * a reviewer can see the gap the raking weights are correcting for without recomputing
+ * it from `citizens`.
+ */
+
+export interface AudienceRecord {
+  frame: string
+  sample_seed: number
+  citizens?: Citizen[]
+  responses?: CitizenResponse[]
+  failures?: CitizenFailure[]
+  target_marginals?: {
+    [k: string]: {
+      [k: string]: number
+    }
+  }
+  achieved_marginals?: {
+    [k: string]: {
+      [k: string]: number
+    }
+  }
+  weighted_approval?: {
+    [k: string]: number
+  }
+  unweighted_approval?: {
+    [k: string]: number
+  }
+  response_rate?: number
+  leakage_rate?: number
+  no_opinion_rate?: number
+  stratum_coverage?: {
+    [k: string]: number
+  }
+  validation_distance?: {
+    [k: string]: number
+  }
+}
+/**
+ * One sampled member of the public (ADR 0009). Stratum attributes only.
+ *
+ * No name, no invented biography, no theorist-style `prominence`. Every field here has
+ * a marginal in the committed frame (`data/society/<frame>/strata.yaml`) — an attribute
+ * with no marginal is not on this type, checked at load time by `society.load_frame`.
+ */
+
+export interface Citizen {
+  citizen_id: string
+  region: string
+  urbanicity: string
+  age_band: string
+  sex: string
+  education: string
+  party_id: string
+  weight: number
+}
+/**
+ * One citizen's reaction to the published `PublicStatement` (ADR 0009).
+ *
+ * `approval` is always set; `refused=True` marks a response the backend declined to
+ * produce in character (a structural refusal), distinct from a citizen's own genuine
+ * `Approval.NO_OPINION` stance. `rationale` is qualitative and is never scored — nothing
+ * reads it into `approval` or `primary_concern`, which are both typed and closed.
+ */
+
+export interface CitizenResponse {
+  citizen_id: string
+  approval: Approval
+  primary_concern: PrimaryConcern
+  rationale?: string
+  refused?: boolean
+}
+/**
+ * A citizen call that could not produce a response at all (ADR 0009). Recorded, not
+ * dropped silently — a crash that quietly drops a stratum is a biased sample, and a
+ * refusal is data while a crash is not the same thing.
+ */
+
+export interface CitizenFailure {
+  citizen_id: string
+  reason: string
 }
 
 /**
@@ -875,6 +997,9 @@ export interface RunFacts {
   deliberation_rounds?: number
   n_deliberation_statements?: number
   n_abstentions?: number
+  audience_n?: number
+  audience_response_rate?: number
+  audience_approve_share?: number
 }
 /**
  * A stored three-sentence summary, tied to the run it describes.
@@ -922,6 +1047,10 @@ export interface RunConfig {
   deliberation_max_rounds?: number
   excomm_size?: number
   excluded_personas?: string[]
+  audience_enabled?: boolean
+  audience_size?: number
+  audience_frame?: string
+  audience_method?: string
   notes?: string
 }
 

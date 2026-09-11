@@ -20,6 +20,7 @@ from pydantic import ValidationError
 import artsoc.society as society_module
 from artsoc.agents import BoundaryViolation, CitizenPanelist
 from artsoc.llm import DiskCache, LLMClient, MockBackend, Role
+from artsoc.metrics import ArmSummary, audience_by_stratum, delta, summarise
 from artsoc.schema import (
     ActionType,
     AudienceRecord,
@@ -394,3 +395,100 @@ def test_with_no_forbidden_token_planted_the_same_call_succeeds() -> None:
 
     response = panelist.respond([], statement, forbidden_tokens=["some_other_theorist"])
     assert response.citizen_id == "c001"
+
+
+# ---------------------------------------------------------------------------
+# Metrics (ADR 0009)
+# ---------------------------------------------------------------------------
+
+
+def _audience_record(
+    weighted_approval: dict[str, float],
+    *,
+    response_rate: float = 1.0,
+    leakage_rate: float = 0.0,
+    no_opinion_rate: float = 0.0,
+    citizens: list[Citizen] | None = None,
+    responses: list[CitizenResponse] | None = None,
+) -> AudienceRecord:
+    return AudienceRecord(
+        frame="us_1962",
+        sample_seed=1,
+        citizens=citizens or [],
+        responses=responses or [],
+        weighted_approval=weighted_approval,
+        unweighted_approval=weighted_approval,
+        response_rate=response_rate,
+        leakage_rate=leakage_rate,
+        no_opinion_rate=no_opinion_rate,
+        stratum_coverage={"region": 1.0},
+    )
+
+
+def _record_with_audience(**kwargs) -> RunRecord:
+    return _minimal_record().model_copy(update={"audience": _audience_record(**kwargs)})
+
+
+def test_summarise_averages_audience_fields_across_records() -> None:
+    r1 = _record_with_audience(
+        weighted_approval={"approve": 0.6, "no_opinion": 0.4}, response_rate=1.0
+    )
+    r2 = _record_with_audience(
+        weighted_approval={"approve": 0.4, "disapprove": 0.6}, response_rate=0.8
+    )
+    summary = summarise([r1, r2])
+    assert summary.n_with_audience == 2
+    assert summary.weighted_approval["approve"] == round((0.6 + 0.4) / 2, 4)
+    assert summary.mean_response_rate == round((1.0 + 0.8) / 2, 4)
+
+
+def test_summarise_reports_zero_audience_for_records_with_none() -> None:
+    summary = summarise([_minimal_record()])
+    assert summary.n_with_audience == 0
+    assert summary.weighted_approval == {}
+    assert summary.mean_response_rate == 0.0
+
+
+def _bare_summary(arm: str, weighted_approval: dict[str, float]) -> ArmSummary:
+    return ArmSummary(
+        arm=arm, n=1, rung_distribution={}, mean_rung=0.0, median_rung=0.0, p_nuclear=0.0,
+        declared_panel_size=0, distinct_personas=0, mean_run_coverage=0.0, n_opinions=0,
+        out_of_record_rate=0.0, n_citations=0, n_unsupported=0, citation_integrity=1.0,
+        backend="mock", grounded=False, cache_enabled=True, retrieval_mode="stub",
+        consulted_panel=False, persona_method="m2", weighted_approval=weighted_approval,
+    )
+
+
+def test_d_approval_is_the_weighted_approve_share_difference() -> None:
+    arm = _bare_summary("audience_d1", {"approve": 0.6, "strongly_approve": 0.1})
+    control = _bare_summary("escalation_prior", {"approve": 0.3})
+    d = delta(arm, control)
+    assert d.d_approval == round(0.7 - 0.3, 4)
+
+
+def test_d_approval_is_none_unless_both_arms_recorded_an_audience() -> None:
+    arm = _bare_summary("audience_d1", {"approve": 0.6})
+    control = _bare_summary("escalation_prior", {})
+    d = delta(arm, control)
+    assert d.d_approval is None
+    assert d.d_mean_rung == 0.0  # anti-vacuity: the rest of the delta still computes
+
+
+def test_audience_by_stratum_breaks_down_weighted_approval_by_category() -> None:
+    approver = Citizen(**_citizen(citizen_id="c1", region="northeast", weight=1.0))
+    disapprover = Citizen(**_citizen(citizen_id="c2", region="south", weight=1.0))
+    record = _record_with_audience(
+        weighted_approval={},
+        citizens=[approver, disapprover],
+        responses=[
+            CitizenResponse(
+                citizen_id="c1", approval="approve", primary_concern="none"
+            ),
+            CitizenResponse(
+                citizen_id="c2", approval="disapprove", primary_concern="none"
+            ),
+        ],
+    )
+    breakdown = audience_by_stratum([record])
+    assert breakdown["region:northeast"] == 1.0
+    assert breakdown["region:south"] == 0.0

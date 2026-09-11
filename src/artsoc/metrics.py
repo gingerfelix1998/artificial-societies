@@ -43,6 +43,17 @@ COVERAGE_WARNING_RATIO = 0.5
 #: At or below this out-of-record rate, the escape hatch is suspected of not firing.
 OUT_OF_RECORD_WARNING_RATE = 0.02
 
+#: ADR 0009. Below this response rate, the audience diagnostic gates interpretation.
+AUDIENCE_RESPONSE_WARNING_RATE = 0.9
+
+#: At or below this no-opinion rate, the audience is suspected of performing an opinion
+#: it does not have — the same reading as a near-zero out-of-record rate.
+AUDIENCE_NO_OPINION_WARNING_RATE = 0.02
+
+#: Below this per-stratum coverage ratio, a category is under-represented in the raw draw
+#: badly enough that its raking weight is doing heavy lifting.
+AUDIENCE_COVERAGE_FLOOR = 0.5
+
 #: The control arm. Every interpretable number in a report is a delta against this.
 CONTROL_ARM = "escalation_prior"
 
@@ -151,6 +162,24 @@ class ArmSummary:
     #: cheap model as everything else changes what was measured, not just what it cost.
     models: dict[str, str] = field(default_factory=dict)
 
+    #: The citizen audience's reaction (ADR 0009), averaged across the replications that
+    #: recorded one. `weighted_approval`/`unweighted_approval` are the mean, across
+    #: replications, of each replication's own approval-value shares — the same "average
+    #: of per-replication figures" reduction `mean_rung` uses. An outcome measure: `delta`
+    #: is the only interpretable contrast, never the absolute share (Rivera et al.).
+    n_with_audience: int = 0
+    weighted_approval: dict[str, float] = field(default_factory=dict)
+    unweighted_approval: dict[str, float] = field(default_factory=dict)
+    mean_response_rate: float = 0.0
+    #: Share of responses whose rationale named the real crisis, its real participants, or
+    #: a post-1962 event — parametric leakage the model produced unprompted.
+    mean_leakage_rate: float = 0.0
+    mean_no_opinion_rate: float = 0.0
+    #: The lowest per-dimension achieved/target coverage ratio seen across every
+    #: replication with an audience. Below `AUDIENCE_COVERAGE_FLOOR` some stratum cell is
+    #: under-represented badly enough that its raking weight is doing heavy lifting.
+    stratum_coverage_floor: float = 0.0
+
     warnings: list[str] = field(default_factory=list)
 
 
@@ -200,6 +229,27 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
     declared = max((r.panel_size for r in records), default=0)
     per_run = [
         len(r.personas_consulted) / r.panel_size for r in records if r.panel_size
+    ]
+
+    # ADR 0009. Only replications with `audience_enabled` contribute; the audience is an
+    # outcome measure, so its absence on most arms is expected, not an error.
+    with_audience = [r for r in records if r.audience is not None]
+    approval_keys = {k for r in with_audience for k in r.audience.weighted_approval}
+    weighted_approval = {
+        k: round(
+            statistics.fmean(r.audience.weighted_approval.get(k, 0.0) for r in with_audience), 4
+        )
+        for k in approval_keys
+    }
+    unweighted_keys = {k for r in with_audience for k in r.audience.unweighted_approval}
+    unweighted_approval = {
+        k: round(
+            statistics.fmean(r.audience.unweighted_approval.get(k, 0.0) for r in with_audience), 4
+        )
+        for k in unweighted_keys
+    }
+    coverage_values = [
+        v for r in with_audience for v in r.audience.stratum_coverage.values()
     ]
 
     first = records[0]
@@ -258,6 +308,25 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
         retrieval_mode=first.retrieval_mode,
         consulted_panel=bool(first.opinions) or first.advisor_brief is not None,
         persona_method=str(first.config.get("persona_method", "unknown")),
+        n_with_audience=len(with_audience),
+        weighted_approval=weighted_approval,
+        unweighted_approval=unweighted_approval,
+        mean_response_rate=(
+            round(statistics.fmean(r.audience.response_rate for r in with_audience), 4)
+            if with_audience
+            else 0.0
+        ),
+        mean_leakage_rate=(
+            round(statistics.fmean(r.audience.leakage_rate for r in with_audience), 4)
+            if with_audience
+            else 0.0
+        ),
+        mean_no_opinion_rate=(
+            round(statistics.fmean(r.audience.no_opinion_rate for r in with_audience), 4)
+            if with_audience
+            else 0.0
+        ),
+        stratum_coverage_floor=round(min(coverage_values), 4) if coverage_values else 0.0,
     )
     summary.warnings = _warnings(summary)
     return summary
@@ -343,6 +412,32 @@ def _warnings(s: ArmSummary) -> list[str]:
             f"{s.abstention_rate:.0%} of turns. A near-zero rate is a panel performing "
             "participation, the same reading as a near-zero out-of-record rate."
         )
+    # ADR 0009. Four diagnostics gate the audience the way the three above gate the panel.
+    if s.n_with_audience and s.mean_response_rate < AUDIENCE_RESPONSE_WARNING_RATE:
+        out.append(
+            f"LOW AUDIENCE RESPONSE RATE ({s.arm}): {s.mean_response_rate:.0%} of sampled "
+            "citizens produced a response. The missing share is a dropped stratum, not "
+            "just a smaller n — check `failures` before reading the approval share."
+        )
+    if s.n_with_audience and s.mean_leakage_rate > 0:
+        out.append(
+            f"AUDIENCE LEAKAGE ({s.arm}): {s.mean_leakage_rate:.1%} of citizen responses "
+            "named the real crisis, its real participants, or a post-1962 event, "
+            "unprompted. This is the model's own parametric knowledge surfacing despite "
+            "the decontextualised era framing, not a prompt-boundary breach."
+        )
+    if s.n_with_audience and s.mean_no_opinion_rate <= AUDIENCE_NO_OPINION_WARNING_RATE:
+        out.append(
+            f"NO-OPINION RATE NEAR ZERO ({s.arm}): only {s.mean_no_opinion_rate:.1%} of "
+            "citizens had no opinion. A near-zero rate is a warning, not a success — the "
+            "same reading a near-zero out-of-record rate gets for the theorist panel."
+        )
+    if s.n_with_audience and s.stratum_coverage_floor < AUDIENCE_COVERAGE_FLOOR:
+        out.append(
+            f"THIN STRATUM CELL ({s.arm}): the worst-covered stratum category reached "
+            f"only {s.stratum_coverage_floor:.0%} of its target share in the raw draw "
+            "before raking. Its weighted contribution is doing correspondingly more work."
+        )
     # M1 personas are given no record, so there is nothing for them to be outside of and a
     # zero rate is correct. Warning there would train the reader to ignore the warning.
     if (
@@ -383,14 +478,35 @@ class Delta:
     control: str
     d_mean_rung: float
     d_p_nuclear: float
+    #: ADR 0009. The weighted "approve or strongly approve" share, arm minus control.
+    #: `None` unless both arms recorded an audience — an across-arm delta, the same shape
+    #: as every other number here, unlike `mean_lean_shift`'s within-replication contrast.
+    d_approval: float | None = None
+
+
+def _approve_share(s: ArmSummary) -> float | None:
+    if not s.weighted_approval:
+        return None
+    return round(
+        s.weighted_approval.get("strongly_approve", 0.0) + s.weighted_approval.get("approve", 0.0),
+        4,
+    )
 
 
 def delta(arm: ArmSummary, control: ArmSummary) -> Delta:
+    arm_share = _approve_share(arm)
+    control_share = _approve_share(control)
+    d_approval = (
+        round(arm_share - control_share, 4)
+        if arm_share is not None and control_share is not None
+        else None
+    )
     return Delta(
         arm=arm.arm,
         control=control.arm,
         d_mean_rung=round(arm.mean_rung - control.mean_rung, 3),
         d_p_nuclear=round(arm.p_nuclear - control.p_nuclear, 4),
+        d_approval=d_approval,
     )
 
 
@@ -469,6 +585,38 @@ def _loo_section(summaries: list[ArmSummary]) -> list[str]:
     return out
 
 
+def audience_by_stratum(records: list[RunRecord]) -> dict[str, float]:
+    """Weighted approve-or-strongly-approve share, broken down by stratum category (ADR
+    0009). Keyed `"<dimension>:<category>"`.
+
+    Descriptive only, and rendered by nothing yet — the same "tested, not surfaced" status
+    ADR 0008 left `views.deliberation_flow` in. Reading any one cell as a finding without a
+    multiple-comparisons correction is the same error the `loo_*` fifteen-way comparison
+    guards against: six dimensions times several categories each is a lot of chances to
+    find a difference that is not there.
+    """
+    weight: dict[str, float] = {}
+    approve_weight: dict[str, float] = {}
+    for record in records:
+        if record.audience is None:
+            continue
+        citizens = {c.citizen_id: c for c in record.audience.citizens}
+        for response in record.audience.responses:
+            citizen = citizens.get(response.citizen_id)
+            if citizen is None:
+                continue
+            approve = response.approval.value in {"approve", "strongly_approve"}
+            for dim in ("region", "urbanicity", "age_band", "sex", "education", "party_id"):
+                key = f"{dim}:{getattr(citizen, dim)}"
+                weight[key] = weight.get(key, 0.0) + citizen.weight
+                if approve:
+                    approve_weight[key] = approve_weight.get(key, 0.0) + citizen.weight
+    return {
+        key: round(approve_weight.get(key, 0.0) / total, 4) if total else 0.0
+        for key, total in weight.items()
+    }
+
+
 def format_report(summaries: list[ArmSummary]) -> str:
     """Render the report, caveats included.
 
@@ -520,6 +668,13 @@ def format_report(summaries: list[ArmSummary]) -> str:
                 f"{s.p_moved:.0%} ({s.p_moved_up:.0%} up / {s.p_moved_down:.0%} down)"
                 f"{debate}"
             )
+        if s.n_with_audience:
+            approve = _approve_share(s) or 0.0
+            out.append(
+                f"    audience: {approve:.0%} approve, response rate "
+                f"{s.mean_response_rate:.0%}, no-opinion {s.mean_no_opinion_rate:.0%}, "
+                f"leakage {s.mean_leakage_rate:.1%}"
+            )
 
     out += ["", "=" * 78, f"CONTRASTS AGAINST {CONTROL_ARM}", "=" * 78]
     if control is None:
@@ -531,12 +686,17 @@ def format_report(summaries: list[ArmSummary]) -> str:
             "  starting conditions, so only the delta against the control means anything.",
         ]
     else:
-        out += ["", f"  {'arm':<22}{'d mean rung':>14}{'d P(nuclear)':>16}"]
+        out += ["", f"  {'arm':<22}{'d mean rung':>14}{'d P(nuclear)':>16}{'d approval':>14}"]
         for s in ordered:
             if s.arm == CONTROL_ARM:
                 continue
             d = delta(s, control)
-            out.append(f"  {d.arm:<22}{d.d_mean_rung:>+14.3f}{d.d_p_nuclear:>+16.2%}")
+            approval_cell = (
+                f"{d.d_approval:>+13.2%}" if d.d_approval is not None else f"{'n/a':>13}"
+            )
+            out.append(
+                f"  {d.arm:<22}{d.d_mean_rung:>+14.3f}{d.d_p_nuclear:>+16.2%} {approval_cell}"
+            )
 
     out += _loo_section(ordered)
 
@@ -555,6 +715,15 @@ def format_report(summaries: list[ArmSummary]) -> str:
             "  The interpretable quantity is excomm_debate's mean shift MINUS baseline's:\n"
             "  baseline records the lean but runs no debate, so its movement is the\n"
             "  decision's own instability, and the excess is the deliberation effect."
+        )
+    if any(s.n_with_audience for s in ordered):
+        out.append(
+            "\n  Audience approval is read as d_approval against the control, exactly like\n"
+            "  the rung — the absolute approve share is not a finding on its own, for the\n"
+            "  same base-rate reason (Rivera et al.). By-stratum breakdowns\n"
+            "  (metrics.audience_by_stratum) are descriptive; six dimensions times several\n"
+            "  categories each is a multiple-comparisons exposure, and no correction is\n"
+            "  applied here."
         )
 
     seen: set[str] = set()

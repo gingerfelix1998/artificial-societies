@@ -1359,6 +1359,62 @@ def test_a_silent_escape_hatch_is_reported_as_a_warning() -> None:
     assert any("ESCAPE HATCH NOT FIRING" in w for w in metrics_module._warnings(summary))
 
 
+def test_a_low_audience_response_rate_is_reported_as_a_warning() -> None:
+    """A missing share is a dropped stratum, not just a smaller n (ADR 0009)."""
+    summary = summarise([_run("baseline", 1)])
+    summary.n_with_audience = 1
+    summary.mean_response_rate = 0.5
+    assert any("LOW AUDIENCE RESPONSE RATE" in w for w in metrics_module._warnings(summary))
+
+
+def test_any_audience_leakage_is_reported_as_a_warning() -> None:
+    """Unlike the coverage ratio, leakage is flagged on ANY nonzero rate — a single leaked
+    reference is worth surfacing at n=70."""
+    summary = summarise([_run("baseline", 1)])
+    summary.n_with_audience = 1
+    summary.mean_leakage_rate = 0.01
+    assert any("AUDIENCE LEAKAGE" in w for w in metrics_module._warnings(summary))
+    summary.mean_leakage_rate = 0.0
+    assert not any("AUDIENCE LEAKAGE" in w for w in metrics_module._warnings(summary))
+
+
+def test_a_near_zero_audience_no_opinion_rate_is_a_warning_not_a_success() -> None:
+    """The same reading a near-zero out-of-record rate gets for the theorist panel."""
+    summary = summarise([_run("baseline", 1)])
+    summary.n_with_audience = 1
+    summary.mean_no_opinion_rate = 0.0
+    assert any("NO-OPINION RATE NEAR ZERO" in w for w in metrics_module._warnings(summary))
+
+
+def test_a_thin_stratum_cell_is_reported_as_a_warning() -> None:
+    summary = summarise([_run("baseline", 1)])
+    summary.n_with_audience = 1
+    summary.mean_no_opinion_rate = 0.1
+    summary.stratum_coverage_floor = 0.1
+    assert any("THIN STRATUM CELL" in w for w in metrics_module._warnings(summary))
+
+
+def test_a_healthy_audience_reading_produces_none_of_the_four_warnings() -> None:
+    """Anti-vacuity: the four checks are not simply always firing."""
+    summary = summarise([_run("baseline", 1)])
+    summary.n_with_audience = 1
+    summary.mean_response_rate = 0.98
+    summary.mean_leakage_rate = 0.0
+    summary.mean_no_opinion_rate = 0.1
+    summary.stratum_coverage_floor = 0.9
+    warnings = metrics_module._warnings(summary)
+    assert not any(
+        tag in w
+        for w in warnings
+        for tag in (
+            "LOW AUDIENCE RESPONSE RATE",
+            "AUDIENCE LEAKAGE",
+            "NO-OPINION RATE NEAR ZERO",
+            "THIN STRATUM CELL",
+        )
+    )
+
+
 def test_m1_is_not_warned_about_for_a_hatch_it_never_had() -> None:
     """M1 gets no record, so a zero out-of-record rate is correct, not a diagnostic failure.
 

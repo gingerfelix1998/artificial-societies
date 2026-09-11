@@ -1144,6 +1144,12 @@ class RunFacts(_View):
     n_deliberation_statements: int = 0
     n_abstentions: int = 0
 
+    #: ADR 0009. Terse audience facts only — no citizen's `rationale`, which is per-record
+    #: free text and not a fact a header states. `0`/`0.0` when no audience ran.
+    audience_n: int = 0
+    audience_response_rate: float = 0.0
+    audience_approve_share: float = 0.0
+
 
 def run_facts(record: RunRecord) -> RunFacts:
     """Reduce one record to the facts a header can state without interpreting anything.
@@ -1156,6 +1162,14 @@ def run_facts(record: RunRecord) -> RunFacts:
     lean_shift = (
         record.rung - rung_for(record.secret_lean) if record.secret_lean is not None else 0
     )
+    audience = record.audience
+    audience_approve_share = 0.0
+    if audience is not None:
+        audience_approve_share = round(
+            audience.weighted_approval.get("strongly_approve", 0.0)
+            + audience.weighted_approval.get("approve", 0.0),
+            4,
+        )
     return RunFacts(
         action=record.action.action.value,
         rung=record.rung,
@@ -1182,6 +1196,9 @@ def run_facts(record: RunRecord) -> RunFacts:
         deliberation_rounds=record.deliberation_rounds,
         n_deliberation_statements=len(record.deliberation),
         n_abstentions=sum(1 for s in record.deliberation if s.abstained),
+        audience_n=len(audience.citizens) if audience is not None else 0,
+        audience_response_rate=audience.response_rate if audience is not None else 0.0,
+        audience_approve_share=audience_approve_share,
     )
 
 

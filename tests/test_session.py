@@ -169,6 +169,46 @@ def test_the_excomm_debate_arm_estimate_bounds_the_actual_loop() -> None:
     assert actual.llm_calls <= est.calls_per_replication, "the estimate under-bounds the loop"
 
 
+def test_the_audience_d1_arm_estimate_bounds_the_actual_loop() -> None:
+    """The upper bound must be >= what a mock run actually makes (ADR 0009). Also proves
+    the audience call count is added on top of the panel arm's own, not in place of it."""
+    from artsoc.sim import run_once
+
+    config = load_arm("audience_d1")
+    est = estimate_calls(_spec(["audience_d1"], n=1)).arms[0]
+    by_role = {r.role: r.calls for r in est.roles}
+    assert by_role["citizen"] == config.audience_size
+    assert est.calls_per_replication > config.audience_size, (
+        "the estimate must add the citizen calls on top of the panel arm's own"
+    )
+
+    actual = run_once(
+        config.model_copy(update={"backend": "mock", "retrieval_mode": "stub"}),
+        3,
+        use_disk_cache=False,
+    )
+    assert actual.llm_calls <= est.calls_per_replication, "the estimate under-bounds the loop"
+
+
+def test_the_control_arm_estimate_grows_when_the_audience_is_turned_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`audience_enabled` is added unconditionally on `consult_panel`, so it must also
+    show up on the two-call control arm's estimate."""
+    real = session_module.load_arm
+
+    def mocked(name: str, *args: object, **kwargs: object) -> RunConfig:
+        return real(name, *args, **kwargs).model_copy(
+            update={"backend": "mock", "retrieval_mode": "stub", "audience_enabled": True}
+        )
+
+    monkeypatch.setattr(session_module, "load_arm", mocked)
+    audience_size = load_arm(CONTROL_ARM).audience_size
+    estimate = estimate_calls(_spec([CONTROL_ARM], n=1))
+    arm = estimate.arms[0]
+    assert arm.calls_per_replication == 2 + audience_size
+
+
 def test_a_smaller_panel_arm_estimates_the_same_calls_as_baseline() -> None:
     """Panel size changes who is asked, not how many are asked: k_per_question does that."""
     assert (
@@ -453,6 +493,30 @@ def test_the_analysis_payload_carries_figures_and_nothing_else(tmp_path: Path) -
     # ADR 0008: the lean's prose reason is host-only; only the aggregate shift is exposed.
     assert "secret_lean_reasoning" not in blob
     assert "mean_lean_shift" in blob
+    # ADR 0009: a citizen's rationale is per-record free text; only the aggregate share
+    # is exposed.
+    assert "rationale" not in blob
+    assert "weighted_approval" in blob
+
+
+def test_the_analysis_payload_never_carries_a_citizens_rationale(tmp_path: Path) -> None:
+    """Anti-vacuity for the check above: run an arm that actually produces citizen
+    rationale text, and confirm none of it reached the payload."""
+    session_id, root = _analysed(tmp_path, arms=[CONTROL_ARM, "audience_d1"])
+    records = arm_records(session_id, "audience_d1", root)
+    rationales = [
+        r.rationale
+        for record in records
+        if record.audience is not None
+        for r in record.audience.responses
+        if r.rationale
+    ]
+    assert rationales, "no rationale text was produced; the scan proves nothing"
+
+    blob = json.dumps(analysis_payload(session_id, "audience_d1", root))
+    for rationale in rationales:
+        assert rationale not in blob
+    assert "n_with_audience" in blob
 
 
 def test_the_analysis_payload_states_whether_a_control_was_run(tmp_path: Path) -> None:

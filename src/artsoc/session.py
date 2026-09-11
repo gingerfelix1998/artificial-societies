@@ -336,6 +336,11 @@ def estimate_calls(spec: SessionSpec) -> CallEstimate:
             # No advisor, no panel, no brief. The control arm is two calls, not twenty.
             per_role = {"intelligence_officer": 1, "president_decision": 1}
 
+        # ADR 0009. Added unconditionally on `consult_panel`: the audience composes with
+        # either arm shape, reacting to whatever `action` the President reached.
+        if config.audience_enabled:
+            per_role["citizen"] = config.audience_size
+
         per_replication = sum(per_role.values())
 
         arms.append(
@@ -524,6 +529,17 @@ def analysis_payload(session_id: str, arm: str, root: Path | None = None) -> dic
             "p_moved": summary.p_moved,
             "mean_rounds": summary.mean_deliberation_rounds,
             "abstention_rate": summary.abstention_rate,
+        },
+        # ADR 0009. Aggregates only — never a citizen's `rationale`, which is per-record
+        # free text. `d_approval` is carried on `contrast_against_control` above, via
+        # `Delta`, when a control arm ran; read against it, not on its own.
+        "audience": {
+            "n_with_audience": summary.n_with_audience,
+            "weighted_approval": summary.weighted_approval,
+            "response_rate": summary.mean_response_rate,
+            "leakage_rate": summary.mean_leakage_rate,
+            "no_opinion_rate": summary.mean_no_opinion_rate,
+            "stratum_coverage_floor": summary.stratum_coverage_floor,
         },
         "diagnostics": summary.warnings,
         "conditions": {
