@@ -201,4 +201,4 @@ The matrix governs *situational* context. It says nothing about parametric knowl
 in the model's weights, which is a separate and unsolved problem: a theorist persona knows
 about crises it was never told about, and a period-restricted persona in phase 3 has read
 every era. That threat is addressed — imperfectly — by scenario anonymisation and by the
-probes described in `docs/measurement.md`, not by this matrix.
+probes described in `docs/framework/measurement.md`, not by this matrix.

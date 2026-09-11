@@ -126,7 +126,7 @@ out/                   run outputs, gitignored
 
 ## Status
 
-`make test`: 532 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
+`make test`: 556 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
 store, by design). `make lint`: clean. `frontend` `tsc`: clean.
 
 **The loop runs end to end, on real retrieval.** `artsoc run`, `artsoc analyse`, `artsoc
@@ -145,13 +145,17 @@ decides, whose prior over them is recorded and never re-prompted
 citizen audience — a stratified 70-citizen sample of the 1962 US public reacts to the
 President's published decision after it is made, as an outcome measure with its own delta
 against the control (`data/society/us_1962/`, `society.sample_citizens`,
-`agents.CitizenPanelist`, `sim._survey_audience`, ADR 0009). Role context boundaries are
-enforced by `tests/test_access_matrix.py`, validated by deliberately breaking boundaries
-(including the audience's prompt-build-time guard) and confirming each was caught, plus a
-deliberate *inverted* assertion for the one role permitted peer visibility. The end-to-end
-citation path — a claim in an `.md` file through retrieval, the theorist's citation,
-`verify_citations`, the record, and the analyst-facing `resolve_passages` — is exercised in
-`tests/test_markdown_corpus.py`.
+`agents.CitizenPanelist`, `sim._survey_audience`, ADR 0009); and, in the viewer only, real
+ExComm names and live advisor/citizen chat (ADR 0010) — the simulation stays exactly as
+anonymised as before (`api.py` is the one, structurally-proven reader of
+`docs/excomm/roster-key.md`, and only for display), and a live chat continuing a member's
+or a citizen's reasoning is session-directory state, never `RunRecord`. Role context
+boundaries are enforced by `tests/test_access_matrix.py`, validated by deliberately
+breaking boundaries (including the audience's and the chat's prompt-build-time guards) and
+confirming each was caught, plus a deliberate *inverted* assertion for the one role
+permitted peer visibility. The end-to-end citation path — a claim in an `.md` file through
+retrieval, the theorist's citation, `verify_citations`, the record, and the analyst-facing
+`resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
 
 **A running loop is not a finished phase 1.** The project must not be described as producing
 grounded *results* until it has:
@@ -177,4 +181,4 @@ grounded *results* until it has:
 Every number the loop currently produces comes from a mock whose output is deliberately
 content-nonsense. Arms differ under it only because their prompts hash differently.
 
-See `CLAUDE.md` for the invariants and `docs/measurement.md` for what may and may not be claimed from a run.
+See `CLAUDE.md` for the invariants and `docs/framework/measurement.md` for what may and may not be claimed from a run.

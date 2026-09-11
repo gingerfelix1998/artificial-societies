@@ -47,10 +47,12 @@ does nothing else. ADR 0002 is the worked example: it retired an invariant prope
 the original reasoning, showing the precondition was met, and replacing it with something
 narrower and stronger.
 
-**The numbers below are load-bearing.** Invariants 1, 4 and 5 are referenced by number in
-`agents.py`, `personas.py`, `retrieval.py`, `cli.py`, `config.py`, `base.yaml`,
-`docs/framework/access-matrix.md`, `docs/approach/` and four test modules. Never renumber.
-Append new invariants at the end.
+**The numbers below are load-bearing.** Invariants are referenced by number throughout the
+source (`agents.py`, `personas.py`, `retrieval.py`, `cli.py`, `config.py`, `base.yaml`,
+`docs/framework/access-matrix.md`, `docs/approach/`) and across most of the test suite —
+not only the access-matrix tests, but `test_configs.py`, `test_invariants.py`,
+`test_markdown_corpus.py`, `test_retrieval.py`, `test_session.py`, `test_views.py` and
+`test_api.py` too. Never renumber. Append new invariants at the end.
 
 1. **Role context boundaries.** Theorists get a decontextualised analytical question and their
    own record — no scenario, no peer opinions. The Advisor never sees intelligence reporting.

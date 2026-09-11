@@ -2,7 +2,8 @@
 
 What this project models, how the code is arranged, and why each structural choice was
 made. For the invariants themselves see `CLAUDE.md`; for the boundaries in detail see
-`docs/access-matrix.md`; for what a run may be claimed to show see `docs/measurement.md`.
+`docs/framework/access-matrix.md`; for what a run may be claimed to show see
+`docs/framework/measurement.md`.
 
 ## The populations being modelled
 
