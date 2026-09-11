@@ -1,0 +1,21 @@
+# ADR 0009. A stratified sample of the 1962 US public (data/society/us_1962/) reacts to
+# the President's decision after it is made. An outcome measure, not an input: nothing it
+# produces returns to the President, and this arm otherwise runs the same apparatus
+# `baseline` does (consult_panel is untouched).
+#
+# CONTRAST AGAINST the arm's own control. `d_approval` (this arm's weighted approve share
+# minus escalation_prior's, when escalation_prior also ran with audience_enabled) is the
+# only interpretable number, consistent with how every other figure in this project is
+# read — the absolute approval share is not a finding on its own (Rivera et al.'s caveat
+# applies here as much as it does to the rung).
+#
+# Costs 70 additional, uncacheable calls per replication (~4.4x a baseline-shaped
+# replication) — see ADR 0009's cost estimate. Develop and test on the mock; a live sweep
+# of this arm is the expensive, opt-in part, and its frame marginals are not yet fully
+# calibrated against primary sources (data/society/us_1962/README.md).
+
+audience_enabled: true
+notes: >-
+  A 70-citizen stratified sample of the 1962 US public reacts to the decision. Outcome
+  measure only; read weighted approval against the arm's own control (d_approval), never
+  as an absolute rate.

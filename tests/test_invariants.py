@@ -2115,6 +2115,97 @@ def test_the_record_is_identical_at_any_concurrency() -> None:
     assert json.loads(dumps[0])["opinions"], "no opinions; the comparison would be vacuous"
 
 
+def test_the_audience_is_off_by_default_on_every_existing_arm() -> None:
+    """ADR 0009. `audience_enabled` defaults `False`, so no existing arm's record changes
+    shape just because the feature exists."""
+    assert _run("baseline", 1).audience is None
+    assert _run("escalation_prior", 1).audience is None
+    assert _run("excomm_debate", 1).audience is None
+
+
+def test_the_audience_composes_with_the_control_arm() -> None:
+    """The audience is orthogonal to `consult_panel`, unlike `convene_excomm` — it must be
+    able to react to the decision whether or not a panel was consulted, so
+    `escalation_prior` stays a two-call decision arm even with the audience turned on."""
+    flipped = _mock(load_arm("escalation_prior")).model_copy(
+        update={"audience_enabled": True, "audience_size": 5}
+    )
+    record = run_once(flipped, 3, use_disk_cache=False)
+    assert record.opinions == []
+    assert record.courses_of_action == []
+    assert record.panel_size == 0
+    assert record.audience is not None
+    assert len(record.audience.citizens) == 5
+    assert len(record.audience.responses) + len(record.audience.failures) == 5
+
+
+def test_the_audience_d1_arm_produces_a_full_panel_and_diagnostics() -> None:
+    record = _run("audience_d1", 3)
+    audience = record.audience
+    assert audience is not None
+    assert len(audience.citizens) == 70
+    assert len(audience.responses) + len(audience.failures) == 70
+    assert audience.achieved_marginals and audience.target_marginals
+    assert set(audience.stratum_coverage) == set(audience.target_marginals)
+    assert 0.0 <= audience.response_rate <= 1.0
+    assert 0.0 <= audience.no_opinion_rate <= 1.0
+    assert 0.0 <= audience.leakage_rate <= 1.0
+    assert all(w >= 0.0 for w in audience.weighted_approval.values())
+
+
+def test_the_audience_stage_is_a_second_independent_top_level_conditional() -> None:
+    """`audience_enabled` cannot be nested inside `consult_panel` (ADR 0009): the audience
+    must be able to react to the decision whether or not a panel was consulted. A
+    dedicated count pins it the same way `consult_panel`'s is pinned, so neither can
+    silently grow a third."""
+    import artsoc.sim as sim_module
+
+    source = inspect.getsource(sim_module)
+    assert source.count("config.consult_panel") == 3
+    # One docstring mention, one code site. A second code site would be a redundant branch.
+    assert source.count("config.audience_enabled") == 2
+    assert "config.audience_enabled" not in inspect.getsource(sim_module._consult)
+    assert "config.audience_enabled" not in inspect.getsource(sim_module._deliberate)
+
+
+def test_the_audience_record_is_identical_at_any_concurrency() -> None:
+    """The theorist fan-out and the citizen fan-out are both keyed by index and re-sorted,
+    so turning on both `convene_excomm` and `audience_enabled` at once must still produce
+    a record independent of `max_concurrency`."""
+    base = _mock(load_arm("audience_d1")).model_copy(
+        update={"convene_excomm": True, "audience_size": 6}
+    )
+    dumps = []
+    for concurrency in (1, 4, 8):
+        record = run_once(
+            base.model_copy(update={"max_concurrency": concurrency}), 7, use_disk_cache=False
+        )
+        payload = record.model_dump(mode="json")
+        for volatile in ("wall_time_s", "started_at"):
+            payload.pop(volatile)
+        payload["config"].pop("max_concurrency")
+        dumps.append(json.dumps(payload, sort_keys=True))
+
+    assert dumps[0] == dumps[1] == dumps[2], "concurrency changed the record"
+    assert json.loads(dumps[0])["audience"]["citizens"], "no citizens; the comparison is vacuous"
+
+
+def test_the_audience_does_not_shift_perception_or_routing_draws() -> None:
+    """Own rng stream (ADR 0009), exactly as perception's is: turning `audience_enabled`
+    on or off must not change what the run's shared rng produced upstream."""
+    on = run_once(
+        _mock(load_arm("baseline")).model_copy(update={"audience_enabled": True}),
+        9,
+        use_disk_cache=False,
+    )
+    off = run_once(_mock(load_arm("baseline")), 9, use_disk_cache=False)
+    assert on.detected_event_ids == off.detected_event_ids
+    assert on.missed_event_ids == off.missed_event_ids
+    assert [r.selected for r in on.routing] == [r.selected for r in off.routing]
+    assert [o.position for o in on.opinions] == [o.position for o in off.opinions]
+    assert on.action == off.action
+
+
 def test_the_access_matrix_scan_does_not_depend_on_call_order() -> None:
     """`prompts_for` is completion-ordered once the fan-out is concurrent.
 

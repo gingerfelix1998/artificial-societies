@@ -15,6 +15,16 @@ control arm and every other. Everything else varies by parameter. A new arm shou
 need a new branch here; if it does, that is a signal the thing being varied belongs in
 `RunConfig`.
 
+**`config.audience_enabled` is a second, independent top-level conditional (ADR 0009), not
+a violation of the rule above.** The panel-consultation gate above decides whether the
+advisory apparatus runs at all; the audience is an orthogonal, post-decision stage that
+must be able to run whether or not a panel was consulted (it reacts to `action`, which
+exists either way), so it cannot be nested inside that branch the way `convene_excomm` is.
+The invariant this file actually holds is "one conditional gating whether the advisory
+apparatus runs", not "one conditional in the file" — `routing_mode` inside `_consult`
+already varies arm behaviour on a second axis for the same reason. A dedicated test pins
+`audience_enabled`'s own occurrence count the same way the panel gate's is pinned.
+
 **`grounded` comes from the retriever, never from the config.** A config could claim
 anything; the retriever object knows what it actually did.
 """
@@ -23,6 +33,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +43,7 @@ from pathlib import Path
 
 from artsoc.agents import (
     Advisor,
+    CitizenPanelist,
     ExCommMember,
     IntelligenceOfficer,
     President,
@@ -54,15 +66,24 @@ from artsoc.schema import (
     ActionType,
     AdvisorBrief,
     AnalyticalQuestion,
+    Approval,
+    AudienceRecord,
+    Citizen,
+    CitizenFailure,
+    CitizenResponse,
     CourseOfAction,
     ExCommStatement,
+    IntelBrief,
     PerceivedEvent,
+    PresidentialAction,
     PresidentialQuery,
     RoutingRecord,
     RunRecord,
     TheoristOpinion,
+    public_statement_from,
 )
-from artsoc.world import PerceptionFilter, Scenario, build_world, load_scenario
+from artsoc.society import Frame, load_frame, sample_citizens
+from artsoc.world import PerceptionFilter, Scenario, build_world, load_scenario, public_events_from
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CACHE_DIR = REPO_ROOT / ".cache" / "llm"
@@ -288,6 +309,178 @@ def _consult(
     return query, questions, routing, opinions, brief, coas, unsupported, deliberation
 
 
+#: Response-content leakage markers (ADR 0009): parametric knowledge the model produced
+#: unprompted, not a prompt-boundary breach (that is `assert_decontextualised`, at
+#: prompt-build time in `agents.CitizenPanelist.respond`). Whole-word, case-insensitive.
+_LEAKAGE_MARKERS: tuple[str, ...] = (
+    "Cuba",
+    "Cuban",
+    "Kennedy",
+    "Khrushchev",
+    "Castro",
+    "missile crisis",
+)
+#: Any year after the scenario's own setting reads as post-1962 leakage.
+_LEAKAGE_YEAR = re.compile(r"\b(19[6-9][3-9]|20\d{2})\b")
+
+
+def _leaks(text: str) -> bool:
+    if _LEAKAGE_YEAR.search(text):
+        return True
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _LEAKAGE_MARKERS)
+
+
+def _audience_forbidden_tokens(
+    panel: list[Persona],
+    opinions: list[TheoristOpinion],
+    deliberation: _Deliberation,
+    intel: IntelBrief,
+    ground_truth: dict[str, str],
+) -> list[str]:
+    """Every theorist name/id, every claim/chunk id an opinion cited, every ExComm
+    participant label, the intel brief text, and every `ground_truth_detail` string (ADR
+    0009's list). Guarded even under `escalation_prior`, where `panel` is empty because no
+    panel was consulted — the full registry stands in so the guard still has names to
+    check rather than nothing.
+    """
+    named = panel if panel else load_registry()
+    tokens: list[str] = [p.persona_id for p in named] + [p.name for p in named]
+    for opinion in opinions:
+        tokens.append(opinion.position)
+        tokens.append(opinion.reasoning)
+        tokens.extend(opinion.citations)
+    if deliberation.statements:
+        roster = load_excomm()
+        tokens.extend(m.member_id for m in roster)
+        tokens.extend(m.role_title for m in roster)
+    tokens.extend([intel.summary, intel.assessed_activity])
+    tokens.extend(intel.alternative_explanations)
+    tokens.extend(intel.collection_gaps)
+    tokens.extend(ground_truth.values())
+    if deliberation.lean_reasoning:
+        tokens.append(deliberation.lean_reasoning)
+    return [t for t in tokens if t]
+
+
+def _survey_audience(
+    config: RunConfig,
+    client: LLMClient,
+    scenario: Scenario,
+    world,
+    panel: list[Persona],
+    opinions: list[TheoristOpinion],
+    deliberation: _Deliberation,
+    intel: IntelBrief,
+    ground_truth: dict[str, str],
+    action: PresidentialAction,
+    seed: int,
+) -> AudienceRecord:
+    """The citizen audience's reaction, strictly after the decision (ADR 0009). An outcome
+    measure: nothing computed here is read by anything upstream — it runs after `action`
+    already exists and is never passed back into `President.decide` or any earlier call.
+    """
+    frame = load_frame(config.audience_frame)
+    # Own rng stream, exactly as perception's is in `run_once`: turning the audience on or
+    # off must not shift panel/routing/perception draws at the same seed, which is what
+    # keeps a baseline-vs-baseline+audience contrast clean.
+    sample = sample_citizens(frame, config.audience_size, random.Random(seed))
+    public_events = public_events_from(world.events)
+    statement = public_statement_from(action)
+    forbidden = _audience_forbidden_tokens(panel, opinions, deliberation, intel, ground_truth)
+
+    def ask_citizen(
+        job: tuple[int, Citizen],
+    ) -> tuple[int, CitizenResponse | None, CitizenFailure | None]:
+        index, citizen = job
+        try:
+            response = CitizenPanelist(client, citizen).respond(
+                public_events, statement, forbidden
+            )
+            return index, response, None
+        except Exception as exc:  # noqa: BLE001 — a crash must not silently drop a stratum
+            return index, None, CitizenFailure(citizen_id=citizen.citizen_id, reason=str(exc))
+
+    jobs = list(enumerate(sample.citizens))
+    if config.max_concurrency > 1 and len(jobs) > 1:
+        with ThreadPoolExecutor(max_workers=config.max_concurrency) as pool:
+            results = list(pool.map(ask_citizen, jobs))
+    else:
+        results = [ask_citizen(job) for job in jobs]
+    results.sort(key=lambda r: r[0])
+
+    responses = [r for _, r, _ in results if r is not None]
+    failures = [f for _, _, f in results if f is not None]
+
+    return _assemble_audience_record(
+        frame, config.audience_frame, seed, sample, responses, failures
+    )
+
+
+def _assemble_audience_record(
+    frame: Frame,
+    frame_name: str,
+    seed: int,
+    sample,
+    responses: list[CitizenResponse],
+    failures: list[CitizenFailure],
+) -> AudienceRecord:
+    weights = {c.citizen_id: c.weight for c in sample.citizens}
+    total_weight = sum(weights.values()) or 1.0
+
+    unweighted: dict[str, float] = {}
+    weighted: dict[str, float] = {}
+    for response in responses:
+        key = response.approval.value
+        unweighted[key] = unweighted.get(key, 0.0) + 1
+        weighted[key] = weighted.get(key, 0.0) + weights.get(response.citizen_id, 0.0)
+    n_responses = len(responses) or 1
+    unweighted = {k: v / n_responses for k, v in unweighted.items()}
+    weighted = {k: v / total_weight for k, v in weighted.items()}
+
+    n_sampled = len(sample.citizens) or 1
+    response_rate = len(responses) / n_sampled
+
+    answered = [r for r in responses if not r.refused]
+    no_opinion_rate = (
+        sum(1 for r in answered if r.approval == Approval.NO_OPINION) / len(answered)
+        if answered
+        else 0.0
+    )
+    leaked = sum(1 for r in responses if r.rationale and _leaks(r.rationale))
+    leakage_rate = leaked / len(responses) if responses else 0.0
+
+    validation_distance: dict[str, float] = {}
+    for dim, targets in frame.validation_dimensions.items():
+        achieved: dict[str, float] = {}
+        for citizen in sample.citizens:
+            category = getattr(citizen, dim, None)
+            if category is None:
+                continue
+            achieved[category] = achieved.get(category, 0.0) + weights.get(citizen.citizen_id, 0.0)
+        achieved = {k: v / total_weight for k, v in achieved.items()}
+        categories = set(targets) | set(achieved)
+        distance = sum(abs(targets.get(k, 0.0) - achieved.get(k, 0.0)) for k in categories)
+        validation_distance[dim] = round(distance, 4)
+
+    return AudienceRecord(
+        frame=frame_name,
+        sample_seed=seed,
+        citizens=sample.citizens,
+        responses=responses,
+        failures=failures,
+        target_marginals=sample.target_marginals,
+        achieved_marginals=sample.achieved_marginals,
+        weighted_approval=weighted,
+        unweighted_approval=unweighted,
+        response_rate=round(response_rate, 4),
+        leakage_rate=round(leakage_rate, 4),
+        no_opinion_rate=round(no_opinion_rate, 4),
+        stratum_coverage=sample.stratum_coverage,
+        validation_distance=validation_distance,
+    )
+
+
 def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> RunRecord:
     """One replication, start to finish, fully recorded.
 
@@ -355,6 +548,20 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         intel, brief, coas or None, deliberation_transcript=deliberation.transcript
     )
 
+    ground_truth = scenario.ground_truth()
+
+    # A second, independent top-level stage (ADR 0009) — not nested inside the panel gate
+    # above like `convene_excomm` is, because the audience must be able to react to the
+    # decision whether or not a panel was consulted (it composes with
+    # `escalation_prior` too). It runs strictly after `action` exists above and nothing it
+    # produces is read by anything before this line.
+    audience: AudienceRecord | None = None
+    if config.audience_enabled:
+        audience = _survey_audience(
+            config, client, scenario, world, panel, opinions, deliberation, intel,
+            ground_truth, action, seed,
+        )
+
     return RunRecord(
         run_id=f"{config.arm}-{seed}",
         arm=config.arm,
@@ -374,7 +581,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         corpus_tier=retriever.corpus_tier,
         scenario_id=scenario.scenario_id,
         injected_event_ids=[e.event_id for e in scenario.events],
-        host_ground_truth=scenario.ground_truth(),
+        host_ground_truth=ground_truth,
         view=view,
         detected_event_ids=[e.event_id for e in view],
         missed_event_ids=missed,
@@ -395,6 +602,8 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
         secret_lean_reasoning=deliberation.lean_reasoning,
         deliberation=deliberation.statements,
         deliberation_rounds=deliberation.rounds,
+        # ADR 0009. `None` unless `audience_enabled` was set on this arm.
+        audience=audience,
         panel_size=len(panel),
         personas_consulted=sorted(panel_coverage(routing)),
         llm_calls=client.calls,
