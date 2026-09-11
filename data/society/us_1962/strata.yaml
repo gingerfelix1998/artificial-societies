@@ -1,0 +1,92 @@
+# Construction marginals for the 1962 US public audience (ADR 0009).
+#
+# THIS FILE IS A CONSTRUCTION INPUT, NOT A GENERATED ARTEFACT — committed like
+# data/theorists/registry.yaml and data/excomm/registry.yaml. `society.sample_citizens`
+# draws each citizen's stratum attributes from these marginals and then computes raking
+# weights so the *weighted* sample matches them; see README.md for the method and the
+# construction-vs-validation split (`validation_targets.yaml` holds the held-out check).
+#
+# Every dimension listed here becomes a field on `schema.Citizen`. An attribute with no
+# marginal here is not on the persona — do not add a field to `Citizen` without adding its
+# marginal here first (`society.load_frame` enforces this at load time).
+#
+# SOURCING. Shares are the best available reading of the cited survey/census item for
+# adults circa 1962. A line marked `# UNVERIFIED` is my best recollection of a commonly
+# cited historical figure, not something I could confirm against a primary table in this
+# session — see the README's "Sourcing status" section and
+# `docs/prompts/improvements-log.md` for the follow-up to calibrate these against primary
+# Census/Gallup/SRC-NES tables before any live sweep is presented as evidence.
+#
+# All shares within a dimension sum to 1.0.
+
+schema_version: "1.0.0"
+
+dimensions:
+  region:
+    source: >-
+      US Census Bureau, 1960 Census of Population, Volume I — the four standard census
+      regions of the era (the "North Central" region was renamed "Midwest" in 1984).
+      `west` was confirmed against a secondary compilation of the 1960 Census total in this
+      session; the other three regions are reproduced from a commonly cited historical
+      figure and are UNVERIFIED against a primary Census table.
+    categories:
+      northeast: 0.249   # UNVERIFIED
+      north_central: 0.288  # UNVERIFIED
+      south: 0.307   # UNVERIFIED
+      west: 0.156
+
+  urbanicity:
+    source: >-
+      US Census Bureau, 1960 Census: 125,268,750 urban / 54,054,425 rural, of a total
+      179,323,175 — confirmed against a secondary Census-linked compilation in this
+      session. The 1960 Census used a two-way urban/rural classification; a three-way
+      urban/suburban/rural split is not attempted here because the Census did not track
+      "suburban" as a distinct category until later.
+    categories:
+      urban: 0.699
+      rural: 0.301
+
+  age_band:
+    source: >-
+      Approximate 1960s adult (21+) age structure. 21 was the voting age in nearly every
+      state in 1962 (the era Gallup's own adult samples targeted), so this excludes minors
+      by construction rather than sampling them and then discarding responses.
+      UNVERIFIED against a primary Census age-distribution table in this session.
+    categories:
+      "21_29": 0.18   # UNVERIFIED
+      "30_44": 0.29   # UNVERIFIED
+      "45_64": 0.34   # UNVERIFIED
+      "65_plus": 0.19   # UNVERIFIED
+
+  sex:
+    source: >-
+      Approximate adult (21+) sex ratio for the era; women modestly outnumber men in the
+      adult population despite a male majority at birth, on account of differential
+      mortality. UNVERIFIED against a primary Census table in this session.
+    categories:
+      female: 0.51   # UNVERIFIED
+      male: 0.49   # UNVERIFIED
+
+  education:
+    source: >-
+      US Census Bureau, 1960 Census, Educational Attainment supplementary report: 41% of
+      adults had completed high school or more; 8% had completed four or more years of
+      college. `high_school` here is the difference (41% - 8%); `less_than_hs` is the
+      complement. Confirmed against a secondary Census-linked compilation in this session.
+    categories:
+      less_than_hs: 0.59
+      high_school: 0.33
+      college: 0.08
+
+  party_id:
+    source: >-
+      Gallup party identification, as compiled in a secondary academic table
+      (spot.colorado.edu/~mcguire/PARTYID.html): Democrat 45% / Republican 30% /
+      Independent 23% (rounds to 98%; renormalised to 100% below). The table's nearest
+      available year to the scenario's 1962 setting is 1960 — the brief's cited SRC/NES
+      1962 wave was not directly retrievable in this session. UNVERIFIED against the
+      primary 1962 ANES/SRC time-series file; treat as approximate until checked.
+    categories:
+      democrat: 0.46   # UNVERIFIED (nearest available year: 1960, not 1962)
+      republican: 0.31   # UNVERIFIED (nearest available year: 1960, not 1962)
+      independent: 0.23   # UNVERIFIED (nearest available year: 1960, not 1962)

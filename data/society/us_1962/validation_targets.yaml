@@ -1,0 +1,28 @@
+# Held-out marginals for the 1962 US public audience frame (ADR 0009).
+#
+# VALIDATION TARGETS ONLY. Never read by `society.sample_citizens` — used solely to compute
+# `AudienceRecord.validation_distance`, an after-the-fact check on the achieved sample, not
+# a construction input. Moving an item from `strata.yaml` to here (or vice versa)
+# invalidates the validation reading for every run recorded before the move, because the
+# check would then be comparing the sample against the same table it was built from.
+#
+# schema mirrors strata.yaml's `dimensions` block, but a dimension here need not cover
+# every category `strata.yaml` declares — only what the held-out item measured.
+
+schema_version: "1.0.0"
+
+dimensions:
+  party_id:
+    source: >-
+      Gallup party identification, 1964 wave, as compiled in the same secondary academic
+      table used for the `strata.yaml` construction marginal
+      (spot.colorado.edu/~mcguire/PARTYID.html): Democrat 52% / Republican 25% /
+      Independent 23%. Deliberately a DIFFERENT wave from the one used to construct the
+      sample, so this is a genuine held-out check on drift and sampling noise, not a
+      restatement of the construction target — but it is 1964, not 1962, so a nonzero
+      distance here is expected and is not on its own evidence the sampler is wrong.
+      UNVERIFIED against the primary 1964 ANES/SRC time-series file.
+    categories:
+      democrat: 0.52   # UNVERIFIED (this is the 1964 wave, held out from construction)
+      republican: 0.25   # UNVERIFIED
+      independent: 0.23   # UNVERIFIED
