@@ -117,9 +117,13 @@ anonymised `disposition` profile (temperament, ideology, how the member moves un
 pressure), and a hand-authored `beliefs` list drawn from that figure's writing — no real
 name in the registry file or in any prompt. `data/excomm/registry.yaml` is a separate
 population from the theorists; `docs/excomm/roster-key.md` maps `member_id` to the real
-figure for maintainers and is read by nothing. The belief system is carried in the identity
-prompt, not retrieved — an ExComm member argues in character, it does not do
-citation-grounded elicitation, so there is no retrieval call in the debate loop.
+figure for maintainers and, at the time of this ADR, was read by nothing at all. [Amended
+by ADR 0010: `api.py` now reads it to label the committee for the viewer, display-only —
+the narrower and load-bearing claim, that no real name reaches the simulation or a prompt,
+still holds and is now proven structurally rather than by the file simply having no
+reader.] The belief system is carried in the identity prompt, not retrieved — an ExComm
+member argues in character, it does not do citation-grounded elicitation, so there is no
+retrieval call in the debate loop.
 
 ## Consequences
 

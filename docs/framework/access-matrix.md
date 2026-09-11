@@ -24,6 +24,8 @@ enforces them from the outside.
 | **President** (chair) | — | — | — | — | — | — | — | read | — | **never** | — |
 | **President** (decision) | — | read | — | — | read | read | read | read | — | **never** | — |
 | **Citizen** | — | — | — | — | — | — | — | — | — | **never** | *read (the point)* |
+| **ExComm member** (chat) | read | — | — | — | read | read | read | read | — | **never** | — |
+| **Citizen** (chat) | — | — | — | — | — | — | — | — | — | **never** | *read (the point)* |
 
 The Advisor appears four times because it is four roles in `llm.Role`, with separate prompts
 and separate model assignments. Its selection step sees persona ids and declared areas — the
@@ -38,6 +40,17 @@ It runs strictly *after* `President` (decision), the only role for which that is
 its own output never appears in any other role's row — proven by scanning every earlier
 role's prompts for it, the mirror image of how the secret lean is proven never to leak
 *forward*.
+
+**The two `(chat)` rows (ADR 0010) are a live, on-demand follow-up, never part of the loop
+or the sweep.** Each sees exactly what its non-chat row already sees — the same columns,
+the same reasoning above — plus the growing conversation history and the user's own new
+message, which are not tracked as a column because they are not host-assembled content
+that could leak: `assert_decontextualised` guards the columns shown above, never the
+history or the message. Both write nothing to `RunRecord`; their output lives in the
+session directory, alongside the narrative and the analysis. `ExComm member (chat)` is
+shown a real name by nothing — its identity prompt is the same anonymous one the recorded
+turn used; a real name is a label `api.py` attaches to the *reply*, after this row's own
+prompt has already been built and sent.
 
 The **ExComm member** row is the first to carry a `read` in the *peer* sense — the debate
 transcript — and to see *Perceived events* / *Intel brief*. That is deliberate and is
@@ -100,6 +113,16 @@ intel brief, and every `ground_truth_detail` string. A response-content scan
 (`AudienceRecord.leakage_rate`) catches the complementary failure a build-time guard
 cannot: a model naming the real crisis from its own training data, with nothing forbidden
 ever having been in its prompt.
+
+**A live chat continues the same anonymous conversation; a real name is a label attached
+to the reply, not a fact given to the model (ADR 0010).** `agents.ExCommMember.chat`
+builds its system prompt from the same `personas.build_excomm_identity_prompt` the
+recorded debate used — the seat and disposition, never a name — plus one line telling the
+model to stay in character if asked to confirm a real identity, since an open chat is the
+first surface where a user can simply ask. `api.py::_load_roster_key` is the only reader
+of `docs/excomm/roster-key.md` anywhere in `artsoc`, and `_overlay_excomm_names` applies
+the real name to `label` only after `views.py` has already produced it anonymously — the
+overlay runs on the way out of the process, never on the way into a prompt.
 
 **The secret lean is recorded and never prompted (ADR 0008).** The President's private prior
 over the three courses is captured before the committee convenes, typed as an `ActionType`

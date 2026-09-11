@@ -20,9 +20,12 @@ For development, two processes instead: `make api` (port 8000) and `make ui` (po
 proxying `/api`).
 
 **Every session started from this UI spends money**, and so does every distinct question
-asked of the interpretation panel. `configs/base.yaml` names the backend and currently
-declares a live one. `make demo-fixture` produces a free mock-backed session to develop and
-demo against; it is banner-marked as mock and nothing it produces is a finding.
+asked of the interpretation panel, and every message sent in a live ExComm/citizen chat
+(ADR 0010) — one live call per message, capped at 20 turns per conversation, with no
+pre-flight total the way a session's own cost estimate has, because a chat's length is
+open-ended until it happens. `configs/base.yaml` names the backend and currently declares a
+live one. `make demo-fixture` produces a free mock-backed session to develop and demo
+against; it is banner-marked as mock and nothing it produces is a finding.
 
 ## The three pages
 
@@ -39,7 +42,13 @@ interpretation with follow-up questions.
 **One run in full** (`/sessions/:id/run/:arm`) — the panel as an interactive graph, any
 participant openable for what they were asked and what they answered, the provenance chain
 from cited source text to the decision, the activity timeline and the event log. All four
-share one playback cursor, pinned to the bottom of the viewport.
+share one playback cursor, pinned to the bottom of the viewport. When the run convened an
+ExComm, its members appear in the same graph, labelled by their real historical name
+(ADR 0010) — mapped for display only from `docs/excomm/roster-key.md`, never given to the
+model — and opening one offers a live chat continuing their (still anonymous) reasoning.
+When the run has an audience, an approval-by-stratum breakdown sits below the provenance
+chain; clicking a category opens a few of this run's own sampled citizens, each with a
+live chat of its own.
 
 Each deliberation is its own step. An edge is revealed once any step it covers has
 happened, not at the first — the Advisor consults each persona in turn, and lighting the
@@ -75,6 +84,15 @@ Several of these are the difference between a defensible result and an undefenda
 - **The written interpretation is labelled interpretation.** It is given summary statistics
   and diagnostics only — no transcript, no prompt, no ground truth — and it adds nothing to
   the figures it describes. It cannot touch the rung (invariant 2).
+- **A real ExComm name is a display label, never a fact given to the model (ADR 0010).**
+  The identity behind a live chat reply is the same anonymous seat-and-disposition prompt
+  the recorded debate used; `api.py` is the only place in `artsoc` that reads
+  `docs/excomm/roster-key.md`, and it does so after every prompt for that turn has already
+  been sent.
+- **A live chat is not the recorded run.** Nothing sent to or received from an ExComm
+  member or a citizen re-enters `RunRecord`, changes a figure on the page, or feeds any
+  metric — it is a side conversation for exploring reasoning, persisted separately from
+  the run it is about.
 
 ## Design
 

@@ -401,7 +401,8 @@ def panel_coverage(routing: list[RoutingRecord]) -> set[str]:
 # choice the scenario makes with 'Nation A / Nation B' — a roster of real names would let a
 # model retrieve how the real episode ended just as effectively as a real dyad would.
 # `docs/excomm/roster-key.md` maps `member_id` -> real person for the humans maintaining the
-# profiles; nothing in the code path reads it.
+# profiles, and (ADR 0010) for `api.py`'s display-only overlay in the viewer. This module,
+# and everything the simulation actually calls, never reads it and never will.
 # ---------------------------------------------------------------------------
 
 EXCOMM_REGISTRY_PATH = REPO_ROOT / "data" / "excomm" / "registry.yaml"

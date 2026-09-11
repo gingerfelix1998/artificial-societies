@@ -159,9 +159,11 @@ not — is confounded and is not used here. Any influence figure must state whic
 - Arm contrasts have no confidence intervals and no multiple-comparisons correction.
 - **ExComm members are 1962-shaped, not the historical individuals** (ADR 0008): a
   disposition profile and a hand-authored belief system per institutional seat, no real
-  name in `data/excomm/registry.yaml` or in any prompt. `docs/excomm/roster-key.md` maps
-  seats to the real figures for maintainers; it is documentation, not evidence, and nothing
-  in the code path reads it.
+  name in `data/excomm/registry.yaml` or in any prompt, including a live chat continuing a
+  member's conversation (ADR 0010). `docs/excomm/roster-key.md` maps seats to the real
+  figures; it is documentation, not evidence, and `api.py` is the only reader anywhere in
+  `artsoc` — read for display in the viewer, never by the simulation, which
+  `tests/test_api.py::test_nothing_in_artsoc_imports_the_api` proves structurally.
 - `mean_lean_shift`'s absolute value is not a finding, the same way an absolute rung is
   not — read `excomm_debate` against `baseline`'s no-debate noise floor. The two arms'
   decision prompts also differ in length before they differ in content, which is an
@@ -217,9 +219,10 @@ false or unsupportable.
 | Message types, action space, rungs, records | `src/artsoc/schema.py` |
 | Role prompts and context boundaries | `src/artsoc/agents.py` |
 | Persona construction M1–M3, tag vocabulary, routing, the ExComm roster | `src/artsoc/personas.py` |
-| The ExComm roster's real-person mapping (never read by code) | `docs/excomm/roster-key.md` |
+| The ExComm roster's real-person mapping (never reaches the simulation or a prompt; read only by `api.py`, for display, ADR 0010) | `docs/excomm/roster-key.md` |
 | The citizen audience: the sampling frame, the raking sampler | `src/artsoc/society.py` |
 | The committed sampling frame (construction vs. validation marginals) | `data/society/us_1962/README.md` |
+| Live, on-demand advisor/citizen chat and the real-name display overlay | `src/artsoc/api.py`, `src/artsoc/session.py` |
 | Retrieval interface and the grounded boundary | `src/artsoc/retrieval.py` |
 | Corpus building, chunking, the claim index | `src/artsoc/ingest.py` |
 | The committed source of record, and what may go in it | `data/corpora-src/README.md` |

@@ -1,13 +1,22 @@
-# ExComm roster key — maintainers only
+# ExComm roster key — maintainers, and the viewer's display layer
 
 This file maps each `member_id` in `data/excomm/registry.yaml` to the 1962 figure its
-disposition and belief system are drawn from. **It is documentation. No code reads it, and
-no real name from the right-hand column may appear in `data/excomm/registry.yaml` or in any
-prompt** — `tests/test_excomm.py` and `tests/test_access_matrix.py` enforce that.
+disposition and belief system are drawn from. **No real name from the right-hand column may
+appear in `data/excomm/registry.yaml`, in any prompt, or anywhere in the simulation
+itself** — `tests/test_excomm.py` and `tests/test_access_matrix.py` enforce that, and
+`tests/test_api.py::test_nothing_in_artsoc_imports_the_api` proves it structurally: the
+only reader of this file anywhere in `artsoc` is `api.py::_load_roster_key`, which no core
+module (`sim.py`, `agents.py`, `personas.py`, `llm.py`) can import.
+
+**As of ADR 0010, `api.py` reads this file to label the committee for a human viewer** —
+mapping a member's anonymous seat to the real name for display, after every prompt for
+that run has already been sent. A live chat continuing a member's conversation is built
+from the same anonymous identity prompt the recorded debate used; the real name is never
+part of it.
 
 The roster is *1962-shaped*, not nominal: prompts carry the institutional seat and an
 anonymised behavioural profile, never a name, for the same anti-leakage reason the scenario
-is "Nation A / Nation B" and not "Cuba". See ADR 0008.
+is "Nation A / Nation B" and not "Cuba". See ADR 0008 and ADR 0010.
 
 | `member_id` | 1962 seat | Figure the profile draws on | Belief system drawn from |
 |---|---|---|---|
