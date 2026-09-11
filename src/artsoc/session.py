@@ -43,6 +43,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from artsoc.agents import CitizenPanelist, ExCommMember, render_deliberation, render_situation
 from artsoc.config import RunConfig, list_arms, load_arm
 from artsoc.llm import PRICE_PER_MTOK, DiskCache, LLMClient, get_backend
 from artsoc.metrics import (
@@ -67,9 +68,10 @@ from artsoc.narrative import (
 # returning prose about them, is exactly the confusion to avoid here.
 from artsoc.narrative import summarise_session as generate_session_analysis
 from artsoc.personas import load_excomm
-from artsoc.schema import RunRecord
+from artsoc.schema import RunRecord, public_statement_from
 from artsoc.sim import CACHE_DIR, DEFAULT_OUT_DIR, run_many, write_jsonl
 from artsoc.views import representative_run
+from artsoc.world import build_world, load_scenario, public_events_from
 
 #: Where sessions live. Under `out/`, which is gitignored: a session is reproducible from
 #: its spec plus the arm configs, so the records themselves are not source.
@@ -609,6 +611,191 @@ def ask_analysis(
     stored.answers[key] = answer
     _save_analysis(session_id, arm, stored, root)
     return answer
+
+
+# ---------------------------------------------------------------------------
+# Live, on-demand follow-up chat with one ExComm member or one citizen (ADR 0010).
+#
+# Session-directory state, like the narrative and the analysis above — never `RunRecord`,
+# never `SCHEMA_VERSION`. Triggered from the viewer after a run has already finished;
+# nothing here is part of the sweep and nothing here feeds any metric. The real names
+# ExComm members are shown under in the viewer never reach this module: the identity
+# prompt each call builds from is the same anonymous one the recorded run used.
+# ---------------------------------------------------------------------------
+
+#: Per-conversation spend safety measure. Unlike `ask_analysis`, a chat has no dedup-by-
+#: question cache — each turn genuinely depends on the whole history, so its cost is
+#: proportional to its length rather than to how many distinct things were ever asked.
+CHAT_TURN_CAP = 20
+
+
+class ChatTurn(BaseModel):
+    """One turn in a live follow-up conversation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: str  # "user" | "advisor"
+    text: str
+    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+def chat_path(
+    session_id: str, kind: str, run_id: str, who_id: str, root: Path | None = None
+) -> Path:
+    return session_dir(session_id, root) / "chat" / kind / run_id / f"{who_id}.json"
+
+
+def load_chat(
+    session_id: str, kind: str, run_id: str, who_id: str, root: Path | None = None
+) -> list[ChatTurn]:
+    """The conversation so far. An empty list is a normal state, not an error."""
+    path = chat_path(session_id, kind, run_id, who_id, root)
+    if not path.exists():
+        return []
+    try:
+        return [ChatTurn.model_validate(t) for t in json.loads(path.read_text(encoding="utf-8"))]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_chat(
+    session_id: str, kind: str, run_id: str, who_id: str, turns: list[ChatTurn],
+    root: Path | None = None,
+) -> None:
+    path = chat_path(session_id, kind, run_id, who_id, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps([t.model_dump(mode="json") for t in turns], indent=2), encoding="utf-8"
+    )
+
+
+def _chat_client(arm: str) -> LLMClient:
+    """A client for a live chat call, configured the way the arm's runs were.
+
+    `cacheable=False` on every chat call already salts the key by seed; `cache_enabled`
+    stays on so a literal duplicate send (a retried click on the same history) is served
+    from disk rather than billed twice — chat is not a measured quantity, so an
+    incidental cache hit here is a safety net, not the leak `Role.CITIZEN`'s outright
+    cache bypass (ADR 0009) exists to prevent for a role that IS one.
+    """
+    config = load_arm(arm)
+    return LLMClient(
+        backend=get_backend(config.backend, config.resolved_models(), effort=config.effort),
+        run_seed=0,
+        cache=DiskCache(CACHE_DIR),
+        cache_enabled=True,
+    )
+
+
+def _find_record(session_id: str, arm: str, run_id: str, root: Path | None) -> RunRecord:
+    for record in arm_records(session_id, arm, root):
+        if record.run_id == run_id:
+            return record
+    raise SessionError(f"no run {run_id!r} for arm {arm!r} in session {session_id!r}")
+
+
+def _history_pairs(turns: list[ChatTurn]) -> list[tuple[str, str]]:
+    return [(t.role, t.text) for t in turns]
+
+
+def send_excomm_chat_message(
+    session_id: str, arm: str, run_id: str, member_id: str, message: str,
+    root: Path | None = None,
+) -> ChatTurn:
+    """Send one message to one ExComm member and append its reply.
+
+    Rebuilds the same situation/brief/COAs/transcript context `sim._deliberate` gave the
+    member during the recorded debate, from the record alone — nothing here re-runs the
+    sweep or depends on anything not already in `RunRecord`.
+    """
+    if not message.strip():
+        raise SessionError("a chat message cannot be empty")
+
+    turns = load_chat(session_id, "excomm", run_id, member_id, root)
+    if len(turns) >= CHAT_TURN_CAP:
+        raise SessionError(
+            f"this conversation has reached its {CHAT_TURN_CAP}-turn limit; "
+            "start a new one to continue"
+        )
+
+    record = _find_record(session_id, arm, run_id, root)
+    roster = load_excomm()
+    member = next((m for m in roster if m.member_id == member_id), None)
+    if member is None:
+        raise SessionError(f"no ExComm member {member_id!r}")
+    # `advisor_brief` alone is not the right check: `baseline` has one too, without a
+    # debate — `convene_excomm` is what decides whether a committee sat at all.
+    if not record.deliberation:
+        raise SessionError(
+            f"run {run_id!r} convened no committee; there is no committee to chat with"
+        )
+
+    situation = render_situation(record.intel_brief, record.view)
+    transcript = render_deliberation(record.deliberation, roster)
+    forbidden = [
+        *(o.persona_name for o in record.opinions),
+        *(o.position for o in record.opinions),
+        *(o.reasoning for o in record.opinions),
+        record.secret_lean_reasoning,
+        *record.host_ground_truth.values(),
+    ]
+
+    reply_text = ExCommMember(_chat_client(arm), member).chat(
+        _history_pairs(turns), message.strip(), situation, record.advisor_brief,
+        record.courses_of_action, transcript, forbidden,
+    )
+
+    user_turn = ChatTurn(role="user", text=message.strip())
+    advisor_turn = ChatTurn(role="advisor", text=reply_text)
+    _save_chat(session_id, "excomm", run_id, member_id, [*turns, user_turn, advisor_turn], root)
+    return advisor_turn
+
+
+def send_citizen_chat_message(
+    session_id: str, arm: str, run_id: str, citizen_id: str, message: str,
+    root: Path | None = None,
+) -> ChatTurn:
+    """Send one message to one sampled citizen and append its reply.
+
+    Rebuilds the same `PublicEvent[]`/`PublicStatement` context the recorded response was
+    given, from the scenario and the record alone.
+    """
+    if not message.strip():
+        raise SessionError("a chat message cannot be empty")
+
+    turns = load_chat(session_id, "citizen", run_id, citizen_id, root)
+    if len(turns) >= CHAT_TURN_CAP:
+        raise SessionError(
+            f"this conversation has reached its {CHAT_TURN_CAP}-turn limit; "
+            "start a new one to continue"
+        )
+
+    record = _find_record(session_id, arm, run_id, root)
+    if record.audience is None:
+        raise SessionError(f"run {run_id!r} has no audience; there is no one to chat with")
+    citizen = next((c for c in record.audience.citizens if c.citizen_id == citizen_id), None)
+    if citizen is None:
+        raise SessionError(f"no citizen {citizen_id!r} in run {run_id!r}")
+
+    scenario = load_scenario(record.scenario_id)
+    public_events = public_events_from(build_world(scenario).events)
+    statement = public_statement_from(record.action)
+    forbidden = [
+        *(o.persona_name for o in record.opinions),
+        *(o.position for o in record.opinions),
+        *(o.reasoning for o in record.opinions),
+        record.secret_lean_reasoning,
+        *record.host_ground_truth.values(),
+    ]
+
+    reply_text = CitizenPanelist(_chat_client(arm), citizen).chat(
+        _history_pairs(turns), message.strip(), public_events, statement, forbidden,
+    )
+
+    user_turn = ChatTurn(role="user", text=message.strip())
+    citizen_turn = ChatTurn(role="advisor", text=reply_text)
+    _save_chat(session_id, "citizen", run_id, citizen_id, [*turns, user_turn, citizen_turn], root)
+    return citizen_turn
 
 
 def _write_state(state: SessionState, root: Path | None = None) -> None:

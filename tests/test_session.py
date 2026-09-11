@@ -20,6 +20,8 @@ from artsoc import session as session_module
 from artsoc.config import RunConfig, load_arm
 from artsoc.metrics import CONTROL_ARM
 from artsoc.session import (
+    CHAT_TURN_CAP,
+    ChatTurn,
     ProgressEvent,
     SessionError,
     SessionSpec,
@@ -27,14 +29,18 @@ from artsoc.session import (
     analysis_payload,
     arm_records,
     ask_analysis,
+    chat_path,
     create_session,
     ensure_analysis,
     estimate_calls,
     list_sessions,
     load_analysis,
+    load_chat,
     load_session,
     resolve_arms,
     run_session,
+    send_citizen_chat_message,
+    send_excomm_chat_message,
     summarise_session,
     validate_spec,
 )
@@ -631,3 +637,132 @@ def test_the_analysis_never_acquires_a_role_of_its_own() -> None:
         f"Role.{name}" in source
         for name in ("ANALYST", "INTERPRETER", "JUDGE", "SUMMARISER")
     )
+
+
+# ---------------------------------------------------------------------------
+# Live chat with an ExComm member or a citizen (ADR 0010). Session-directory state, like
+# the narrative and the analysis above — never RunRecord, never part of the sweep.
+# ---------------------------------------------------------------------------
+
+
+def _excomm_run(tmp_path: Path):
+    spec = _spec(["excomm_debate"], n=1)
+    run_session(spec, root=tmp_path)
+    record = arm_records(spec.session_id, "excomm_debate", tmp_path)[0]
+    return spec.session_id, tmp_path, record
+
+
+def _audience_run(tmp_path: Path):
+    spec = _spec(["audience_d1"], n=1)
+    run_session(spec, root=tmp_path)
+    record = arm_records(spec.session_id, "audience_d1", tmp_path)[0]
+    return spec.session_id, tmp_path, record
+
+
+def test_an_excomm_chat_reply_persists_and_is_labelled_advisor(tmp_path: Path) -> None:
+    session_id, root, record = _excomm_run(tmp_path)
+    member_id = record.deliberation[0].member_id
+
+    turn = send_excomm_chat_message(
+        session_id, "excomm_debate", record.run_id, member_id, "Why did you argue that?",
+        root=root,
+    )
+    assert turn.role == "advisor"
+    assert turn.text.strip()
+
+    history = load_chat(session_id, "excomm", record.run_id, member_id, root=root)
+    assert [t.role for t in history] == ["user", "advisor"]
+    assert history[0].text == "Why did you argue that?"
+    assert history[1] == turn
+
+
+def test_a_citizen_chat_reply_persists_and_is_labelled_advisor(tmp_path: Path) -> None:
+    session_id, root, record = _audience_run(tmp_path)
+    citizen_id = record.audience.citizens[0].citizen_id
+
+    turn = send_citizen_chat_message(
+        session_id, "audience_d1", record.run_id, citizen_id, "Can you say more?", root=root,
+    )
+    assert turn.role == "advisor"
+    assert turn.text.strip()
+
+    history = load_chat(session_id, "citizen", record.run_id, citizen_id, root=root)
+    assert [t.role for t in history] == ["user", "advisor"]
+
+
+def test_a_chat_message_cannot_be_empty(tmp_path: Path) -> None:
+    session_id, root, record = _excomm_run(tmp_path)
+    member_id = record.deliberation[0].member_id
+    with pytest.raises(SessionError, match="empty"):
+        send_excomm_chat_message(
+            session_id, "excomm_debate", record.run_id, member_id, "   ", root=root
+        )
+
+
+def test_chatting_with_an_unknown_member_or_citizen_raises(tmp_path: Path) -> None:
+    session_id, root, record = _excomm_run(tmp_path)
+    with pytest.raises(SessionError, match="no ExComm member"):
+        send_excomm_chat_message(
+            session_id, "excomm_debate", record.run_id, "not_a_real_seat", "hi?", root=root
+        )
+
+    audience_session, audience_root, audience_record = _audience_run(tmp_path)
+    with pytest.raises(SessionError, match="no citizen"):
+        send_citizen_chat_message(
+            audience_session, "audience_d1", audience_record.run_id, "not_a_real_citizen",
+            "hi?", root=audience_root,
+        )
+
+
+def test_a_run_with_no_committee_or_no_audience_cannot_be_chatted_with(tmp_path: Path) -> None:
+    """`baseline` neither convenes an ExComm nor enables the audience; chatting must say
+    why rather than fail obscurely."""
+    spec = _spec(["baseline"], n=1)
+    run_session(spec, root=tmp_path)
+    record = arm_records(spec.session_id, "baseline", tmp_path)[0]
+
+    with pytest.raises(SessionError, match="no committee to chat with"):
+        send_excomm_chat_message(
+            spec.session_id, "baseline", record.run_id, "defense_secretary", "hi?",
+            root=tmp_path,
+        )
+    with pytest.raises(SessionError, match="no one to chat with"):
+        send_citizen_chat_message(
+            spec.session_id, "baseline", record.run_id, "c000", "hi?", root=tmp_path
+        )
+
+
+def test_the_conversation_turn_cap_is_enforced(tmp_path: Path) -> None:
+    session_id, root, record = _excomm_run(tmp_path)
+    member_id = record.deliberation[0].member_id
+
+    turns = [
+        ChatTurn(role="user", text=f"message {i}")
+        if i % 2 == 0
+        else ChatTurn(role="advisor", text=f"reply {i}")
+        for i in range(CHAT_TURN_CAP)
+    ]
+    path = chat_path(session_id, "excomm", record.run_id, member_id, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([t.model_dump(mode="json") for t in turns]), encoding="utf-8")
+
+    with pytest.raises(SessionError, match="turn limit"):
+        send_excomm_chat_message(
+            session_id, "excomm_debate", record.run_id, member_id, "one more?", root=root
+        )
+
+
+def test_chat_never_touches_run_record_or_the_schema_version(tmp_path: Path) -> None:
+    """Session-directory state, like the narrative and the analysis — a chat must not
+    change what a re-read of the arm's own JSONL file reports."""
+    session_id, root, record = _excomm_run(tmp_path)
+    member_id = record.deliberation[0].member_id
+    before = arm_records(session_id, "excomm_debate", root)
+
+    send_excomm_chat_message(
+        session_id, "excomm_debate", record.run_id, member_id, "Why did you argue that?",
+        root=root,
+    )
+
+    after = arm_records(session_id, "excomm_debate", root)
+    assert [r.model_dump(mode="json") for r in before] == [r.model_dump(mode="json") for r in after]
