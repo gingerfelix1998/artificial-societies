@@ -71,8 +71,14 @@ def public_events_from(events: tuple[WorldEvent, ...] | list[WorldEvent]) -> lis
     Deliberately not a `PerceptionFilter` product: the audience is not a nation's
     collection apparatus and gets no `confidence`/`degraded`/collection reading — only
     `PublicEvent`'s bare `event_id`/`t`/`actor_nation`/`description`, dropping
-    `ground_truth_detail`, `observable_signature`, `covert` and `action` explicitly. Use
-    this on the injected scenario events, never on `PerceivedEvent`s.
+    `ground_truth_detail`, `observable_signature` and `action` explicitly.
+
+    **Covert events are filtered out here, not left to a caller to remember.** A covert
+    action is by definition not publicly known, so it cannot become a `PublicEvent` no
+    matter what set it is called on. Pass this the events actually **detected** by the
+    scenario's own nation (`world.events` minus whatever `PerceptionFilter.view` reported
+    as missed) — an event nobody detected is not public knowledge either — never the raw
+    injected log, and never a `PerceivedEvent[]`.
     """
     return [
         PublicEvent(
@@ -82,6 +88,7 @@ def public_events_from(events: tuple[WorldEvent, ...] | list[WorldEvent]) -> lis
             description=event.description,
         )
         for event in events
+        if not event.covert
     ]
 
 

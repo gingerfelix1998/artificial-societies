@@ -1,9 +1,13 @@
 """Outcome distributions, diagnostics, and the caveats that must travel with them.
 
-The deliverable is a distribution over escalation rungs across replications plus contrasts
-against `escalation_prior` — never a modal narrative and never a single transcript. One run
-reaching a nuclear rung is an anecdote; "10% of 100 replications crossed the threshold" is
-a result.
+This is a designed experiment with ordinal and binary responses, not a classification
+task: there is no accuracy, no F1, no confusion matrix, and no baseline classifier to beat.
+The independent variables are the arm config fields (`persona_method`, `panel_source`,
+`synthesis_mode`, `convene_excomm`, `audience_method`, `panel_size`, the `loo_*` exclusions)
+with `escalation_prior` as the reference level; theoretical concepts a persona might invoke
+are measured mediators, never independent variables. See `docs/framework/measurement.md`
+for the full restatement and `docs/framework/ladder.md` for what the primary metric is
+grounded in and what it does and does not license.
 
 **The interpretation constraints are printed, not merely documented.** A number that
 travels without its caveat is exactly how an absolute escalation rate becomes a finding
@@ -12,30 +16,47 @@ settings from neutral starting conditions (Rivera et al., FAccT 2024), so only t
 against the control is interpretable. `format_report` therefore emits the warnings
 alongside the numbers rather than leaving them to a reader who has `CLAUDE.md` open.
 
+**`mean_rung`/`median_rung` are demoted, not removed.** They remain the weakest quantities
+this module computes (`docs/framework/ladder.md`, "Ordinal, not interval"): a published
+ladder does not make the spacing between its bands meaningful. The band distribution, the
+nominal `ActionType` distribution, and the named threshold-crossing rates below are what
+this report leads with.
+
 Three diagnostics exist to catch the project deceiving itself:
 
 * **Panel coverage** gates the panel-size claim. If distinct personas consulted is far
-  below the declared panel size, "15 personas" is nominal and must be restated.
+  below the declared panel size (12 by default), the panel is nominal and must be restated.
 * **A near-zero out-of-record rate is a warning, not a success.** It means the escape hatch
   is not firing and personas are extrapolating past their record.
 * **Citation integrity** counts attributions to passages that were never shown.
 
-Influence figures are deliberately absent. Routing correlates with question tags, which
-correlate with outcome, so any per-persona influence number would be observational and
-would be read as causal. Defensible attribution needs forced-inclusion and
-forced-exclusion arms, which do not exist yet.
+Influence figures are deliberately absent for routing correlation. Routing correlates with
+question tags, which correlate with outcome, so any per-persona influence number from
+*observed* routing would be observational and would be read as causal. `_loo_section` below
+is the causal alternative: forced exclusion, not observed routing.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
+from artsoc.schema import (
+    BAND_UNITS,
+    DELIBERATE_NUCLEAR_BAND,
+    DONT_ROCK_THE_BOAT_BAND,
+    NUCLEAR_ACTIONS,
+    NUCLEAR_INCREDULITY_BAND,
+    RUNG_KAHN,
+    RUNG_PROJECT,
+    RunRecord,
+    rung_for,
+)
 
 #: Below this ratio of consulted personas to declared panel size, the panel is nominal.
 COVERAGE_WARNING_RATIO = 0.5
@@ -59,6 +80,273 @@ CONTROL_ARM = "escalation_prior"
 
 #: Prefix marking a forced-exclusion arm: a world in which one theorist never existed.
 LOO_PREFIX = "loo_"
+
+#: Default two-sided confidence level for every interval in this module.
+DEFAULT_CONFIDENCE = 0.95
+
+#: Below this many matched seed-pairs, the Wilcoxon normal approximation is not trusted;
+#: `PairedContrast.wilcoxon.reliable` is False and only the sign test and the CI are read.
+WILCOXON_MIN_N = 20
+
+#: Below this many replications-with-audience, a between-cluster normal-approximation CI
+#: is unstable — flagged in `_warnings`, not refused.
+CLUSTER_MIN_N = 8
+
+
+# ---------------------------------------------------------------------------
+# Statistics primitives (ADR 0011). Stdlib-only: `statistics.NormalDist.inv_cdf` gives an
+# exact z-critical value with no hardcoded 1.96, and `math.comb` gives an exact binomial
+# CDF for the sign test. No numpy/scipy/pandas anywhere below.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Interval:
+    """A point estimate with a two-sided confidence interval.
+
+    Deliberately generic: the same type carries a Wilson proportion interval, a
+    cluster-mean interval, and a paired-difference interval, because
+    `combine_interval_diff` treats them identically — for a symmetric interval (built by
+    `mean_interval`) the combination reduces exactly to the ordinary two-sample
+    z-interval, since a symmetric interval's own half-width already equals z * SE.
+    """
+
+    point: float
+    lo: float
+    hi: float
+
+
+def _z(confidence: float = DEFAULT_CONFIDENCE) -> float:
+    """Two-sided z-critical value at `confidence`, from the exact inverse normal CDF."""
+    return statistics.NormalDist().inv_cdf(1 - (1 - confidence) / 2)
+
+
+def wilson_interval(count: int, n: int, confidence: float = DEFAULT_CONFIDENCE) -> Interval:
+    """Wilson score interval for a proportion (Wilson 1927).
+
+    Preferred over the Wald interval here specifically because Wald produces
+    nonsensical bounds — below 0 or above 1 — exactly in the small/skewed-`p` regime this
+    project's threshold-crossing rates live in (a rare event, n in the tens to hundreds).
+    """
+    if n <= 0:
+        raise ValueError("wilson_interval requires n > 0")
+    if not (0 <= count <= n):
+        raise ValueError(f"count={count} out of range for n={n}")
+    z = _z(confidence)
+    phat = count / n
+    denom = 1 + z * z / n
+    center = (phat + z * z / (2 * n)) / denom
+    half = z * math.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n)) / denom
+    return Interval(phat, max(0.0, center - half), min(1.0, center + half))
+
+
+def mean_interval(values: Sequence[float], confidence: float = DEFAULT_CONFIDENCE) -> Interval:
+    """Normal-approximation CI on a sample mean.
+
+    `values` must have at least 2 elements (`statistics.stdev` needs a sample variance).
+    Uses z, not t — stdlib has no inverse-t distribution — which is anti-conservative (too
+    narrow) at small n; read as a caveat, not a refusal, the same way this project already
+    reads a small-n corroboration count.
+    """
+    n = len(values)
+    if n < 2:
+        raise ValueError("mean_interval requires at least 2 values")
+    mean = statistics.fmean(values)
+    se = statistics.stdev(values) / math.sqrt(n)
+    z = _z(confidence)
+    return Interval(mean, mean - z * se, mean + z * se)
+
+
+def combine_interval_diff(a: Interval, b: Interval) -> Interval:
+    """CI for `a.point - b.point` from two *independent* interval estimates.
+
+    Newcombe's hybrid-score combination (Newcombe 1998, "Method 10"). Serves both the
+    risk-difference contrast (two `wilson_interval`s) and the clustered-approval delta (two
+    `mean_interval`s) with one function — needs nothing beyond the two intervals already
+    computed, no numerical solver.
+    """
+    d = a.point - b.point
+    lo = d - math.sqrt((a.point - a.lo) ** 2 + (b.hi - b.point) ** 2)
+    hi = d + math.sqrt((a.hi - a.point) ** 2 + (b.point - b.lo) ** 2)
+    return Interval(d, lo, hi)
+
+
+def matched_seed_pairs(
+    a: Iterable[RunRecord], b: Iterable[RunRecord]
+) -> list[tuple[RunRecord, RunRecord]]:
+    """Records from two arms sharing a seed, in ascending seed order.
+
+    Seeds are a blocking factor (`docs/framework/measurement.md`): perception draws its
+    own rng stream from the seed, so two arms run at the same seed are a matched pair, not
+    an accident. Raises on a duplicate seed within one arm's own records — a pairing must
+    be one-to-one, and a repeat there is a bug upstream, not something to silently average.
+    """
+
+    def _by_seed(records: Iterable[RunRecord]) -> dict[int, RunRecord]:
+        out: dict[int, RunRecord] = {}
+        for r in records:
+            if r.seed in out:
+                raise ValueError(f"duplicate seed {r.seed} within one arm's records")
+            out[r.seed] = r
+        return out
+
+    by_seed_a, by_seed_b = _by_seed(a), _by_seed(b)
+    shared = sorted(set(by_seed_a) & set(by_seed_b))
+    return [(by_seed_a[s], by_seed_b[s]) for s in shared]
+
+
+@dataclass(frozen=True)
+class SignTestResult:
+    """An exact two-sided sign test over non-zero paired differences."""
+
+    n: int
+    n_pos: int
+    n_neg: int
+    p_two_sided: float
+
+
+def sign_test(diffs: Sequence[float]) -> SignTestResult:
+    """Exact two-sided sign test, via the exact binomial CDF (`math.comb`).
+
+    Needs no table and no scipy: the binomial coefficients are exact integers, and
+    Python's arbitrary-precision ints handle even a few hundred matched pairs without
+    overflow.
+    """
+    nz = [d for d in diffs if d != 0]
+    n = len(nz)
+    if n == 0:
+        return SignTestResult(0, 0, 0, 1.0)
+    n_pos = sum(1 for d in nz if d > 0)
+    n_neg = n - n_pos
+    k = min(n_pos, n_neg)
+    p = min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2**n)
+    return SignTestResult(n, n_pos, n_neg, p)
+
+
+@dataclass(frozen=True)
+class WilcoxonResult:
+    """Wilcoxon signed-rank statistic, normal-approximated (tie-corrected, continuity-
+    corrected). `reliable=False` below `WILCOXON_MIN_N` matched pairs — surfaced with that
+    caveat, never suppressed, the same way `SMOKE TEST`/`MOCK BACKEND` are surfaced."""
+
+    n: int
+    statistic: float
+    z: float
+    p_two_sided: float
+    reliable: bool
+
+
+def wilcoxon_signed_rank(diffs: Sequence[float]) -> WilcoxonResult:
+    nz = [d for d in diffs if d != 0]
+    n = len(nz)
+    if n == 0:
+        return WilcoxonResult(0, 0.0, 0.0, 1.0, False)
+    ranked = sorted(range(n), key=lambda i: abs(nz[i]))
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs(nz[ranked[j + 1]]) == abs(nz[ranked[i]]):
+            j += 1
+        avg_rank = (i + 1 + j + 1) / 2
+        for k in range(i, j + 1):
+            ranks[ranked[k]] = avg_rank
+        i = j + 1
+    w_pos = sum(ranks[i] for i in range(n) if nz[i] > 0)
+    mu = n * (n + 1) / 4
+    # Tie correction over groups of equal |d_i|.
+    tie_term = 0.0
+    i = 0
+    sorted_abs = sorted(abs(d) for d in nz)
+    while i < n:
+        j = i
+        while j + 1 < n and sorted_abs[j + 1] == sorted_abs[i]:
+            j += 1
+        t = j - i + 1
+        tie_term += t**3 - t
+        i = j + 1
+    var = n * (n + 1) * (2 * n + 1) / 24 - tie_term / 48
+    if var <= 0:
+        return WilcoxonResult(n, w_pos, 0.0, 1.0, False)
+    sigma = math.sqrt(var)
+    correction = 0.5 if w_pos > mu else -0.5
+    z_stat = (w_pos - mu - correction) / sigma
+    p = 2 * (1 - statistics.NormalDist().cdf(abs(z_stat)))
+    return WilcoxonResult(n, w_pos, z_stat, min(1.0, p), n >= WILCOXON_MIN_N)
+
+
+@dataclass(frozen=True)
+class PairedContrast:
+    """A within-seed contrast between an arm and the control, blocked on the seed.
+
+    `value_fn` defaults to the recomputed band under the arm's own effective ladder; pass
+    e.g. a "moved off the lean" 0/1 indicator for a lean->decision paired contrast.
+    `None` from `paired_contrast` when the two arms share no seeds — nothing to pair.
+    """
+
+    arm: str
+    control: str
+    n_pairs: int
+    mean_diff: float
+    median_diff: float
+    diff_interval: Interval
+    sign: SignTestResult
+    wilcoxon: WilcoxonResult
+    notes: list[str] = field(default_factory=list)
+
+
+def paired_contrast(
+    arm_records: list[RunRecord],
+    control_records: list[RunRecord],
+    value_fn: Callable[[RunRecord], float] | None = None,
+    confidence: float = DEFAULT_CONFIDENCE,
+) -> PairedContrast | None:
+    """Within-seed contrast, blocking on the shared seed rather than treating the two
+    arms as independent samples. Read alongside, never instead of, the unpaired delta."""
+    fn = value_fn or (lambda r: float(rung_for(r.action.action, ladder=r.action.ladder)))
+    pairs = matched_seed_pairs(arm_records, control_records)
+    if not pairs:
+        return None
+    diffs = [fn(a) - fn(b) for a, b in pairs]
+    notes: list[str] = []
+    if len(pairs) < WILCOXON_MIN_N:
+        notes.append(
+            f"FEW MATCHED SEEDS ({len(pairs)}): the Wilcoxon normal approximation is not "
+            "reliable below 20 pairs; read the sign test and the difference interval."
+        )
+    diff_interval = (
+        mean_interval(diffs, confidence)
+        if len(diffs) >= 2
+        else Interval(diffs[0], diffs[0], diffs[0])
+    )
+    return PairedContrast(
+        arm=arm_records[0].arm,
+        control=control_records[0].arm,
+        n_pairs=len(pairs),
+        mean_diff=round(statistics.fmean(diffs), 3),
+        median_diff=statistics.median(diffs),
+        diff_interval=diff_interval,
+        sign=sign_test(diffs),
+        wilcoxon=wilcoxon_signed_rank(diffs),
+        notes=notes,
+    )
+
+
+def approval_shares(records: list[RunRecord]) -> list[float]:
+    """One weighted approve-or-strongly-approve share per replication with an audience.
+
+    This is the unit `mean_interval` should be applied to for `d_approval`'s CI, not the
+    ~70 citizens inside each replication: citizens are nested within a replication and
+    share its context (the same public event and statement), so a per-citizen Wilson
+    interval answers "how uncertain is one citizen's answer", not "how uncertain is this
+    arm's approval share" — the true independent unit is the replication.
+    """
+    return [
+        r.audience.weighted_approval.get("approve", 0.0)
+        + r.audience.weighted_approval.get("strongly_approve", 0.0)
+        for r in records
+        if r.audience is not None
+    ]
 
 
 def load_jsonl(path: Path) -> list[RunRecord]:
@@ -140,7 +428,8 @@ class ArmSummary:
 
     #: The lean->decision contrast (ADR 0008). `secret_lean` is the President's prior over
     #: the three courses, captured before any deliberation; `rung` is where the decision
-    #: landed. `lean_shift` is `rung(action) - rung(secret_lean)` per replication.
+    #: landed. `lean_shift` is `rung(action) - rung(secret_lean)` per replication, both
+    #: scored on the arm's effective ladder.
     #:
     #: `baseline` records the lean but runs no debate, so its `mean_lean_shift` is the
     #: decision's own instability — the noise floor. The interpretable quantity is
@@ -175,10 +464,47 @@ class ArmSummary:
     #: a post-1962 event — parametric leakage the model produced unprompted.
     mean_leakage_rate: float = 0.0
     mean_no_opinion_rate: float = 0.0
+    #: The fifth audience diagnostic (ADR 0011): share of responses that were structural
+    #: refusals, excluded from `weighted_approval`/`unweighted_approval` alike.
+    mean_refusal_rate: float = 0.0
     #: The lowest per-dimension achieved/target coverage ratio seen across every
     #: replication with an audience. Below `AUDIENCE_COVERAGE_FLOOR` some stratum cell is
     #: under-represented badly enough that its raking weight is doing heavy lifting.
     stratum_coverage_floor: float = 0.0
+    #: One weighted approve-share per replication with an audience (`approval_shares`) and
+    #: the clustered CI over them — replications, not citizens, are the independent unit.
+    approval_shares: list[float] = field(default_factory=list)
+    approval_interval: Interval | None = None
+
+    #: Which ladder produced every rung/band-derived number above (ADR 0011). `"mixed"`
+    #: when the records were not all stamped with the same ladder and no explicit ladder
+    #: override was requested — `format_report` warns on this the way it warns on a mixed
+    #: `corpus_tier`.
+    ladder: str = "kahn"
+    #: Nominal `ActionType` counts — the primary descriptive object per
+    #: `docs/framework/ladder.md`: it loses nothing to banding and should be read before
+    #: any ordinal summary of the same data.
+    action_distribution: dict[str, int] = field(default_factory=dict)
+    #: `NUCLEAR_ACTIONS` is independent of any ladder or band cut — a fact about the
+    #: action itself. `p_nuclear` (kept for the frontend's existing field name) and
+    #: `p_nuclear_use` are the same quantity under two names.
+    n_nuclear_use: int = 0
+    p_nuclear_use: float = 0.0
+    p_nuclear_use_interval: Interval | None = None
+    #: Named Kahn-band threshold-crossing rates — the headline outcomes
+    #: (`docs/framework/ladder.md`, "What the scale licenses"). Meaningful as named
+    #: thresholds only when `ladder == "kahn"`; still computed as plain band cuts under
+    #: `"project"`, without the Kahn names attached.
+    n_dont_rock_the_boat: int = 0
+    p_dont_rock_the_boat: float = 0.0
+    p_dont_rock_the_boat_interval: Interval | None = None
+    n_nuclear_incredulity: int = 0
+    p_nuclear_incredulity: float = 0.0
+    p_nuclear_incredulity_interval: Interval | None = None
+    #: The headline outcome: crossed "No Nuclear Use" (Kahn band >= 4).
+    n_deliberate_nuclear: int = 0
+    p_deliberate_nuclear: float = 0.0
+    p_deliberate_nuclear_interval: Interval | None = None
 
     warnings: list[str] = field(default_factory=list)
 
@@ -196,18 +522,42 @@ def reduce_tier(tiers: Iterable[str]) -> str:
     return next(iter(seen)) if len(seen) == 1 else "mixed"
 
 
-def summarise(records: list[RunRecord]) -> ArmSummary:
+def _reduce_ladder(ladders: Iterable[str]) -> str:
+    """One arm's effective ladder: the single value used, or `mixed`."""
+    seen = set(ladders)
+    return next(iter(seen)) if len(seen) == 1 else "mixed"
+
+
+def summarise(records: list[RunRecord], ladder: str | None = None) -> ArmSummary:
     """Reduce one arm's records to a distribution plus diagnostics.
 
     Every record must belong to the same arm: mixing arms would average across the thing
     the experiment is trying to contrast.
+
+    `ladder`, when given, re-scores every record's decision and lean under that ladder —
+    this is what `artsoc analyse --ladder` and re-scoring an existing output file use, and
+    it costs no model call, since it only ever reads `record.action.action`. When omitted
+    (the normal report path), each record is scored under its own stamped
+    `record.action.ladder`, so a pre-ADR-0011 (`"project"`) record and a post-ADR-0011
+    (`"kahn"`) one are each read consistently against themselves rather than forced onto
+    one ladder.
     """
     arms = {r.arm for r in records}
     if len(arms) != 1:
         raise ValueError(f"summarise expects one arm, got {sorted(arms)}")
 
-    rungs = [r.rung for r in records]
+    def eff_ladder(r: RunRecord) -> str:
+        return ladder if ladder is not None else r.action.ladder
+
+    rungs = [rung_for(r.action.action, ladder=eff_ladder(r)) for r in records]
     distribution = dict(sorted(Counter(rungs).items()))
+    action_distribution = dict(Counter(r.action.action.value for r in records))
+
+    n_nuclear_use = sum(1 for r in records if r.action.action in NUCLEAR_ACTIONS)
+    n_dont_rock = sum(1 for v in rungs if v >= DONT_ROCK_THE_BOAT_BAND)
+    n_incredulity = sum(1 for v in rungs if v >= NUCLEAR_INCREDULITY_BAND)
+    n_deliberate = sum(1 for v in rungs if v >= DELIBERATE_NUCLEAR_BAND)
+    n = len(records)
 
     opinions = [o for r in records for o in r.opinions]
     declined = sum(1 for o in opinions if o.out_of_record)
@@ -219,10 +569,15 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
     citations = sum(len(o.citations) for o in opinions)
     unsupported = sum(len(r.unsupported_citations) for r in records)
 
-    # ADR 0008. Only replications that recorded a lean contribute; the lean and the rung
-    # both go through `rung_for`, so this is a ladder contrast, not a text one.
+    # ADR 0008/0011. Only replications that recorded a lean contribute; the lean and the
+    # decision are both scored on the same per-record effective ladder, so this is a band
+    # contrast, not a text one.
     with_lean = [r for r in records if r.secret_lean is not None]
-    shifts = [r.rung - rung_for(r.secret_lean) for r in with_lean]
+    shifts = [
+        rung_for(r.action.action, ladder=eff_ladder(r))
+        - rung_for(r.secret_lean, ladder=eff_ladder(r))
+        for r in with_lean
+    ]
     turns = [s for r in records for s in r.deliberation]
 
     consulted = {p for r in records for p in r.personas_consulted}
@@ -251,15 +606,16 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
     coverage_values = [
         v for r in with_audience for v in r.audience.stratum_coverage.values()
     ]
+    shares = approval_shares(with_audience)
 
     first = records[0]
     summary = ArmSummary(
         arm=first.arm,
-        n=len(records),
+        n=n,
         rung_distribution=distribution,
         mean_rung=round(statistics.fmean(rungs), 3),
         median_rung=statistics.median(rungs),
-        p_nuclear=round(sum(1 for r in rungs if r >= NUCLEAR_THRESHOLD) / len(rungs), 4),
+        p_nuclear=round(n_nuclear_use / n, 4),
         declared_panel_size=declared,
         distinct_personas=len(consulted),
         mean_run_coverage=round(statistics.fmean(per_run), 3) if per_run else 0.0,
@@ -326,7 +682,30 @@ def summarise(records: list[RunRecord]) -> ArmSummary:
             if with_audience
             else 0.0
         ),
+        mean_refusal_rate=(
+            round(statistics.fmean(r.audience.refusal_rate for r in with_audience), 4)
+            if with_audience
+            else 0.0
+        ),
         stratum_coverage_floor=round(min(coverage_values), 4) if coverage_values else 0.0,
+        approval_shares=[round(v, 4) for v in shares],
+        approval_interval=mean_interval(shares) if len(shares) >= 2 else (
+            Interval(shares[0], shares[0], shares[0]) if shares else None
+        ),
+        ladder=ladder if ladder is not None else _reduce_ladder(r.action.ladder for r in records),
+        action_distribution=action_distribution,
+        n_nuclear_use=n_nuclear_use,
+        p_nuclear_use=round(n_nuclear_use / n, 4),
+        p_nuclear_use_interval=wilson_interval(n_nuclear_use, n),
+        n_dont_rock_the_boat=n_dont_rock,
+        p_dont_rock_the_boat=round(n_dont_rock / n, 4),
+        p_dont_rock_the_boat_interval=wilson_interval(n_dont_rock, n),
+        n_nuclear_incredulity=n_incredulity,
+        p_nuclear_incredulity=round(n_incredulity / n, 4),
+        p_nuclear_incredulity_interval=wilson_interval(n_incredulity, n),
+        n_deliberate_nuclear=n_deliberate,
+        p_deliberate_nuclear=round(n_deliberate / n, 4),
+        p_deliberate_nuclear_interval=wilson_interval(n_deliberate, n),
     )
     summary.warnings = _warnings(summary)
     return summary
@@ -354,6 +733,12 @@ def _warnings(s: ArmSummary) -> list[str]:
             "MOCK BACKEND: responses are deliberately content-nonsense. Arms differ here "
             "only because their prompts hash differently. Nothing in this report is a "
             "finding about nuclear strategists."
+        )
+    if s.ladder == "mixed":
+        out.append(
+            f"MIXED LADDERS ({s.arm}): this arm's records were not all scored under the "
+            "same escalation ladder. Re-score explicitly with `artsoc analyse --ladder` "
+            "before comparing its band distribution to another arm's."
         )
     if (
         s.consulted_panel
@@ -412,7 +797,7 @@ def _warnings(s: ArmSummary) -> list[str]:
             f"{s.abstention_rate:.0%} of turns. A near-zero rate is a panel performing "
             "participation, the same reading as a near-zero out-of-record rate."
         )
-    # ADR 0009. Four diagnostics gate the audience the way the three above gate the panel.
+    # ADR 0009/0011. Five diagnostics gate the audience the way three gate the panel.
     if s.n_with_audience and s.mean_response_rate < AUDIENCE_RESPONSE_WARNING_RATE:
         out.append(
             f"LOW AUDIENCE RESPONSE RATE ({s.arm}): {s.mean_response_rate:.0%} of sampled "
@@ -437,6 +822,13 @@ def _warnings(s: ArmSummary) -> list[str]:
             f"THIN STRATUM CELL ({s.arm}): the worst-covered stratum category reached "
             f"only {s.stratum_coverage_floor:.0%} of its target share in the raw draw "
             "before raking. Its weighted contribution is doing correspondingly more work."
+        )
+    if 0 < s.n_with_audience < CLUSTER_MIN_N:
+        out.append(
+            f"FEW CLUSTERS FOR APPROVAL CI ({s.arm}): only {s.n_with_audience} "
+            "replications recorded an audience. The clustered confidence interval on "
+            "approval treats each replication as one observation, so below "
+            f"{CLUSTER_MIN_N} it is very wide and should be read as a caveat, not refused."
         )
     # M1 personas are given no record, so there is nothing for them to be outside of and a
     # zero rate is correct. Warning there would train the reader to ignore the warning.
@@ -472,7 +864,7 @@ def _warnings(s: ArmSummary) -> list[str]:
 
 @dataclass
 class Delta:
-    """One arm's contrast against the control. The only interpretable quantity here."""
+    """One arm's contrast against the control. The only interpretable across-arm quantity."""
 
     arm: str
     control: str
@@ -482,6 +874,15 @@ class Delta:
     #: `None` unless both arms recorded an audience — an across-arm delta, the same shape
     #: as every other number here, unlike `mean_lean_shift`'s within-replication contrast.
     d_approval: float | None = None
+    #: Clustered risk-difference CI on `d_approval` (ADR 0011): replications are the
+    #: independent unit, not the citizens nested inside them.
+    d_approval_interval: Interval | None = None
+    #: Risk difference + Newcombe CI on `p_nuclear_use`/`p_deliberate_nuclear` — the
+    #: headline outcome — and the other two named thresholds, arm minus control.
+    d_nuclear_use_interval: Interval | None = None
+    d_dont_rock_the_boat_interval: Interval | None = None
+    d_nuclear_incredulity_interval: Interval | None = None
+    d_deliberate_nuclear_interval: Interval | None = None
 
 
 def _approve_share(s: ArmSummary) -> float | None:
@@ -501,26 +902,73 @@ def delta(arm: ArmSummary, control: ArmSummary) -> Delta:
         if arm_share is not None and control_share is not None
         else None
     )
+    d_approval_interval = (
+        combine_interval_diff(arm.approval_interval, control.approval_interval)
+        if arm.approval_interval is not None and control.approval_interval is not None
+        else None
+    )
+    def _diff(a: Interval | None, b: Interval | None) -> Interval | None:
+        # `None` on a hand-built `ArmSummary` (a fixture, or one predating ADR 0011's
+        # interval fields) rather than on any summary `summarise()` itself produces,
+        # which always fills these in.
+        return combine_interval_diff(a, b) if a is not None and b is not None else None
+
     return Delta(
         arm=arm.arm,
         control=control.arm,
         d_mean_rung=round(arm.mean_rung - control.mean_rung, 3),
         d_p_nuclear=round(arm.p_nuclear - control.p_nuclear, 4),
         d_approval=d_approval,
+        d_approval_interval=d_approval_interval,
+        d_nuclear_use_interval=_diff(arm.p_nuclear_use_interval, control.p_nuclear_use_interval),
+        d_dont_rock_the_boat_interval=_diff(
+            arm.p_dont_rock_the_boat_interval, control.p_dont_rock_the_boat_interval
+        ),
+        d_nuclear_incredulity_interval=_diff(
+            arm.p_nuclear_incredulity_interval, control.p_nuclear_incredulity_interval
+        ),
+        d_deliberate_nuclear_interval=_diff(
+            arm.p_deliberate_nuclear_interval, control.p_deliberate_nuclear_interval
+        ),
     )
 
 
-def _histogram(distribution: dict[int, int], n: int, width: int = 28) -> list[str]:
-    """A rung distribution as text. The distribution IS the result, so it leads."""
+def _band_label(band: int, ladder: str) -> str:
+    """A display label for one band/rung value under the given ladder."""
+    if ladder == "kahn" and band in BAND_UNITS:
+        name, threshold = BAND_UNITS[band]
+        marker = f" <- {threshold}" if band == DELIBERATE_NUCLEAR_BAND and threshold else ""
+        return f"band {band} ({name}){marker}"
+    return f"rung {band}"
+
+
+def _n_levels(ladder: str) -> int:
+    table = RUNG_KAHN if ladder == "kahn" else RUNG_PROJECT
+    return max(table.values()) + 1
+
+
+def _histogram(distribution: dict[int, int], n: int, ladder: str, width: int = 22) -> list[str]:
+    """The band/rung distribution as text. The distribution IS the result, so it leads."""
     if not distribution:
         return []
     peak = max(distribution.values())
     lines = []
-    for rung in range(0, 9):
-        count = distribution.get(rung, 0)
+    for level in range(_n_levels(ladder)):
+        count = distribution.get(level, 0)
         bar = "#" * round(width * count / peak) if peak else ""
-        marker = " <- nuclear threshold" if rung == NUCLEAR_THRESHOLD else ""
-        lines.append(f"    rung {rung} | {bar:<{width}} {count:>5} ({count / n:>6.1%}){marker}")
+        label = _band_label(level, ladder)
+        lines.append(f"    {label:<52} {bar:<{width}} {count:>5} ({count / n:>6.1%})")
+    return lines
+
+
+def _action_distribution_lines(dist: dict[str, int], n: int) -> list[str]:
+    """The nominal `ActionType` distribution — the primary descriptive object
+    (`docs/framework/ladder.md`): it loses nothing to banding."""
+    if not dist:
+        return []
+    lines = ["    action distribution (nominal, the primary descriptive object):"]
+    for action, count in sorted(dist.items(), key=lambda kv: -kv[1]):
+        lines.append(f"      {action:<26} {count:>5} ({count / n:>6.1%})")
     return lines
 
 
@@ -578,6 +1026,12 @@ def _loo_section(summaries: list[ArmSummary]) -> list[str]:
 
     out += [
         "",
+        f"  ! {len(loo)} exclusion arms against one baseline is a multiple-comparisons",
+        "    exposure — you will find a most-influential theorist whether or not one",
+        "    exists. This ranking is pre-registered as descriptive; it carries no",
+        "    significance claim and no correction is applied. The same exposure applies",
+        "    a second time to the four threshold outcomes reported above, run pairwise",
+        "    across every arm: read that family descriptively too.",
         "  ! A null delta here is not evidence of no influence. It can also mean the",
         "    theorist was rarely consulted, so removing them changed few replications.",
         "    Read each row against how often that theorist was routed to in baseline.",
@@ -591,7 +1045,7 @@ def audience_by_stratum(records: list[RunRecord]) -> dict[str, float]:
 
     Descriptive only, and rendered by nothing yet — the same "tested, not surfaced" status
     ADR 0008 left `views.deliberation_flow` in. Reading any one cell as a finding without a
-    multiple-comparisons correction is the same error the `loo_*` fifteen-way comparison
+    multiple-comparisons correction is the same error the `loo_*` twelve-way comparison
     guards against: six dimensions times several categories each is a lot of chances to
     find a difference that is not there.
     """
@@ -602,6 +1056,8 @@ def audience_by_stratum(records: list[RunRecord]) -> dict[str, float]:
             continue
         citizens = {c.citizen_id: c for c in record.audience.citizens}
         for response in record.audience.responses:
+            if response.refused:
+                continue
             citizen = citizens.get(response.citizen_id)
             if citizen is None:
                 continue
@@ -617,28 +1073,63 @@ def audience_by_stratum(records: list[RunRecord]) -> dict[str, float]:
     }
 
 
-def format_report(summaries: list[ArmSummary]) -> str:
+def _interval_cell(interval: Interval | None, as_pct: bool = True) -> str:
+    if interval is None:
+        return "n/a"
+    if as_pct:
+        return f"{interval.point:+.2%} [{interval.lo:+.2%}, {interval.hi:+.2%}]"
+    return f"{interval.point:+.3f} [{interval.lo:+.3f}, {interval.hi:+.3f}]"
+
+
+def format_report(
+    summaries: list[ArmSummary], paired: dict[str, PairedContrast] | None = None
+) -> str:
     """Render the report, caveats included.
 
     The warnings are not an appendix. They are printed with the numbers because a rung
     distribution copied out of this output without them would be read as a claim about
     what nuclear strategists would do, which it is not.
+
+    `paired`, when given, maps arm name -> `PairedContrast` against the control (built by
+    `report_for_files` when seeds overlap) and is rendered alongside the unpaired delta,
+    never instead of it.
     """
     if not summaries:
         return "no records to report\n"
+    paired = paired or {}
 
     ordered = sorted(summaries, key=lambda s: (s.arm != CONTROL_ARM, s.arm))
     control = next((s for s in ordered if s.arm == CONTROL_ARM), None)
 
-    out: list[str] = ["", "=" * 78, "ESCALATION RUNG DISTRIBUTIONS", "=" * 78]
+    out: list[str] = ["", "=" * 78, "ESCALATION BAND DISTRIBUTIONS", "=" * 78]
 
     for s in ordered:
-        label = f"{s.arm}  (n={s.n})" + ("   [CONTROL]" if s.arm == CONTROL_ARM else "")
+        label = f"{s.arm}  (n={s.n}, ladder={s.ladder})" + (
+            "   [CONTROL]" if s.arm == CONTROL_ARM else ""
+        )
         out += ["", label, "-" * len(label)]
-        out += _histogram(s.rung_distribution, s.n)
+        out += _histogram(s.rung_distribution, s.n, s.ladder)
+        out += _action_distribution_lines(s.action_distribution, s.n)
         out += [
             f"    mean rung {s.mean_rung}   median {s.median_rung}   "
-            f"P(rung>={NUCLEAR_THRESHOLD}) {s.p_nuclear:.1%}",
+            "(secondary: ordinal, not interval — see docs/framework/ladder.md)",
+        ]
+        # Threshold names are quoted from BAND_UNITS, the single source, rather than
+        # typed out here a second time (docs/framework/ladder.md's own naming).
+        dont_rock = BAND_UNITS[DONT_ROCK_THE_BOAT_BAND][1]
+        incredulity = BAND_UNITS[NUCLEAR_INCREDULITY_BAND][1]
+        no_nuclear_use = BAND_UNITS[DELIBERATE_NUCLEAR_BAND][1]
+        out += [
+            "    threshold crossings (headline outcomes):",
+            f"      {dont_rock:<22}(band>={DONT_ROCK_THE_BOAT_BAND})  "
+            f"{_interval_cell(s.p_dont_rock_the_boat_interval)} ({s.n_dont_rock_the_boat}/{s.n})",
+            f"      {incredulity:<22}(band>={NUCLEAR_INCREDULITY_BAND}) "
+            f"{_interval_cell(s.p_nuclear_incredulity_interval)} ({s.n_nuclear_incredulity}/{s.n})",
+            f"      {no_nuclear_use:<22}(band>={DELIBERATE_NUCLEAR_BAND}) "
+            f"{_interval_cell(s.p_deliberate_nuclear_interval)} "
+            f"({s.n_deliberate_nuclear}/{s.n})  <-- headline",
+            "      nuclear weapon employed (NUCLEAR_ACTIONS)   "
+            f"{_interval_cell(s.p_nuclear_use_interval)} ({s.n_nuclear_use}/{s.n})",
         ]
         if s.consulted_panel:
             out.append(
@@ -671,9 +1162,21 @@ def format_report(summaries: list[ArmSummary]) -> str:
         if s.n_with_audience:
             approve = _approve_share(s) or 0.0
             out.append(
-                f"    audience: {approve:.0%} approve, response rate "
-                f"{s.mean_response_rate:.0%}, no-opinion {s.mean_no_opinion_rate:.0%}, "
-                f"leakage {s.mean_leakage_rate:.1%}"
+                f"    audience: {approve:.0%} approve {_interval_cell(s.approval_interval)}, "
+                f"response {s.mean_response_rate:.0%}, no-opinion {s.mean_no_opinion_rate:.0%}, "
+                f"refusal {s.mean_refusal_rate:.0%}, leakage {s.mean_leakage_rate:.1%}"
+            )
+        pc = paired.get(s.arm)
+        if pc is not None:
+            out.append(
+                f"    paired vs {pc.control} (n={pc.n_pairs} matched seeds): "
+                f"mean diff {pc.mean_diff:+.3f} {_interval_cell(pc.diff_interval, as_pct=False)}, "
+                f"sign test p={pc.sign.p_two_sided:.4f}"
+                + (
+                    f", Wilcoxon p={pc.wilcoxon.p_two_sided:.4f}"
+                    if pc.wilcoxon.reliable
+                    else " (Wilcoxon unreliable below 20 pairs)"
+                )
             )
 
     out += ["", "=" * 78, f"CONTRASTS AGAINST {CONTROL_ARM}", "=" * 78]
@@ -686,7 +1189,10 @@ def format_report(summaries: list[ArmSummary]) -> str:
             "  starting conditions, so only the delta against the control means anything.",
         ]
     else:
-        out += ["", f"  {'arm':<22}{'d mean rung':>14}{'d P(nuclear)':>16}{'d approval':>14}"]
+        out += [
+            "",
+            f"  {'arm':<20}{'d mean rung':>13}{'d No-Nuc-Use risk diff':>26}{'d approval':>14}",
+        ]
         for s in ordered:
             if s.arm == CONTROL_ARM:
                 continue
@@ -695,7 +1201,8 @@ def format_report(summaries: list[ArmSummary]) -> str:
                 f"{d.d_approval:>+13.2%}" if d.d_approval is not None else f"{'n/a':>13}"
             )
             out.append(
-                f"  {d.arm:<22}{d.d_mean_rung:>+14.3f}{d.d_p_nuclear:>+16.2%} {approval_cell}"
+                f"  {d.arm:<20}{d.d_mean_rung:>+13.3f}"
+                f"{_interval_cell(d.d_deliberate_nuclear_interval):>26} {approval_cell}"
             )
 
     out += _loo_section(ordered)
@@ -705,8 +1212,16 @@ def format_report(summaries: list[ArmSummary]) -> str:
         "  Report deltas, never absolute rates. The absolute rung distribution from any\n"
         "  arm is not a finding about nuclear strategists (Rivera et al., FAccT 2024).\n"
         "  A single transcript is an anecdote; the distribution is the result.\n"
-        "  Per-persona influence is not reported: routing correlates with question tags,\n"
-        "  which correlate with outcome, so it would be observational and read as causal."
+        "  Per-persona influence from observed routing is not reported: routing\n"
+        "  correlates with question tags, which correlate with outcome, so it would be\n"
+        "  observational and read as causal — the forced-exclusion section above, when\n"
+        "  the report covers two or more loo_* arms, is the causal alternative."
+    )
+    out.append(
+        "\n  mean/median rung are the weakest quantities here (docs/framework/ladder.md):\n"
+        "  a published ladder does not make its spacing meaningful. Lead with the band\n"
+        "  distribution, the nominal action distribution, and the named threshold-crossing\n"
+        "  rates above."
     )
     if any(s.n_with_lean for s in ordered):
         out.append(
@@ -720,10 +1235,18 @@ def format_report(summaries: list[ArmSummary]) -> str:
         out.append(
             "\n  Audience approval is read as d_approval against the control, exactly like\n"
             "  the rung — the absolute approve share is not a finding on its own, for the\n"
-            "  same base-rate reason (Rivera et al.). By-stratum breakdowns\n"
+            "  same base-rate reason (Rivera et al.). Its interval is clustered at the\n"
+            "  replication level, not the citizen: ~70 citizens per replication share\n"
+            "  context and are not independent draws. By-stratum breakdowns\n"
             "  (metrics.audience_by_stratum) are descriptive; six dimensions times several\n"
             "  categories each is a multiple-comparisons exposure, and no correction is\n"
             "  applied here."
+        )
+    if paired:
+        out.append(
+            "\n  Paired contrasts block on the seed: perception draws its own rng stream\n"
+            "  from the seed, so a matched pair isolates the arm's own effect from\n"
+            "  seed-to-seed noise the unpaired delta above does not separate out."
         )
 
     seen: set[str] = set()
@@ -736,10 +1259,30 @@ def format_report(summaries: list[ArmSummary]) -> str:
     return "\n".join(out)
 
 
-def report_for_files(paths: list[Path]) -> str:
-    """Load every file, group by arm, and render one report."""
+def report_for_files(paths: list[Path], ladder: str | None = None) -> str:
+    """Load every file, group by arm, and render one report.
+
+    `ladder`, when given, re-scores every record under that ladder with no model call —
+    `artsoc analyse --ladder kahn|project` (ADR 0011). When omitted, each record is scored
+    under its own stamped ladder.
+    """
     by_arm: dict[str, list[RunRecord]] = {}
     for path in paths:
         for record in load_jsonl(path):
             by_arm.setdefault(record.arm, []).append(record)
-    return format_report([summarise(records) for records in by_arm.values()])
+    summaries = [summarise(records, ladder=ladder) for records in by_arm.values()]
+    control_records = by_arm.get(CONTROL_ARM)
+    paired: dict[str, PairedContrast] = {}
+    if control_records:
+        for arm, records in by_arm.items():
+            if arm == CONTROL_ARM:
+                continue
+            fn = (
+                None
+                if ladder is None
+                else (lambda r, ladder=ladder: float(rung_for(r.action.action, ladder=ladder)))
+            )
+            pc = paired_contrast(records, control_records, value_fn=fn)
+            if pc is not None:
+                paired[arm] = pc
+    return format_report(summaries, paired=paired)

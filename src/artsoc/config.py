@@ -40,6 +40,11 @@ RETRIEVAL_MODES: frozenset[str] = frozenset({"stub", "corpus"})
 #: Where a panel comes from. `synthetic` is the celebrity-effect control.
 PANEL_SOURCES: frozenset[str] = frozenset({"registry", "synthetic"})
 
+#: Escalation ladders `schema.rung_for` can score against (ADR 0011). `kahn` is the
+#: default and primary; `project` is the project's own table, kept as a secondary
+#: sensitivity ordinal.
+LADDERS: frozenset[str] = frozenset({"kahn", "project"})
+
 #: How the panel for each question is chosen.
 #:
 #: `advisor` models the social act: the Advisor is shown who exists and what they work on,
@@ -62,6 +67,12 @@ class RunConfig(BaseModel):
 
     arm: str
     scenario_id: str = "phase1_tel_dispersal_v1"
+
+    #: Which escalation ladder scores the primary metric (ADR 0011,
+    #: `docs/framework/ladder.md`). A scoring choice, not a treatment — no arm sets this
+    #: away from the default, because re-scoring an existing record under either ladder
+    #: costs a function call, not a run (`artsoc analyse --ladder`).
+    ladder: str = "kahn"
 
     #: Not a CLI flag. See the module docstring. The mock is the default; a live backend
     #: is opted into here, never from the command line (ADR 0002).
@@ -257,6 +268,13 @@ class RunConfig(BaseModel):
     def _known_panel_source(cls, value: str) -> str:
         if value not in PANEL_SOURCES:
             raise ValueError(f"panel_source {value!r} not in {sorted(PANEL_SOURCES)}")
+        return value
+
+    @field_validator("ladder")
+    @classmethod
+    def _known_ladder(cls, value: str) -> str:
+        if value not in LADDERS:
+            raise ValueError(f"ladder {value!r} not in {sorted(LADDERS)}")
         return value
 
 

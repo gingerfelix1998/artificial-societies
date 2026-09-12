@@ -130,6 +130,38 @@ def test_citizen_response_defaults_to_not_refused() -> None:
     assert response.refused is False
 
 
+def test_refused_responses_are_excluded_from_the_approval_distributions() -> None:
+    """A structural refusal is not an opinion (ADR 0011) — it must not be counted into
+    `weighted_approval`/`unweighted_approval` as if it were a genuine `no_opinion`, the
+    same distinction `no_opinion_rate` already drew. It is counted into `refusal_rate`."""
+    import artsoc.sim as sim_module
+
+    frame = load_frame("us_1962")
+    sample = sample_citizens(frame, 4, random.Random(0))
+    ids = [c.citizen_id for c in sample.citizens]
+    responses = [
+        CitizenResponse(citizen_id=ids[0], approval="approve", primary_concern="other"),
+        CitizenResponse(citizen_id=ids[1], approval="disapprove", primary_concern="other"),
+        CitizenResponse(
+            citizen_id=ids[2], approval="no_opinion", primary_concern="other", refused=True
+        ),
+        CitizenResponse(
+            citizen_id=ids[3], approval="no_opinion", primary_concern="other", refused=True
+        ),
+    ]
+
+    record = sim_module._assemble_audience_record(
+        frame, "us_1962", 0, sample, responses, []
+    )
+    # Only the two answered responses contribute, so their shares sum to 1.0 between them
+    # rather than being diluted by the two refusals landing in `no_opinion`.
+    assert record.unweighted_approval == {"approve": 0.5, "disapprove": 0.5}
+    assert record.refusal_rate == 0.5
+    # A refusal is not folded into no_opinion_rate either — with no genuine no_opinion
+    # response among the two answered, the rate is 0.0, not inflated by the refusals.
+    assert record.no_opinion_rate == 0.0
+
+
 def test_citizen_response_rejects_an_unknown_approval_value() -> None:
     with pytest.raises(ValidationError):
         CitizenResponse(

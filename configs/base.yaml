@@ -8,6 +8,11 @@
 
 scenario_id: phase1_tel_dispersal_v1
 
+# Which escalation ladder scores the primary metric (ADR 0011, docs/framework/ladder.md).
+# A scoring choice, not a treatment: no arm overrides this. `artsoc analyse --ladder`
+# re-scores an existing output file under the other ladder with no model call.
+ladder: kahn
+
 # LIVE. Every `artsoc run` now makes real API calls and costs real money.
 #
 # Set back to `mock` to return to free offline runs. The test suite is unaffected either

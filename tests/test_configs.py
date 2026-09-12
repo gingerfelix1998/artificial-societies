@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from artsoc.cli import PERMITTED_RUN_FLAGS, build_parser
+from artsoc.cli import PERMITTED_RUN_FLAGS, build_parser, main
 from artsoc.config import (
     RunConfig,
     base_defaults,
@@ -21,6 +21,8 @@ from artsoc.config import (
     load_arm,
     varied_fields,
 )
+from artsoc.schema import ActionType, IntelBrief, PresidentialAction, RunRecord
+from artsoc.sim import write_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = REPO_ROOT / "Makefile"
@@ -237,6 +239,60 @@ def test_the_other_subcommands_take_no_experimental_options() -> None:
 
     `ingest` is included deliberately: chunking and passage ids are fixed by ADR 0003, and
     a `--chunk-size` flag would let someone silently invalidate every stored citation.
+
+    `rescore` is deliberately not in this list (ADR 0011): unlike a flag that would let a
+    caller configure what experiment to run, `--ladder` selects which of two already-
+    committed, deterministic, host-side lookup tables an *already-collected* record is
+    re-read through. No model call, no new `RunRecord`, nothing that could be true of one
+    run and not another the way `--backend` would be.
     """
     for name in ("arms", "analyse", "ingest"):
         assert _subparser_flags(name) == set()
+
+
+def test_rescore_exposes_only_the_ladder_choice() -> None:
+    """`rescore`'s one flag is closed to the ladders `schema.rung_for` actually knows."""
+    assert _subparser_flags("rescore") == {"--ladder"}
+
+
+def _fixture_record(seed: int, ladder: str) -> RunRecord:
+    action = PresidentialAction(
+        action=ActionType.NUCLEAR_DEMONSTRATION, justification="MOCK:", ladder=ladder
+    )
+    return RunRecord(
+        run_id=f"fixture-{seed}",
+        arm="fixture",
+        seed=seed,
+        started_at="2026-01-01T00:00:00Z",
+        wall_time_s=0.0,
+        config={},
+        backend="mock",
+        cache_enabled=True,
+        retrieval_mode="stub",
+        grounded=False,
+        scenario_id="fixture",
+        intel_brief=IntelBrief(summary="MOCK:", assessed_activity="MOCK:", confidence="moderate"),
+        action=action,
+        rung=action.rung,
+    )
+
+
+def test_rescore_reports_different_bands_with_no_model_call(tmp_path, capsys) -> None:
+    """`artsoc rescore --ladder` re-reads an existing file under either ladder (ADR 0011).
+
+    `nuclear_demonstration` is band 3 under Kahn (below the headline threshold) and rung 6
+    under the project table — the exact non-equivalence the ladder change is built around.
+    Reads a plain JSONL file and calls only `cli.main`/`metrics.report_for_files`, neither
+    of which constructs an `LLMClient` or a backend, so this is offline by construction.
+    """
+    path = tmp_path / "fixture.jsonl"
+    write_jsonl([_fixture_record(1, "kahn"), _fixture_record(2, "kahn")], path)
+
+    assert main(["rescore", str(path), "--ladder", "kahn"]) == 0
+    kahn_out = capsys.readouterr().out
+    assert main(["rescore", str(path), "--ladder", "project"]) == 0
+    project_out = capsys.readouterr().out
+
+    assert "band 3 (Intense Crises)" in kahn_out
+    assert "rung 6" in project_out
+    assert kahn_out != project_out

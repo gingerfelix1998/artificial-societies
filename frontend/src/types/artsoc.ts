@@ -124,8 +124,42 @@ export interface ArmSummary {
   mean_response_rate?: number
   mean_leakage_rate?: number
   mean_no_opinion_rate?: number
+  mean_refusal_rate?: number
   stratum_coverage_floor?: number
+  approval_shares?: number[]
+  approval_interval?: Interval | null
+  ladder?: string
+  action_distribution?: {
+    [k: string]: number
+  }
+  n_nuclear_use?: number
+  p_nuclear_use?: number
+  p_nuclear_use_interval?: Interval | null
+  n_dont_rock_the_boat?: number
+  p_dont_rock_the_boat?: number
+  p_dont_rock_the_boat_interval?: Interval | null
+  n_nuclear_incredulity?: number
+  p_nuclear_incredulity?: number
+  p_nuclear_incredulity_interval?: Interval | null
+  n_deliberate_nuclear?: number
+  p_deliberate_nuclear?: number
+  p_deliberate_nuclear_interval?: Interval | null
   warnings?: string[]
+}
+/**
+ * A point estimate with a two-sided confidence interval.
+ *
+ * Deliberately generic: the same type carries a Wilson proportion interval, a
+ * cluster-mean interval, and a paired-difference interval, because
+ * `combine_interval_diff` treats them identically — for a symmetric interval (built by
+ * `mean_interval`) the combination reduces exactly to the ordinary two-sample
+ * z-interval, since a symmetric interval's own half-width already equals z * SE.
+ */
+
+export interface Interval {
+  point: number
+  lo: number
+  hi: number
 }
 
 /**
@@ -215,7 +249,7 @@ export interface PersonaCoaSupport {
 }
 
 /**
- * One arm's contrast against the control. The only interpretable quantity here.
+ * One arm's contrast against the control. The only interpretable across-arm quantity.
  */
 
 export interface Delta {
@@ -224,10 +258,20 @@ export interface Delta {
   d_mean_rung: number
   d_p_nuclear: number
   d_approval?: number | null
+  d_approval_interval?: Interval | null
+  d_nuclear_use_interval?: Interval | null
+  d_dont_rock_the_boat_interval?: Interval | null
+  d_nuclear_incredulity_interval?: Interval | null
+  d_deliberate_nuclear_interval?: Interval | null
 }
-
 /**
- * Per-persona engagement across an arm, plus what could not be attributed.
+ * A point estimate with a two-sided confidence interval.
+ *
+ * Deliberately generic: the same type carries a Wilson proportion interval, a
+ * cluster-mean interval, and a paired-difference interval, because
+ * `combine_interval_diff` treats them identically — for a symmetric interval (built by
+ * `mean_interval`) the combination reduces exactly to the ordinary two-sample
+ * z-interval, since a symmetric interval's own half-width already equals z * SE.
  */
 
 export interface EngagementSummary {
@@ -588,6 +632,7 @@ export interface PresidentialAction {
    */
   justification: string
   chosen_coa_id?: string | null
+  ladder?: string
   rung: number
   is_nuclear: boolean
 }
@@ -862,6 +907,7 @@ export interface AudienceRecord {
   response_rate?: number
   leakage_rate?: number
   no_opinion_rate?: number
+  refusal_rate?: number
   stratum_coverage?: {
     [k: string]: number
   }
@@ -1050,6 +1096,7 @@ export interface RosterEntry {
 export interface RunConfig {
   arm: string
   scenario_id?: string
+  ladder?: string
   backend?: string
   models?: {
     [k: string]: string

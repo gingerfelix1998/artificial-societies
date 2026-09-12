@@ -368,6 +368,7 @@ def _survey_audience(
     client: LLMClient,
     scenario: Scenario,
     world,
+    missed: list[str],
     panel: list[Persona],
     opinions: list[TheoristOpinion],
     deliberation: _Deliberation,
@@ -385,7 +386,13 @@ def _survey_audience(
     # off must not shift panel/routing/perception draws at the same seed, which is what
     # keeps a baseline-vs-baseline+audience contrast clean.
     sample = sample_citizens(frame, config.audience_size, random.Random(seed))
-    public_events = public_events_from(world.events)
+    # The public cannot know what nobody detected: `missed` (from the same
+    # `PerceptionFilter.view` call the Intelligence Officer's brief is built from) is
+    # excluded before `public_events_from`'s own covert filter runs, rather than handing
+    # it every injected event regardless of whether anyone perceived it.
+    missed_ids = set(missed)
+    detected = [e for e in world.events if e.event_id not in missed_ids]
+    public_events = public_events_from(detected)
     statement = public_statement_from(action)
     forbidden = _audience_forbidden_tokens(panel, opinions, deliberation, intel, ground_truth)
 
@@ -428,20 +435,27 @@ def _assemble_audience_record(
     weights = {c.citizen_id: c.weight for c in sample.citizens}
     total_weight = sum(weights.values()) or 1.0
 
+    # A structural refusal is not an opinion, weighted or not — it is excluded from both
+    # distributions below rather than counted in as `no_opinion`, the same distinction
+    # `no_opinion_rate` already drew. Its own share is `refusal_rate`, the fifth audience
+    # diagnostic.
+    answered = [r for r in responses if not r.refused]
+    answered_weight = sum(weights.get(r.citizen_id, 0.0) for r in answered) or 1.0
+
     unweighted: dict[str, float] = {}
     weighted: dict[str, float] = {}
-    for response in responses:
+    for response in answered:
         key = response.approval.value
         unweighted[key] = unweighted.get(key, 0.0) + 1
         weighted[key] = weighted.get(key, 0.0) + weights.get(response.citizen_id, 0.0)
-    n_responses = len(responses) or 1
-    unweighted = {k: v / n_responses for k, v in unweighted.items()}
-    weighted = {k: v / total_weight for k, v in weighted.items()}
+    n_answered = len(answered) or 1
+    unweighted = {k: v / n_answered for k, v in unweighted.items()}
+    weighted = {k: v / answered_weight for k, v in weighted.items()}
 
     n_sampled = len(sample.citizens) or 1
     response_rate = len(responses) / n_sampled
+    refusal_rate = sum(1 for r in responses if r.refused) / len(responses) if responses else 0.0
 
-    answered = [r for r in responses if not r.refused]
     no_opinion_rate = (
         sum(1 for r in answered if r.approval == Approval.NO_OPINION) / len(answered)
         if answered
@@ -476,6 +490,7 @@ def _assemble_audience_record(
         response_rate=round(response_rate, 4),
         leakage_rate=round(leakage_rate, 4),
         no_opinion_rate=round(no_opinion_rate, 4),
+        refusal_rate=round(refusal_rate, 4),
         stratum_coverage=sample.stratum_coverage,
         validation_distance=validation_distance,
     )
@@ -547,6 +562,11 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
     action = President(client, scenario.doctrine_card).decide(
         intel, brief, coas or None, deliberation_transcript=deliberation.transcript
     )
+    # Stamped explicitly rather than relying on `PresidentialAction.ladder`'s class
+    # default (ADR 0011): the default exists only so a pre-ADR-0011 record with no
+    # `ladder` key on disk still reads back under the table it was actually scored with.
+    # A freshly-decided action always records which ladder scored it.
+    action = action.model_copy(update={"ladder": config.ladder})
 
     ground_truth = scenario.ground_truth()
 
@@ -558,7 +578,7 @@ def run_once(config: RunConfig, seed: int, *, use_disk_cache: bool = True) -> Ru
     audience: AudienceRecord | None = None
     if config.audience_enabled:
         audience = _survey_audience(
-            config, client, scenario, world, panel, opinions, deliberation, intel,
+            config, client, scenario, world, missed, panel, opinions, deliberation, intel,
             ground_truth, action, seed,
         )
 

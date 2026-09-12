@@ -43,7 +43,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from artsoc.personas import excomm_seat_title, load_excomm
-from artsoc.schema import NUCLEAR_THRESHOLD, RunRecord, rung_for
+from artsoc.schema import (
+    DELIBERATE_NUCLEAR_BAND,
+    NUCLEAR_ACTIONS,
+    ActionType,
+    RunRecord,
+    rung_for,
+)
 
 #: Node id for the host-side world. Not an agent: it is where events come from and where
 #: the President's action lands.
@@ -875,7 +881,7 @@ def pipeline_flow(records: list[RunRecord]) -> PipelineFlow:
             return f"intel confidence: {value}"
         if kind == "basis":
             return value
-        nuclear = " (nuclear)" if int(value) >= NUCLEAR_THRESHOLD else ""
+        nuclear = " (nuclear)" if int(value) >= DELIBERATE_NUCLEAR_BAND else ""
         return f"rung {value}{nuclear}"
 
     nodes = (
@@ -1232,7 +1238,9 @@ def run_facts(record: RunRecord) -> RunFacts:
     """
     brief = record.advisor_brief
     lean_shift = (
-        record.rung - rung_for(record.secret_lean) if record.secret_lean is not None else 0
+        record.rung - rung_for(record.secret_lean, ladder=record.action.ladder)
+        if record.secret_lean is not None
+        else 0
     )
     audience = record.audience
     audience_approve_share = 0.0
@@ -1645,7 +1653,7 @@ def session_facts(
         ActionCount(
             action=action,
             rung=rung_for(action),
-            is_nuclear=rung_for(action) >= NUCLEAR_THRESHOLD,
+            is_nuclear=ActionType(action) in NUCLEAR_ACTIONS,
             proposed=proposed.get(action, 0),
             chosen=chosen.get(action, 0),
         )

@@ -1,4 +1,4 @@
-"""`artsoc run` / `analyse` / `arms`.
+"""`artsoc run` / `analyse` / `arms` / `ingest` / `rescore`.
 
 **The flag list is an invariant, not a convenience.** Invariant 5 permits exactly four
 CLI-only options — `--n`, `--seed0`, `--out-dir`, `--append` — because those are
@@ -17,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from artsoc.config import base_defaults, list_arms, load_arm, varied_fields
+from artsoc.config import LADDERS, base_defaults, list_arms, load_arm, varied_fields
 from artsoc.ingest import ingest_all
 from artsoc.llm import DiskCache, LLMClient, get_backend
 from artsoc.metrics import report_for_files
@@ -69,6 +69,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyse = sub.add_parser("analyse", help="summarise one or more run outputs")
     analyse.add_argument("paths", nargs="+", type=Path, help="JSONL files from `artsoc run`")
+
+    rescore = sub.add_parser(
+        "rescore",
+        help="summarise existing run outputs under a chosen escalation ladder",
+        description=(
+            "Re-scores already-collected records under `--ladder`, with no model call: "
+            "`PresidentialAction.rung` is recomputed from the stored `action`, ignoring "
+            "whichever ladder each record was originally stamped with (ADR 0011). This is "
+            "a deterministic, host-side re-reading of fixed data, not a new experiment — "
+            "see docs/framework/ladder.md."
+        ),
+    )
+    rescore.add_argument("paths", nargs="+", type=Path, help="JSONL files from `artsoc run`")
+    rescore.add_argument(
+        "--ladder",
+        choices=sorted(LADDERS),
+        default="kahn",
+        help="escalation ladder to re-score against (default kahn)",
+    )
 
     return parser
 
@@ -201,6 +220,12 @@ def cmd_analyse(paths: list[Path]) -> int:
     return 0
 
 
+def cmd_rescore(paths: list[Path], ladder: str) -> int:
+    print(f"rescoring {len(paths)} file(s) under the {ladder!r} ladder — no model call\n")
+    print(report_for_files(paths, ladder=ladder))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "arms":
@@ -211,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args.arm, args.n, args.seed0, args.out_dir, args.append)
     if args.command == "analyse":
         return cmd_analyse(args.paths)
+    if args.command == "rescore":
+        return cmd_rescore(args.paths, args.ladder)
     raise AssertionError(f"unhandled command {args.command!r}")  # pragma: no cover
 
 

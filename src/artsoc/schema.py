@@ -4,13 +4,15 @@ Two things in this module are load-bearing for the whole project:
 
 1. **The action space is closed.** The President selects exactly one `ActionType`. Free
    text cannot be scored consistently across replications, so there is no free-text
-   action. Adding an action means adding it to `ActionType` *and* `RUNG` in the same
-   change; a test fails otherwise.
+   action. Adding an action means adding it to `ActionType` *and* every table in
+   `_LADDERS` in the same change; a test fails otherwise.
 
-2. **The rung is deterministic and needs no model judge.** `RUNG` is a fixed lookup keyed
-   on the typed action. The President's free-text justification is logged as qualitative
-   data and never touches the rung. A judge may one day code *reasoning*; it may never
-   feed the primary metric.
+2. **The rung is deterministic and needs no model judge.** `RUNG_KAHN` (the default) or
+   `RUNG_PROJECT` is a fixed lookup keyed on the typed action; `rung_for(action,
+   ladder=...)` sees nothing else. The President's free-text justification is logged as
+   qualitative data and never touches the rung. A judge may one day code *reasoning*; it
+   may never feed the primary metric. See `docs/framework/ladder.md` for what grounds the
+   default ladder and what it does and does not license.
 
 The host/agent boundary is enforced by *type*, not by remembering to strip a field:
 `WorldEvent` carries `ground_truth_detail`, and `PerceivedEvent` — the only event type an
@@ -79,11 +81,12 @@ class ActionType(str, Enum):
     NUCLEAR_COUNTERVALUE = "nuclear_countervalue"
 
 
-#: Ordinal escalation rung per action. Fixed, deterministic, never model-judged.
-#:
-#: NOT YET VALIDATED against a published escalation ladder — that reconciliation is
-#: outstanding work and the mapping should not be described as externally grounded.
-RUNG: Mapping[ActionType, int] = MappingProxyType(
+#: The project's own ordinal escalation table (formerly `RUNG`). Fixed, deterministic,
+#: never model-judged — but its own invention: the spacing between levels and the
+#: location of its nuclear cutoff were chosen by us, with no external warrant. Kept as a
+#: secondary sensitivity ordinal (ADR 0011) so a finding can be checked against a second,
+#: independently-numbered scale; no longer the default `rung_for` reads from.
+RUNG_PROJECT: Mapping[ActionType, int] = MappingProxyType(
     {
         ActionType.PRIVATE_REASSURANCE: 0,
         ActionType.NO_ACTION: 1,
@@ -103,11 +106,68 @@ RUNG: Mapping[ActionType, int] = MappingProxyType(
     }
 )
 
-#: At or above this rung, a nuclear weapon has been used in some form.
-NUCLEAR_THRESHOLD = 6
+#: The default, published escalation ladder (ADR 0011): Herman Kahn, *On Escalation:
+#: Metaphors and Scenarios* (Praeger, 1965), forty-four rungs grouped into eight bands
+#: 0-7. `docs/framework/ladder.md` is the single source of truth for the band structure,
+#: the mapping below, and the four judgement calls it required; this table is the
+#: committed artefact — our mapping, not a reproduction of Kahn's full rung table.
+#:
+#: UNVERIFIED: the individual Kahn rung numbers cited in the trailing comments below are
+#: corroborated in outline by secondary treatments only, and have not yet been checked
+#: against the primary text. The band structure itself is not in question; a specific
+#: rung citation may still need correction.
+RUNG_KAHN: Mapping[ActionType, int] = MappingProxyType(
+    {
+        ActionType.PRIVATE_REASSURANCE: 0,  # Kahn: pre-escalation
+        ActionType.NO_ACTION: 0,  # Kahn: pre-escalation
+        ActionType.PRIVATE_WARNING: 1,  # Kahn rung 2, political/economic/diplomatic gestures
+        ActionType.PUBLIC_STATEMENT: 1,  # Kahn rung 3, solemn and formal declarations
+        ActionType.PUBLIC_ULTIMATUM: 2,  # Kahn rung 4, hardening of positions
+        ActionType.WEAPONS_TEST: 2,  # Kahn rung 5, show of force (demonstrative, own ranges)
+        ActionType.FORWARD_DEPLOYMENT: 2,  # Kahn rungs 5-6, show of force / mobilisation
+        ActionType.FORCE_DISPERSAL: 2,  # Kahn rung 6, significant mobilisation
+        ActionType.DIPLOMATIC_SANCTION: 2,  # Kahn rung 7, "legal" harassment - retortions
+        ActionType.ALERT_LEVEL_RAISE: 3,  # Kahn rung 11, super-ready status
+        ActionType.CONVENTIONAL_STRIKE: 3,  # Kahn rung 12, large conventional war
+        ActionType.NUCLEAR_DEMONSTRATION: 3,  # Kahn rung 18, spectacular demonstration of force
+        ActionType.NUCLEAR_LIMITED_STRIKE: 4,  # Kahn rung 21, local nuclear war - exemplary
+        ActionType.NUCLEAR_COUNTERFORCE: 6,  # Kahn rungs 38-39, central/strategic counterforce
+        ActionType.NUCLEAR_COUNTERVALUE: 7,  # Kahn rungs 41-43, countervalue/civilian devastation
+    }
+)
 
-#: The actions that involve employing a nuclear weapon. Declared independently of `RUNG`
-#: so that a test can assert the two agree, rather than deriving one from the other.
+#: Band index -> (unit name, the named threshold crossed to enter it; `None` for band 0,
+#: which is entered by default). The single source `format_report` and the frontend quote
+#: labels from — a band name is never hand-typed a second time elsewhere.
+BAND_UNITS: Mapping[int, tuple[str, str | None]] = MappingProxyType(
+    {
+        0: ("pre-escalation", None),
+        1: ("Subcrisis Manoeuvring", None),
+        2: ("Traditional Crises", "Don't Rock the Boat"),
+        3: ("Intense Crises", "Nuclear Incredulity"),
+        4: ("Bizarre Crises (nuclear weapons are used)", "No Nuclear Use"),
+        5: ("Exemplary Central Attacks", "Central Sanctuary"),
+        6: ("Military Central Wars", "Central War"),
+        7: ("Civilian Central Wars", "No-City"),
+    }
+)
+
+#: Named Kahn-band thresholds (`docs/framework/ladder.md`). `DELIBERATE_NUCLEAR_BAND`
+#: replaces the old `NUCLEAR_THRESHOLD`: under Kahn's banding it is not the same cut as
+#: `NUCLEAR_ACTIONS` (see below) — `nuclear_demonstration` sits in band 3, below it.
+DONT_ROCK_THE_BOAT_BAND = 2
+NUCLEAR_INCREDULITY_BAND = 3
+DELIBERATE_NUCLEAR_BAND = 4
+
+#: The actions that involve employing a nuclear weapon. Independent of any ladder or band
+#: cut — a fact about what the action *is*, not about where either ladder places it. Under
+#: `RUNG_KAHN`, this is no longer equivalent to "band >= DELIBERATE_NUCLEAR_BAND":
+#: `nuclear_demonstration` is a member but sits in band 3, because Kahn treats a
+#: demonstration or a narrowly justifiable strike as still legible as a limited action
+#: (`docs/framework/ladder.md`, "Nuclear use and the ordinal are now separate"). Keeping
+#: the two independent, rather than overriding Kahn to preserve the old identity, is the
+#: point: whether a demonstration counts as crossing the firebreak is a live question in
+#: the literature and the scale should not silently settle it.
 NUCLEAR_ACTIONS: frozenset[ActionType] = frozenset(
     {
         ActionType.NUCLEAR_DEMONSTRATION,
@@ -117,12 +177,18 @@ NUCLEAR_ACTIONS: frozenset[ActionType] = frozenset(
     }
 )
 
+#: Ladders `rung_for` can score against, by name.
+_LADDERS: Mapping[str, Mapping[ActionType, int]] = MappingProxyType(
+    {"kahn": RUNG_KAHN, "project": RUNG_PROJECT}
+)
 
-def rung_for(action: ActionType | str) -> int:
-    """Return the ordinal rung for a typed action.
 
-    Takes the action and nothing else. It deliberately has no access to the
-    justification, the brief, or a model: the primary metric cannot drift.
+def rung_for(action: ActionType | str, ladder: str = "kahn") -> int:
+    """Return the ordinal rung/band for a typed action, on the named ladder.
+
+    Takes the action and a ladder name, and nothing else. It deliberately has no access
+    to the justification, the brief, or a model: the primary metric cannot drift. `ladder`
+    defaults to `"kahn"` (ADR 0011); every existing call site that omits it is unaffected.
     """
     if not isinstance(action, ActionType):
         try:
@@ -132,7 +198,10 @@ def rung_for(action: ActionType | str) -> int:
                 f"{action!r} is not in the closed action space; free-text actions are "
                 "not scorable and are not permitted"
             ) from exc
-    return RUNG[action]
+    table = _LADDERS.get(ladder)
+    if table is None:
+        raise ValueError(f"{ladder!r} is not a known ladder; choose one of {sorted(_LADDERS)}")
+    return table[action]
 
 
 #: The controlled vocabulary shared by the Advisor (which tags questions) and personas
@@ -633,10 +702,14 @@ class AudienceRecord(_Model):
     failures: list[CitizenFailure] = Field(default_factory=list)
     target_marginals: dict[str, dict[str, float]] = Field(default_factory=dict)
     achieved_marginals: dict[str, dict[str, float]] = Field(default_factory=dict)
-    #: Approval value -> share of the panel, using the raking weights.
+    #: Approval value -> share of the panel that answered, using the raking weights.
+    #: Refused responses (`CitizenResponse.refused`) are excluded from both this and
+    #: `unweighted_approval` — a structural refusal is not an opinion, weighted or not,
+    #: and folding it in as `no_opinion` would misstate the distribution of citizens who
+    #: actually answered. See `refusal_rate` for the excluded share.
     weighted_approval: dict[str, float] = Field(default_factory=dict)
-    #: Approval value -> raw share of the panel, no weighting. Carried alongside the
-    #: weighted distribution so the two can be compared directly.
+    #: Approval value -> raw share of the panel that answered, no weighting. Carried
+    #: alongside the weighted distribution so the two can be compared directly.
     unweighted_approval: dict[str, float] = Field(default_factory=dict)
     response_rate: float = 0.0
     #: Share of responses whose `rationale` names the real crisis, its real participants,
@@ -644,6 +717,11 @@ class AudienceRecord(_Model):
     #: prompt-boundary breach (that is guarded separately, at prompt-build time).
     leakage_rate: float = 0.0
     no_opinion_rate: float = 0.0
+    #: Share of `responses` that were structural refusals (`CitizenResponse.refused`),
+    #: excluded from `weighted_approval`/`unweighted_approval`/`no_opinion_rate` alike —
+    #: the fifth audience diagnostic, alongside response, leakage, no-opinion and stratum
+    #: coverage.
+    refusal_rate: float = 0.0
     #: Per stratum dimension, the lowest category-coverage ratio achieved against target.
     stratum_coverage: dict[str, float] = Field(default_factory=dict)
     #: Distance from `validation_targets.yaml`'s held-out marginals. Empty when the frame
@@ -662,11 +740,17 @@ class PresidentialAction(_Model):
     #: `None` under the control arm, where the President chose freely from the closed
     #: action space because there was no panel to cite (ADR 0006).
     chosen_coa_id: str | None = None
+    #: Which ladder scores `rung` (ADR 0011). The Python default `"project"` exists only
+    #: so a pre-ADR-0011 on-disk record with no `ladder` key — scored, at the time, under
+    #: what is now `RUNG_PROJECT` — still reads back to the value it was written with.
+    #: `sim.py` stamps every freshly-constructed action with `config.ladder` explicitly
+    #: (default `"kahn"`) rather than relying on this default.
+    ladder: str = "project"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def rung(self) -> int:
-        return rung_for(self.action)
+        return rung_for(self.action, self.ladder)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -678,8 +762,9 @@ class PresidentialAction(_Model):
 
 
 def public_statement_from(action: PresidentialAction) -> PublicStatement:
-    """The only way to build a `PublicStatement` (ADR 0009). Drops `chosen_coa_id` and the
-    computed `rung`/`is_nuclear` fields explicitly, by construction rather than by care."""
+    """The only way to build a `PublicStatement` (ADR 0009). Drops `chosen_coa_id`, `ladder`
+    and the computed `rung`/`is_nuclear` fields explicitly, by construction rather than by
+    care."""
     return PublicStatement(action=action.action, justification=action.justification)
 
 
