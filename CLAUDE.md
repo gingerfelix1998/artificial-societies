@@ -61,13 +61,17 @@ not only the access-matrix tests, but `test_configs.py`, `test_invariants.py`,
    experiment leaking, and it invalidates every run in `out/`. Reasons for each boundary are in
    `docs/framework/access-matrix.md`; knowing them is what prevents well-meant violations.
 
-2. **The escalation rung is deterministic.** `schema.RUNG`, keyed on the typed action, and
-   `rung_for` sees nothing else. Never introduce a model judge, heuristic or free-text parse
-   into the primary metric. A judge may code *reasoning*; it may never feed the rung.
+2. **The escalation rung is deterministic.** `schema.RUNG_KAHN` (the default, grounded in
+   Herman Kahn's escalation ladder — ADR 0011, `docs/framework/ladder.md`) or
+   `RUNG_PROJECT` (the project's own table, kept as a secondary sensitivity ordinal), keyed
+   on the typed action, and `rung_for(action, ladder=...)` sees nothing else. Never
+   introduce a model judge, heuristic or free-text parse into the primary metric. A judge
+   may code *reasoning*; it may never feed the rung. The ladder itself never enters a
+   prompt — it is host-side scoring apparatus, not something any agent is shown.
 
 3. **The action space is closed.** The President selects one `ActionType`. No free-text
-   actions. A new action goes into `ActionType` **and** `RUNG` in the same change — a test
-   fails otherwise.
+   actions. A new action goes into `ActionType` **and** every table in `schema._LADDERS`
+   (`RUNG_KAHN` and `RUNG_PROJECT`) in the same change — a test fails otherwise.
 
 4. **No silent fallback from grounded to ungrounded retrieval.** A real retriever raises rather
    than degrading to `StubRetriever`, and `grounded` travels with the retriever rather than
@@ -156,9 +160,14 @@ not — is confounded and is not used here. Any influence figure must state whic
   reasoned, not calibrated against a live sweep the way the passage thresholds were. At the
   committed default (`retrieval_claim_min_terms: 3`) a mock run's panel declines every
   question — the mock question bank shares too few terms with any claim.
-- `schema.RUNG` has not been validated against a published escalation ladder.
+- `schema.RUNG_KAHN`'s band structure is grounded in Kahn's escalation ladder and
+  corroborated by secondary treatments (ADR 0011, `docs/framework/ladder.md`); the
+  individual rung citations in its trailing comments are `UNVERIFIED` against the primary
+  text and must be checked before a result leans on a specific mapping decision.
 - Reasoning-theme coding does not exist.
-- Arm contrasts have no confidence intervals and no multiple-comparisons correction.
+- Threshold-crossing rates and risk differences carry Wilson/Newcombe confidence
+  intervals; the `loo_*` and threshold-outcome comparison families still have no
+  multiple-comparisons correction and are reported descriptively, pre-registered as such.
 - **ExComm members are 1962-shaped, not the historical individuals** (ADR 0008): a
   disposition profile and a hand-authored belief system per institutional seat, no real
   name in `data/excomm/registry.yaml` or in any prompt, including a live chat continuing a

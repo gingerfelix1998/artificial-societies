@@ -36,19 +36,21 @@ The population choice suits LLM personas unusually well: the field's authorship 
 enumerable and every member left a written record, so personas can be grounded in primary
 text and checked against it. That check is what most persona work cannot run.
 
-`data/theorists/registry.yaml` holds **15 real theorists** across four eras:
+`data/theorists/registry.yaml` holds **12 real theorists** across three eras:
 `early_deterrence` (Brodie, Schelling, Kahn, Wohlstetter), `cold_war_theory` (Jervis,
-Waltz, Posen, George), `post_cold_war` (Sagan, Tannenwald, Freedman, Blair) and
-`contemporary` (Narang, Talmadge, Lieber & Press). The `era` field is not decoration — it
-is the phase 3 experimental variable.
+Waltz, Posen, George) and `post_cold_war` (Sagan, Tannenwald, Freedman, Blair). The `era`
+field is not decoration — it is the phase 3 experimental variable, and a fourth,
+`contemporary` era (candidates: Narang, Talmadge, Lieber & Press) is a planned addition,
+not yet a persona in the registry — this document previously described it as already
+present, which it is not.
 
-**On 15 versus 100.** The default panel is 15. Fifteen theorists with a written record are
-worth more than eighty-five synthetic personas padding a headcount, and `synthetic_panel(n)`
+**On 12 versus 100.** The default panel is 12. Twelve theorists with a written record are
+worth more than eighty-eight synthetic personas padding a headcount, and `synthetic_panel(n)`
 exists for the arms where a larger anonymous panel is the point. The claim this project
 defends is about grounding and panel structure, not panel size; where size matters it is
 varied as an arm (`small_panel`) rather than fixed at a number taken from the brief. A
 100-persona run is `panel_source: synthetic` with `panel_size: 100`, and any write-up of it
-must say that 85 of those personas are position-defined constructs.
+must say that 88 of those personas are position-defined constructs.
 
 ## Persona construction
 
@@ -137,7 +139,15 @@ reacts to `PresidentialAction` regardless of whether a panel produced it — it 
 nothing upstream of it.
 
 Defaults are `n_questions: 3` and `k_per_question: 4`, so up to twelve opinion slots are
-drawn from a fifteen-persona panel.
+drawn from a twelve-persona panel.
+
+**The "deterministic rung" above is `PresidentialAction.rung`, scored by `rung_for` against
+`schema.RUNG_KAHN` by default (ADR 0011).** What grounds that ladder, the mapping from each
+`ActionType` to a band, the four judgement calls it required, and what the resulting scale
+does and does not license are recorded once, in `docs/framework/ladder.md`, and not
+restated here. `schema.RUNG_PROJECT` — this project's own former table — is kept as a
+secondary sensitivity ordinal; `config.ladder` selects between them and `artsoc rescore`
+re-reads an existing output file under either with no model call.
 
 **Question formulation is a first-class component, not glue.** How the President's query is
 decomposed determines which theorists are consulted and therefore what the President hears.
@@ -214,7 +224,7 @@ conditionals' occurrence counts are pinned by dedicated tests so neither grows a
 | `consensus_only` | `synthesis_mode: consensus_only` | What does suppressing minority views cost? |
 | `tag_routing` | `routing_mode: tag` | Does a model-selected panel differ from a deterministic one? |
 | `full_stack_variance` | `cache_enabled: false` | Whole-system rather than decision-step variance. |
-| `loo_<theorist>` × 15 | `excluded_personas: [x]` | Forced exclusion, per theorist. |
+| `loo_<theorist>` × 12 | `excluded_personas: [x]` | Forced exclusion, per theorist. |
 
 The `loo_*` arms are why influence estimates here can be causal rather than observational.
 Exclusion happens in `build_panel`, before anything sees the registry, so an excluded persona
@@ -260,8 +270,10 @@ over project-written summaries of its publications (ADR 0007). A deliberative Ex
 between the courses of action and the decision, with the President's prior recorded before
 it convenes (ADR 0008). A stratified 1962-US-public audience can react to the decision
 after it is made, as an outcome measure with its own delta against the control (ADR 0009).
-What remains is calibrating the claim-match thresholds against a live sweep, reconciling
-`RUNG` with a published ladder, reasoning-theme coding, and — for the ExComm specifically —
+What remains is calibrating the claim-match thresholds against a live sweep, verifying the
+`RUNG_KAHN` rung citations against Kahn's primary text (ADR 0011; the band structure itself
+is corroborated by secondary treatments, individual rung numbers are not yet), reasoning-
+theme coding, and — for the ExComm specifically —
 a corpus deep enough for a disposition-ablation arm and President-driven turn-taking rather
 than round-robin; for the audience, calibrating `strata.yaml`'s marginals against primary
 Census/Gallup/SRC-NES tables and a joint (correlated) construction in place of the

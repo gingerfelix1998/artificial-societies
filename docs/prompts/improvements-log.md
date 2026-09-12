@@ -59,19 +59,21 @@ comparison rather than the obvious default:
 Whatever is chosen, the empty-return threshold is the important parameter, because it is what
 makes the out-of-record hatch fire. Tune it deliberately and report it.
 
-### 2. Validate the escalation ladder against a published scale
+### 2. Validate the escalation ladder against a published scale — DONE, with one item open
 
-**Now.** `RUNG` carries an explicit comment that it is not validated against any published
-ladder. It is this project's own ordering.
+`schema.RUNG_KAHN` grounds the primary metric in Herman Kahn's *On Escalation* (ADR 0011,
+`docs/framework/ladder.md`, which records the mapping, the four judgement calls it required,
+and what the resulting scale does and does not license). The project's own former table is
+kept as `RUNG_PROJECT`, a secondary sensitivity ordinal; `artsoc rescore --ladder` re-scores
+an existing output file under either with no model call. `metrics.py` reports named
+threshold-crossing rates (Don't Rock the Boat, Nuclear Incredulity, No Nuclear Use, and the
+independent `NUCLEAR_ACTIONS` predicate) with Wilson/Newcombe confidence intervals in place
+of a single unqualified mean.
 
-**Change.** Reconcile with a Kahn-derived compressed ladder, document the mapping in an ADR,
-and cross-score every action against an established published escalation framework so the
-numbers are comparable to prior work.
-
-**Why.** The primary metric is currently ordinal-by-assertion. A reviewer who disagrees with
-one placement — is `weapons_test` really level with `forward_deployment`? — can question every
-number that follows. Cross-scoring also lets results be compared against the existing
-wargaming literature instead of standing alone.
+**Still open.** The individual Kahn rung citations in `RUNG_KAHN`'s trailing comments are
+`UNVERIFIED` against the primary text — the band structure is corroborated by secondary
+treatments, specific rung numbers are not yet checked. *Dangerous Thresholds* (Morgan et
+al., RAND 2008) remains a candidate independent cross-check, not yet implemented.
 
 ### 3. Remove the smoke-test override from committed config
 

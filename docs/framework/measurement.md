@@ -2,12 +2,61 @@
 
 What is measured, what gates a number being read as a result, and what may never be claimed.
 Implemented in `src/artsoc/metrics.py`; the primary metric is defined in
-`src/artsoc/schema.py`.
+`src/artsoc/schema.py`; what grounds it is recorded in `docs/framework/ladder.md`.
 
-## The primary metric: escalation rung
+## This is a designed experiment, not a classification task
+
+Every replication is one trial of a designed experiment with ordinal and binary responses.
+There is no accuracy, no F1, no confusion matrix, and no baseline classifier to beat — a
+replication is not a labelled example, and the President's decision is not a prediction
+being scored against a ground-truth label. Reading this project's output as a classification
+problem is the single most common way to misdescribe it; the terms below are the correct
+vocabulary and this section states them once so the rest of this document, and any write-up
+built on it, can use them without re-deriving them.
+
+**Independent variables.** The arm config fields that differ across `configs/arms/*.yaml`:
+`persona_method`, `panel_source`, `synthesis_mode`, `convene_excomm`, `audience_method`,
+`panel_size`, and the `loo_*` exclusions (which persona, if any, is absent from the panel).
+`escalation_prior` (`consult_panel: false`) is the reference level every arm is compared
+against — see "The only interpretable quantity" below.
+
+**Theoretical concepts are measured mediators, not independent variables.** A theorist's
+concepts — deterrence, credibility, escalation control, and the rest of `schema.TAG_VOCAB`
+— are not manipulated; they are read off which claims a consulted persona cited and which
+tags routed a question to them. Nothing sets "how much credibility-talk occurs" the way an
+arm sets `persona_method`. Where a `loo_<theorist>` arm changes the concept mix a panel
+argues from, it does so as a side effect of removing a person, not as a controlled
+manipulation of a concept — **the substitution confound**: whoever is promoted into the
+freed slot brings their own concepts with them, so a `loo_*` contrast identifies "the panel
+without this theorist," not "the effect of this theorist's concepts holding the concept mix
+otherwise fixed." Concept-level claims would need a different design (claim-level tags and
+`loo_tag_*` arms), which does not exist yet and is scoped as its own future ADR, not folded
+into this one.
+
+**Dependent variables, by unit of analysis.** Reported at whichever unit the DV is actually
+observed at, not collapsed to one:
+
+| DV | Type | Unit | Model family |
+|---|---|---|---|
+| `ActionType` | Nominal (15 categories) | Replication | Frequency table; the primary descriptive object, since banding loses information this does not |
+| Band (`PresidentialAction.rung`) | Ordinal | Replication | Distribution + rank-based comparison; cumulative-odds/proportional-odds where the assumption holds (not fitted in `metrics.py` — see below) |
+| Threshold crossings: Don't Rock the Boat, Nuclear Incredulity, No Nuclear Use; and the independent `NUCLEAR_ACTIONS` predicate | Binary | Replication | Proportion with a Wilson interval; risk difference vs. control (Newcombe interval) — **the headline outcomes** |
+| `mean_lean_shift` | Paired, within-replication (`rung(action) - rung(secret_lean)`) | Replication | Paired difference against `baseline`'s no-debate rate — a sign test and a paired-difference interval, not a between-arm contrast |
+| `d_approval` | Weighted proportion | Citizen, nested in replication (~70 per replication) | Cluster-level mean (one weighted share per replication) and its interval — clustering at the replication, not the citizen, because citizens within one replication share context and are not independent draws |
+
+**Seeds are a blocking factor, not noise.** Perception draws its own `random.Random` stream
+seeded from the replication's seed (`docs/framework/design.md`), so two arms run at the same
+seed share that draw and differ only in what the arm actually varies. Where two arms share
+seeds, `metrics.paired_contrast` blocks on the seed for a within-seed paired contrast,
+reported alongside — never instead of — the ordinary unpaired delta.
+
+## The primary metric: escalation band
 
 Deterministic. The President selects exactly one `ActionType` from a closed set of fifteen;
-`RUNG` maps each to an ordinal 0–8. `rung_for` takes the action and nothing else — it has no
+`rung_for(action, ladder="kahn")` maps each to a band 0–7, grounded in Herman Kahn's
+escalation ladder (ADR 0011) — the mapping, the four judgement calls it required, and what
+the scale does and does not license are recorded in full in `docs/framework/ladder.md` and
+not restated here. `rung_for` takes the action and a ladder name, and nothing else: no
 access to the justification, the brief, or a model.
 
 This buys three things. The metric cannot drift between runs or between model versions.
@@ -17,25 +66,35 @@ guarantee.
 
 It is enforced at the schema level too: `PresidentialAction.rung` is a computed field, and
 `_Model._drop_computed_fields` discards any `rung` present in a file being read back and
-recomputes it. A hand-edited rung in a JSONL record cannot override the ladder.
+recomputes it from the record's own `PresidentialAction.ladder` field. A hand-edited rung in
+a JSONL record cannot override the ladder, and `artsoc rescore --ladder` re-derives every
+record's band under either ladder with no model call.
 
-`NUCLEAR_THRESHOLD = 6`. `NUCLEAR_ACTIONS` is declared independently of `RUNG` so a test can
-assert the two agree rather than deriving one from the other.
+**`NUCLEAR_ACTIONS` is independent of the band, on purpose.** Under Kahn's banding,
+`nuclear_demonstration` sits in band 3 while the other three nuclear actions sit in bands 4,
+6 and 7 — "a nuclear weapon was used" and "crossed the No Nuclear Use band" are no longer
+the same set, and overriding Kahn to force them to agree would have cost most of the reason
+for adopting his ladder. See `docs/framework/ladder.md`, "Nuclear use and the ordinal are
+now separate."
 
-**Outstanding: the ladder is not externally validated.** `RUNG` carries an explicit note that
-it has not been reconciled with a published escalation ladder. Until it is, the ordering is
-this project's own and must be described that way. Reconciling it with a Kahn-derived scale
-and cross-scoring against a published framework would make the numbers comparable to the
-wargaming literature.
+**Outstanding: the individual Kahn rung citations are unverified, the band structure is
+not.** `schema.RUNG_KAHN`'s docstring carries an explicit `UNVERIFIED` marker on the
+specific rung numbers cited against the primary text; the eight-band unit structure itself
+is corroborated in outline by multiple secondary treatments. Until the rung citations are
+checked, a specific mapping decision — not the overall grounding — is what should be
+qualified in a write-up.
 
 ## What a report contains
 
-`format_report` renders, per arm: n, the rung distribution as a histogram, mean and median
-rung, P(rung ≥ 6), and the conditions that produced them — backend, models per role,
-`cache_enabled`, `retrieval_mode`, `grounded`.
+`format_report` renders, per arm: n, the band distribution as a histogram, the nominal
+`ActionType` distribution (the primary descriptive object — it loses nothing to banding),
+mean and median band (demoted: the weakest quantities here, see `docs/framework/ladder.md`,
+"Ordinal, not interval"), and the four named threshold-crossing rates with Wilson intervals
+— the headline numbers — alongside the conditions that produced them: backend, models per
+role, `cache_enabled`, `retrieval_mode`, `grounded`.
 
 **The distribution leads, because the distribution is the result.** A single run reaching a
-nuclear rung is an anecdote. "This proportion of n replications crossed the threshold" is a
+nuclear band is an anecdote. "This proportion of n replications crossed the threshold" is a
 finding.
 
 ## The only interpretable quantity
@@ -45,11 +104,12 @@ against it**.
 
 This is not a stylistic preference. Off-the-shelf models escalate in wargame settings even
 from neutral starting conditions, and this behaviour is well documented across several
-independent replications. The absolute rung distribution from any arm is therefore the base
+independent replications. The absolute band distribution from any arm is therefore the base
 model's prior, not a finding about nuclear strategists. Only the contrast — what the advisory
 apparatus changed — is attributable to the thing this project builds.
 
-`delta(arm, control)` computes it; `Delta` is documented as the only interpretable quantity
+`delta(arm, control)` computes it, now with a Newcombe risk-difference interval alongside
+each named threshold's point delta; `Delta` is documented as the only interpretable quantity
 in the module.
 
 ## A second interpretable quantity: lean → decision (ADR 0008)
@@ -57,11 +117,11 @@ in the module.
 `Delta` compares two arms. `mean_lean_shift` compares two moments of *the same*
 replication: `RunRecord.secret_lean`, the President's prior over the three courses of action
 recorded before the ExComm convenes, against `RunRecord.rung`, where the decision actually
-landed, both scored through `rung_for` (invariant 2 — the primary metric is never a free-text
-judgement). It is the first within-replication contrast in the project; every other
-diagnostic here compares across replications or across arms.
+landed, both scored through `rung_for` on the same effective ladder (invariant 2 — the
+primary metric is never a free-text judgement). It is the first within-replication contrast
+in the project; every other diagnostic here compares across replications or across arms.
 
-**The absolute number is not a finding, for the same reason absolute rung distributions are
+**The absolute number is not a finding, for the same reason absolute band distributions are
 not.** A President that moves off its prior on `baseline` — where no debate ran — is not
 evidence of deliberation; it is the decision call's own instability, since the lean and the
 decision are two independent calls over the same inputs. That instability is the noise floor,
@@ -73,10 +133,12 @@ Read together with `p_moved` (the share of replications where the decision diffe
 lean at all) and `mean_deliberation_rounds` / `abstention_rate` (whether the debate that
 produced the shift was substantive or nominal — a near-zero abstention rate is a committee
 performing participation, the same reading `metrics._warnings` already gives a near-zero
-out-of-record rate).
+out-of-record rate). Where `excomm_debate` and `baseline` share seeds,
+`metrics.paired_contrast` gives the within-seed version of this same comparison, reported
+alongside the unpaired one.
 
 **Two confounds to hold in view.** First, the Rivera confound applies here exactly as it does
-to the rung: an off-the-shelf model's tendency to move under social pressure in a wargame
+to the band: an off-the-shelf model's tendency to move under social pressure in a wargame
 setting is not evidence about the underlying phenomenon. Second, `excomm_debate`'s decision
 prompt is strictly longer than `baseline`'s — it carries the transcript — so some of any
 measured shift is a prompt-length effect rather than a content effect, and the two are not
@@ -88,17 +150,28 @@ currently separated.
 70-citizen sample's reaction to the President's published decision — the label and the
 justification, never the reasoning behind it. Unlike `mean_lean_shift`, this is not a new
 within-replication shape: `metrics.Delta.d_approval` is an **across-arm** delta, the same
-kind as `d_mean_rung`, because the audience has no earlier stage of its own to be
+kind as the band deltas, because the audience has no earlier stage of its own to be
 contrasted against. `d_approval` is the weighted "approve or strongly approve" share, arm
 minus control, computed only when both summaries recorded an audience.
 
-**The absolute approval share is not a finding, for the same reason absolute rung
+**The unit of analysis is the citizen, nested in the replication, and the interval is
+clustered at the replication (ADR 0011).** ~70 citizens per replication share the same
+public event and the same published statement, so they are not independent draws the way
+70 citizens from 70 different replications would be. `metrics.approval_shares` reduces each
+replication to its own weighted approve-share first; `ArmSummary.approval_interval` and
+`Delta.d_approval_interval` are computed over those per-replication shares, not over the
+pooled citizens — a naive per-citizen interval is answering "how uncertain is one citizen's
+answer," not "how uncertain is this arm's approval share," and is systematically too narrow
+whenever citizens within a replication tend to agree, which they are built to (they see the
+same event and statement).
+
+**The absolute approval share is not a finding, for the same reason absolute band
 distributions are not.** The Rivera confound applies to a model asked to role-play public
 opinion exactly as it applies to a model asked to role-play a decision-maker. Read
 `audience_d1.weighted_approval`'s share only as a contrast against whatever control arm
 also ran with `audience_enabled: true`.
 
-**Four diagnostics gate the audience the way three already gate the theorist panel.**
+**Five diagnostics gate the audience the way three already gate the theorist panel.**
 Response rate (a missing share is a dropped stratum, not just a smaller n — check
 `AudienceRecord.failures` before reading the approval share at all). Leakage rate — the
 share of citizen responses that named the real crisis, its real participants, or a
@@ -107,7 +180,11 @@ flagged**, not just a rate below a threshold: a single leaked reference at n=70 
 evidence the era-framing failed for at least one citizen, and a ratio-based warning would
 average that away. No-opinion rate: **a near-zero rate is a warning, not a success**, the
 same reading a near-zero out-of-record rate gets for the theorist panel — it means the
-audience is performing an opinion it does not have. Stratum coverage: the worst
+audience is performing an opinion it does not have. Refusal rate (ADR 0011): the share of
+responses the backend declined to produce in character, distinct from a citizen's own
+genuine `no_opinion` stance — excluded from `weighted_approval`/`unweighted_approval`
+entirely rather than folded in as a no-opinion vote, which would otherwise misstate the
+distribution of citizens who actually answered. Stratum coverage: the worst
 per-dimension achieved/target ratio in the raw draw, before raking; a low floor means some
 stratum cell's weighted contribution is doing outsized work.
 
@@ -121,9 +198,9 @@ forbidden ever having appeared in its prompt.
 **By-stratum breakdowns are a multiple-comparisons exposure, exactly like the `loo_*`
 attribution.** `metrics.audience_by_stratum` computes a weighted-approval share per
 stratum category — six dimensions, several categories each — and is tested but rendered by
-nothing in `format_report` yet. Reading any one cell as a finding without a correction is
-the same error fifteen uncorrected `loo_*` comparisons would be; report it descriptively or
-state the correction.
+nothing in `format_report` yet. Reading any one cell as a finding without a
+multiple-comparisons correction is the same error the twelve-arm `loo_*` comparison
+guards against; report it descriptively or state the correction.
 
 **The sampler's independence assumption is a fact about the method, not about public
 opinion.** `society.sample_citizens` draws each stratum dimension independently and rakes
@@ -196,10 +273,20 @@ against runs where it was not, is confounded: routing correlates with question t
 correlate with outcome. That approach is not used here, and any influence number reported
 must state which of the two produced it.
 
-Fifteen exclusion arms against one baseline is a multiple-comparisons exposure. With fifteen
-theorists you will find a most-influential one whether or not one exists. Pre-register the
-comparison and state the correction, or report the ranking descriptively without significance
-claims.
+Twelve exclusion arms against one baseline is a multiple-comparisons exposure: with twelve
+theorists you will find a most-influential one whether or not one exists. The four named
+threshold outcomes (`docs/framework/ladder.md`), run pairwise across every arm, are a second,
+independent multiple-comparisons exposure of the same kind. Pre-register the comparison and
+state the correction, or — the approach taken here — report both rankings descriptively,
+without a significance claim, and say so explicitly wherever they appear.
+
+**Reflexivity.** Kahn and Freedman are both theorist personas in the registry
+(`kahn`, `freedman`), so `loo_kahn` and `loo_freedman` are, respectively, the arm that
+removes the author of the primary scoring ladder and the arm that removes the author of its
+natural citable secondary. This is not disqualifying — the ladder is applied mechanically by
+a lookup table no agent sees, so removing either persona's record changes what the panel
+argues, not how any outcome is scored — but it should be stated in any write-up rather than
+left for a reviewer to notice (`docs/framework/ladder.md`, "Reflexivity").
 
 ## Secondary coding
 
@@ -245,12 +332,19 @@ forgotten between running a sweep and writing it up.
 the decision step given fixed advisory input; off, it is whole-system variance. Both are
 legitimate and they answer different questions. Any reported dispersion must say which.
 
+**A published ladder does not make the scale interval.** Grounding the band structure in
+Kahn does not license treating band spacing as meaningful — Kahn himself described the
+rungs as illustrative. `mean_rung`/`median_rung` remain the weakest quantities `metrics.py`
+computes and are demoted in `format_report` accordingly; lead with the band distribution,
+the nominal `ActionType` distribution, and the named threshold-crossing rates instead.
+
 ## What would strengthen the measurement
 
 In rough order of value:
 
-1. Reconcile `RUNG` with a published escalation ladder and cross-score against an established
-   framework, so the numbers are comparable to prior work.
+1. Verify the individual Kahn rung citations in `schema.RUNG_KAHN` against the primary text
+   (`docs/framework/ladder.md`, "Outstanding") — the band structure is grounded and
+   corroborated by secondary treatments; specific rung numbers are not yet checked.
 2. Calibrate `retrieval_claim_min_terms` and `retrieval_claim_top_k` against a live sweep,
    the way the Wikipedia passage thresholds were. The claim index is in place (ADR 0007) but
    its thresholds are reasoned rather than measured, and at the committed default a mock
@@ -258,7 +352,7 @@ In rough order of value:
 3. Deepen corpus corroboration: write claims that deliberately restate a shared position
    across an author's works, or add a model-assisted merge pass, so corroboration depth
    becomes a discriminating metric rather than ≈1 everywhere.
-4. Add process-level metrics beyond the terminal rung — which options were raised and
+4. Add process-level metrics beyond the terminal band — which options were raised and
    rejected, the order considerations enter, dispersion of positions across the panel. These
    are richer than a single terminal action and are harder for a model to have memorised.
 5. Implement reasoning-theme coding with a validated agreement sample.
@@ -277,3 +371,8 @@ In rough order of value:
 10. Replace the audience sampler's independent-per-dimension draw with a joint (correlated)
     construction, so a by-stratum breakdown reflects the true population's structure rather
     than an independence assumption stated as a limitation.
+11. Fit a validated cumulative-logit (proportional-odds) model of band against arm, checking
+    the proportional-odds assumption, with an external statistical tool at write-up time —
+    not hand-rolled in `metrics.py`, which has no reference implementation to check a
+    numerical fit's convergence against (the same reasoning that keeps reasoning-theme
+    coding out of this module until it is validated).

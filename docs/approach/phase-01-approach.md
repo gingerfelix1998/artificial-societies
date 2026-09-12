@@ -96,7 +96,7 @@ docs/framework/
   measurement.md       metrics, diagnostics, interpretation constraints
 docs/decisions/        ADRs
 src/artsoc/
-  schema.py            typed messages, closed action space, deterministic rungs
+  schema.py            typed messages, closed action space, the Kahn-grounded ladder (ADR 0011)
   world.py             append-only world log, perception filter, public-event view
   llm.py               single model choke point: mock + live backends, disk cache
   personas.py          persona construction M1/M2/M3, tag vocabulary, routing, ExComm roster
@@ -108,15 +108,17 @@ src/artsoc/
                        (ADR 0009)
   sim.py               orchestration loop, RunConfig, ablation switches
   narrative.py         model-written run/session summaries (never feed the rung)
-  metrics.py           outcome distributions, coverage, citation integrity, lean->decision,
-                       audience approval
+  metrics.py           outcome distributions, threshold-crossing rates with confidence
+                       intervals, coverage, citation integrity, lean->decision, audience
+                       approval (ADR 0011)
   views.py             derived views the frontend consumes, all tested here
   session.py           sessions, cost gate, provenance flags
   api.py               local read-only API (optional `api` extra)
-  cli.py               artsoc run / analyse / arms / ingest
+  cli.py               artsoc run / analyse / arms / ingest / rescore
 tests/
   test_access_matrix.py   canary tests: no role sees forbidden context
   test_invariants.py      rungs, routing coverage, perception, configs, end-to-end
+  test_metrics.py         statistics primitives, ladder-aware summarise/rescore (ADR 0011)
   test_markdown_corpus.py claim index: parsing, chunking, retrieval, citations
   test_retrieval.py       Wikipedia ingest + passage retrieval + belief fallback
   test_excomm.py          the ExComm roster: model, loader, identity prompt
@@ -126,12 +128,12 @@ out/                   run outputs, gitignored
 
 ## Status
 
-`make test`: 556 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
+`make test`: 582 pass, 1 skip (a Wikipedia-belief spot-check that skips with no Wikipedia
 store, by design). `make lint`: clean. `frontend` `tsc`: clean.
 
 **The loop runs end to end, on real retrieval.** `artsoc run`, `artsoc analyse`, `artsoc
-ingest` and `make phase1` work offline against the mock backend and stub retriever with no
-API key; a live sweep is opted into via `configs/base.yaml`.
+rescore`, `artsoc ingest` and `make phase1` work offline against the mock backend and stub
+retriever with no API key; a live sweep is opted into via `configs/base.yaml`.
 
 Built: the full scaffold (`schema.py`, `world.py`, `llm.py` with mock + live backends,
 `personas.py`, `agents.py`, `sim.py`, `metrics.py`, `config.py` and the arms in
@@ -155,7 +157,13 @@ breaking boundaries (including the audience's and the chat's prompt-build-time g
 confirming each was caught, plus a deliberate *inverted* assertion for the one role
 permitted peer visibility. The end-to-end citation path — a claim in an `.md` file through
 retrieval, the theorist's citation, `verify_citations`, the record, and the analyst-facing
-`resolve_passages` — is exercised in `tests/test_markdown_corpus.py`.
+`resolve_passages` — is exercised in `tests/test_markdown_corpus.py`; and the primary metric
+is grounded in Herman Kahn's published escalation ladder rather than the project's own
+invented ordering, which is kept as a secondary sensitivity table (`schema.RUNG_KAHN`/
+`RUNG_PROJECT`, `docs/framework/ladder.md`, ADR 0011) — `artsoc rescore --ladder` re-reads
+an existing output file under either with no model call, and the outcome analysis in
+`metrics.py` now reports named threshold-crossing rates with Wilson/Newcombe confidence
+intervals instead of a single uncertainty-free mean.
 
 **A running loop is not a finished phase 1.** The project must not be described as producing
 grounded *results* until it has:
@@ -167,7 +175,9 @@ grounded *results* until it has:
   own group and depth reads ≈1 everywhere.
 - `corpus_notes` are placeholders, not evidence; `prominence` values are invented and weight
   nothing.
-- `schema.RUNG` reconciled with a published escalation ladder.
+- `schema.RUNG_KAHN`'s individual rung citations verified against Kahn's primary text — the
+  band structure is grounded and corroborated by secondary treatments; the specific rung
+  numbers are not yet checked (ADR 0011).
 - Reasoning themes with a hand-coded agreement sample.
 - `mean_lean_shift`'s prompt-length confound (`excomm_debate`'s decision prompt carries the
   transcript; `baseline`'s does not) separated from a content effect.
